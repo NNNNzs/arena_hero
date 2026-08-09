@@ -1,4 +1,4 @@
-"""Redacted one-line decision summaries."""
+"""脱敏的终端决策日志和离线回放记录。"""
 
 from __future__ import annotations
 
@@ -15,25 +15,91 @@ from .context import DecisionContext
 from .models import DecisionResult
 
 
+_MODE_LABELS = {
+    "RESPAWN": "等待重生",
+    "RECOVER": "恢复",
+    "DEFEND": "防守",
+    "ECONOMY": "发展经济",
+    "EXPLORE": "探索",
+    "BEACON": "争夺信标",
+    "ATTACK": "进攻",
+}
+_KIND_LABELS = {"CORE": "核心", "WORKER": "工人", "VANGUARD": "先锋", "RANGER": "游侠"}
+_ACTION_LABELS = {
+    "WAIT": "等待",
+    "MOVE": "移动",
+    "HARVEST": "采集资源",
+    "DEPOSIT": "存入资源",
+    "SWEEP": "横扫攻击",
+    "SHOOT": "远程射击",
+    "HEAL": "治疗",
+    "SPAWN": "生产单位",
+    "REPAIR_SHIELD": "修复护盾",
+    "START_MOVE": "开始迁移",
+    "PICKUP_BEACON": "拾取信标",
+}
+_DIRECTION_LABELS = {"UP": "向上", "DOWN": "向下", "LEFT": "向左", "RIGHT": "向右"}
+_REASON_LABELS = {
+    "move_to_unique_resource": "前往可见资源",
+    "resources_reserved_or_no_legal_core_action": "资源需要保留，或当前没有合适的核心动作",
+    "reobserve_remembered_resource": "复查记忆中的资源位置",
+    "no_visible_resource": "当前没有可见资源",
+}
+
+
 def summary_line(
     context: DecisionContext,
     result: DecisionResult,
     submission: Any | None = None,
 ) -> str:
-    accepted = getattr(submission, "accepted", None) if submission is not None else None
-    payload = {
-        "tick": context.tick,
-        "mode": result.mode.value,
-        "resources": context.resources,
-        "population": context.population,
-        "actions": dict(result.action_counts),
-        "wait_reasons": list(result.wait_reasons),
-        "decision_ms": round(result.decision_ms, 3),
-        "timed_out": result.timed_out,
-        "submitted": submission is not None,
-        "accepted": accepted,
+    actor_kinds = {
+        unit.id: unit.unit_type.value
+        for unit in context.units
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if context.core is not None:
+        actor_kinds[context.core.id] = "CORE"
+    accepted = getattr(submission, "accepted", None) if submission is not None else None
+    submission_text = "提交成功" if accepted else "未提交或提交失败"
+    timeout_text = "，已触及决策时限" if result.timed_out else ""
+    lines = [
+        (
+            f"[第 {context.tick} 回合] {submission_text}｜策略："
+            f"{_MODE_LABELS.get(result.mode.value, result.mode.value)}｜"
+            f"资源：{context.resources}/{context.resource_capacity}｜"
+            f"人口：{context.population}｜决策耗时：{result.decision_ms:.1f}ms{timeout_text}"
+        ),
+        "  本回合决策：",
+    ]
+    for intent in result.intents:
+        kind = _KIND_LABELS.get(actor_kinds.get(intent.actor_id, "UNKNOWN"), "未知对象")
+        action = _ACTION_LABELS.get(intent.action.value, intent.action.value)
+        detail: list[str] = []
+        if intent.direction:
+            detail.append(_DIRECTION_LABELS.get(intent.direction.value, intent.direction.value))
+        if intent.target_cell:
+            detail.append(f"目标坐标 {intent.target_cell}")
+        if intent.target_id:
+            detail.append(f"目标 #{_alias(intent.target_id)}")
+        if intent.unit_type:
+            detail.append(f"生产 {_KIND_LABELS.get(intent.unit_type.value, intent.unit_type.value)}")
+        reason = _REASON_LABELS.get(intent.reason, intent.reason)
+        suffix = f"（{reason}）" if reason else ""
+        details = f"，{'；'.join(detail)}" if detail else ""
+        lines.append(f"  - {kind} #{_alias(intent.actor_id)}：{action}{details}{suffix}")
+    if result.rejected_intents:
+        lines.append("  已放弃的提案：")
+        for item in result.rejected_intents:
+            lines.append(
+                f"  - {_ACTION_LABELS.get(item.intent.action.value, item.intent.action.value)}："
+                f"{item.rejection_reason}"
+            )
+    if context.events:
+        lines.append("  上回合结算：")
+        for event in context.events:
+            position = f"，坐标 {event.position}" if event.position else ""
+            reason = f"，原因：{event.reason_code}" if event.reason_code else ""
+            lines.append(f"  - {event.event_type}{reason}{position}")
+    return "\n".join(lines)
 
 
 def _alias(value: UUID | None) -> str | None:

@@ -13,7 +13,7 @@ from arena_tactic import (
 )
 from arena_tactic.context import DecisionContext
 from arena_tactic.models import ActionKind
-from arena_tactic.observability import ReplayWriter, replay_metrics
+from arena_tactic.observability import ReplayWriter, replay_metrics, summary_line
 
 from .factories import core, event, turn, unit, uuid
 
@@ -100,6 +100,33 @@ def test_redacted_replay_and_offline_metrics_exclude_credentials(tmp_path):
     assert metrics["ticks"] == 1
     assert metrics["accepted_ticks"] == 1
     assert metrics["action_counts"]["SPAWN"] == 1
+
+
+def test_terminal_summary_includes_redacted_per_actor_intents_and_events():
+    worker = unit(1, UnitType.WORKER, (0, 0))
+    resolved_event = event(
+        101,
+        "HARVEST_FAILED",
+        reason_code="RESOURCE_DEPLETED",
+        position=(0, 0),
+    )
+    game_turn = turn(
+        owned_core=core(position=(-2, 0)),
+        units=(worker,),
+        resource_cells=((2, 0),),
+        events=(resolved_event,),
+    )
+    context = DecisionContext.from_turn(game_turn)
+    result = choose_actions(game_turn)
+
+    summary = summary_line(context, result, SimpleNamespace(accepted=True))
+
+    assert "[第 1 回合] 提交成功｜策略：发展经济" in summary
+    assert "工人 #" in summary
+    assert "：移动，向右；目标坐标 (2, 0)（前往可见资源）" in summary
+    assert str(worker.id) not in summary
+    assert "上回合结算：" in summary
+    assert "HARVEST_FAILED，原因：RESOURCE_DEPLETED，坐标 (0, 0)" in summary
 
 
 def test_same_input_and_memory_produces_same_plan():
