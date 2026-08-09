@@ -1,0 +1,117 @@
+"""Immutable decision-domain models for the Arena Hero tactic."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import TYPE_CHECKING, Mapping
+from uuid import UUID
+
+from arena_hero import Direction, UnitType
+
+if TYPE_CHECKING:
+    from .memory import AgentMemory
+
+
+Position = tuple[int, int]
+
+
+class StrategicMode(StrEnum):
+    RESPAWN = "RESPAWN"
+    RECOVER = "RECOVER"
+    DEFEND = "DEFEND"
+    ECONOMY = "ECONOMY"
+    EXPLORE = "EXPLORE"
+    BEACON = "BEACON"
+    ATTACK = "ATTACK"
+
+
+class ActionKind(StrEnum):
+    WAIT = "WAIT"
+    MOVE = "MOVE"
+    HARVEST = "HARVEST"
+    DEPOSIT = "DEPOSIT"
+    SWEEP = "SWEEP"
+    SHOOT = "SHOOT"
+    HEAL = "HEAL"
+    SPAWN = "SPAWN"
+    REPAIR_SHIELD = "REPAIR_SHIELD"
+    START_MOVE = "START_MOVE"
+    PICKUP_BEACON = "PICKUP_BEACON"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentConfig:
+    """Centralized behavior settings intended for replay-based tuning."""
+
+    planning_budget_ms: float = 500.0
+    max_population: int = 20
+    minimum_resource_reserve: int = 5
+    defense_enter_distance: int = 4
+    defense_exit_distance: int = 6
+    migration_idle_ticks: int = 8
+    early_workers: int = 3
+    early_vanguards: int = 2
+    early_rangers: int = 1
+    mature_workers: int = 8
+    mature_vanguards: int = 6
+    mature_rangers: int = 6
+    astar_node_limit: int = 1_500
+    explored_history_limit: int = 20_000
+    event_history_limit: int = 512
+    exploration_sector_ticks: int = 6
+    movement_failure_cooldown_ticks: int = 4
+
+
+@dataclass(frozen=True, slots=True)
+class ActionIntent:
+    """A controller-independent action proposal for a current-Turn object."""
+
+    actor_id: UUID
+    is_core: bool
+    action: ActionKind
+    score: float
+    reason: str
+    target_id: UUID | None = None
+    target_cell: Position | None = None
+    direction: Direction | None = None
+    unit_type: UnitType | None = None
+    estimated_cost: int = 0
+    reserved_cell: Position | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedIntent:
+    intent: ActionIntent
+    rejection_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionResult:
+    mode: StrategicMode
+    intents: tuple[ActionIntent, ...]
+    rejected_intents: tuple[RejectedIntent, ...]
+    decision_ms: float
+    action_counts: Mapping[str, int]
+    wait_reasons: tuple[str, ...]
+    next_memory: AgentMemory
+    timed_out: bool = False
+
+
+@dataclass(slots=True)
+class ReservationTable:
+    """Conservative end-of-Tick friendly-cell capacity tracking."""
+
+    occupancy: dict[Position, int]
+    incoming: dict[Position, int] = field(default_factory=dict)
+
+    def can_reserve(self, destination: Position) -> bool:
+        return self.occupancy.get(destination, 0) + self.incoming.get(
+            destination, 0
+        ) < 2
+
+    def reserve(self, destination: Position) -> bool:
+        if not self.can_reserve(destination):
+            return False
+        self.incoming[destination] = self.incoming.get(destination, 0) + 1
+        return True

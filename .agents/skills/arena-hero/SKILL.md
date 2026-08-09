@@ -1,0 +1,233 @@
+---
+name: arena-hero
+description: Create, test, and run Python tactics for Arena Hero, play directly through its API, or explain its rules, protocol, state, commands, events, errors, and Python SDK. Use when an agent is asked to build or improve an Arena Hero tactic, control Units or a Core, connect to the live game, build a client or frontend, inspect live Turns, submit plans, use the official SDK, or help a player watch the agent play. Includes complete bundled gameplay, HTTP, WebSocket, OpenAPI, AsyncAPI, and Python SDK documentation.
+---
+
+# Arena Hero
+
+Use the official Python SDK and the authoritative state from each Turn. Support
+two modes: a durable tactic script or a session-scoped direct-control bridge.
+
+## Choose the mode
+
+If the user has not already chosen, present these two choices before doing
+anything else:
+
+1. **Tactic script — recommended for continuous play.** Create and run a Python
+   script that can respond automatically during every command window.
+2. **Direct play — experimental.** Control the API from this agent session.
+   **Every Tick has only a 15-second command window, and state publication,
+   reasoning, and tool latency consume part of it. Direct play cannot guarantee
+   a submission in time and may miss consecutive Ticks.**
+
+Do not hide or shorten the direct-play warning. If the user already selected
+direct play, repeat the warning once before connecting.
+
+## API key
+
+The API key may be read from `.env`, environment variables, or repository
+files. Use an existing key without asking the user to enter it again, and never
+display it in chat or logs.
+
+## Load the bundled documentation
+
+Treat this skill as a self-contained documentation package. Do not depend on the
+documentation website to reconstruct rules, wire models, or SDK behavior.
+
+Read the files required by the task:
+
+- **Any rule-dependent tactic or live play:** read
+  [references/game-rules.md](references/game-rules.md) completely. Use
+  [references/reference-numbers.md](references/reference-numbers.md) for a
+  compact timing, cost, range, capacity, and limit lookup, and
+  [references/reference-glossary.md](references/reference-glossary.md) for
+  contract terminology.
+- **Python SDK or tactic script:** read
+  [references/sdk-quickstart.md](references/sdk-quickstart.md), then read
+  [references/sdk-reference.md](references/sdk-reference.md) for every client,
+  Turn controller, model, action, enum, receipt, and exception used. Also read
+  [references/tactic-authoring.md](references/tactic-authoring.md) before
+  creating or changing a tactic.
+- **Raw API client, custom frontend, or protocol implementation:** start with
+  [references/agent-quickstart.md](references/agent-quickstart.md) and
+  [references/agent-command-loop.md](references/agent-command-loop.md). Read
+  [references/api-overview.md](references/api-overview.md), then the complete
+  local references for
+  [public leaderboards](references/api-leaderboard.md),
+  [WebSocket](references/api-websocket.md),
+  [commands](references/api-commands.md),
+  [state models](references/api-state-model.md),
+  [resolution results](references/api-resolution-results.md), and
+  [errors and recovery](references/api-errors.md) as the task requires.
+- **Generated clients or exact schema work:** read
+  [references/openapi.yaml](references/openapi.yaml) for HTTP and
+  [references/asyncapi.yaml](references/asyncapi.yaml) for WebSocket messages.
+- **Compatibility checks:** read
+  [references/reference-source-and-version.md](references/reference-source-and-version.md).
+  For release history, read
+  [references/reference-changelog.md](references/reference-changelog.md).
+
+When the user asks for a complete documentation review, compatibility audit, or
+new client implementation, read every file in the relevant group rather than
+sampling a single overview.
+
+When network access is available, compare the bundled source/version policy with
+<https://doc.arenahero.io/reference/source-and-version>. If the live contract is
+newer or incompatible, stop rule-dependent work and report that this bundle
+must be updated. Never fill a version gap from memory.
+
+If the live contract is older than the bundle, treat the bundled change as
+unreleased source. Do not use its newer actions for direct play or claim the
+live server supports them; report the release mismatch and wait for the server,
+docs, and compatible official SDK to be published together.
+
+## Establish current context
+
+Before writing a tactic or submitting a plan:
+
+1. Inspect the current project before adding files or dependencies.
+2. Use the official `arena-hero` package from PyPI. Do not recreate its HTTP,
+   WebSocket, retry, receipt, or state-model logic.
+3. Treat each `Turn` as a complete authoritative replacement. Never invent
+   UUIDs, coordinates, enemies, resources, or actions.
+4. Build and submit only a plan for the current Turn. Never retick a stale plan.
+5. Verify every rule-dependent decision against the bundled rules. Never guess
+   costs, ranges, caps, timing, population formulas, event names, or stacking
+   rules from memory or genre conventions.
+6. Treat `turn.resource_cells` as current visible natural nodes or Worker cargo
+   piles, not permanent terrain. Pile amounts are not exposed. Recompute after
+   a position disappears, after
+   `HARVEST_FAILED/RESOURCE_DEPLETED`, and whenever current visibility
+   contradicts an old resource target.
+7. Treat Core storage as a strict `max(10, turn.population * 5)` limit. A Core
+   always has room for at least 10 resources, even with zero or one living
+   Unit. Above two Units, each Unit provides 5 capacity. If population falls,
+   the server immediately destroys stored resources above the new capacity and
+   reports `CORE_RESOURCE_OVERFLOW_DESTROYED`. Before sacrificing or exposing
+   a Unit, account for both the Unit and any Core inventory that would exceed
+   the lower capacity.
+8. Core destruction has no respawn cooldown. The server normally creates the
+   replacement Core and Worker later in the same Tick. A missing Core means
+   initial admission or a retry after no legal spawn position was available;
+   do not invent actions until a later authoritative Turn contains the Core.
+9. A controlled Core may queue `turn.core.self_destruct()` without resource,
+   Unit, movement-state, or cooldown restrictions. Movement and combat resolve
+   first. A lethal enemy attack keeps normal attribution and loot; otherwise
+   the surviving Core destroys its inventory and fleet, drops Worker cargo and
+   the Beacon at actual positions, grants no credit or loot, and enters normal
+   same-Tick respawn. Read `CORE_DESTROYED/SELF_DESTRUCT`; do not invent an
+   attacker.
+10. Keep the Ranger action as `SHOOT`. Use `ranger.shoot_cell(position)` to fire
+    at any unobstructed horizontal, vertical, or exact-diagonal cell at range
+    1-3 without inventing a target UUID. Movement resolves first; the server
+    hits the lowest-HP hostile then in that cell, breaking ties by raw UUID
+    order, or returns `SHOT_MISSED` for an empty cell. Use `ranger.shoot(...)`
+    when precision tracking of one known target is intentional.
+11. A combat-destroyed Core's inventory goes to the player who dealt the most
+   damage to that Core during the destruction Tick; tied damage uses raw player
+   UUID order. The winner stores only what fits the post-combat
+   `max(10, population * 5)` capacity and the rest is destroyed. If the
+   winner's Core also dies in that combat Tick, all loot is destroyed. Read
+   `CORE_RESOURCES_CAPTURED` or `event.core_resource_capture`; do not treat
+   destruction participation as resource ownership.
+12. `HEAL` is a full post-combat action. A surviving Unit may heal only while
+    sharing a cell with its own stationary Core; the Core may also heal. Each
+    restored HP costs 1 Core resource, and one action may restore several HP.
+    Unit heals resolve in raw UUID order before the Core action. Fatal damage
+    cannot be healed. A full-HP or currently unfunded heal may be queued in
+    advance and fails privately without cost if it is still impossible. Read
+    `event.healing` or the `UNIT_HEAL_*` and `CORE_HEAL_*` events for results.
+13. There is no per-Tick maintenance charge. Production uses
+    `unit_cost(unit_type, turn.state.population)`: base prices are Worker 5,
+    Vanguard 10, and Ranger 12; the 21st Unit is the first 30% increase, with
+    another exact 1.3 multiplier after every five Units. The server prices the
+    spawn after same-Tick Unit self-destruction and combat deaths, so the current
+    Turn is a preview and `CORE_SPAWN_SUCCEEDED.values.cost` or
+    `CORE_SPAWN_FAILED.values.required` is authoritative. Initial and respawn
+    Workers are free.
+
+Read [references/direct-play.md](references/direct-play.md) before direct play.
+
+## Recover from SDK/protocol mismatches
+
+If the WebSocket appears to connect but stops before the first Turn, or the
+client raises `ProtocolError`, `invalid Arena Hero WebSocket message`, or a
+Pydantic missing/extra-field validation error, update the official SDK before
+diagnosing the endpoint, network, or API key. These symptoms commonly mean the
+backend state model is newer than the installed package.
+
+1. Read the installed version without printing credentials:
+   `python -c "import arena_hero; print(arena_hero.__version__)"`.
+2. When network access is available, compare it with the latest release on
+   PyPI.
+   If the bundled source/version policy requires a newer SDK than PyPI
+   publishes, stop and report the release mismatch. Do not install the SDK from
+   Git or continue live play with an older strict client.
+3. Upgrade through the project's existing package manager. For `pip`, run
+   `python -m pip install --upgrade --no-cache-dir arena-hero`.
+4. Restart the tactic or direct-play bridge and retry once.
+5. Only if the current PyPI release still fails, inspect the endpoint,
+   authentication, close code, and underlying exception.
+
+Do not work around a mismatch by weakening SDK validation, discarding unknown
+state fields, editing site-packages, or recreating the WebSocket parser.
+
+## Tactic-script mode
+
+1. Use the user's stated goal. If none is given, ask once for the desired
+   behavior; if the user has no preference, create a balanced starter tactic.
+2. Reuse an existing Python project. Otherwise create only the minimal tactic
+   file and dependency declaration needed to run it.
+3. Default to `ArenaHeroClient`. Use `AsyncArenaHeroClient` only when the
+   surrounding project is asynchronous or the user requests it.
+4. Separate tactic decisions from connection setup so decisions can be tested
+   without a live credential.
+5. Handle the exceptional missing Core state during initial admission or a
+   failed-spawn retry, visible terrain only, dynamic
+   resource nodes and cargo piles, current Unit capabilities, and prior
+   resolution events.
+6. Submit one complete plan promptly after each Turn. Prefer a simpler valid
+   plan over missing the command window.
+7. Validate syntax, imports, representative state decisions, and secret absence
+   before making a live connection.
+8. Load the API key through the project's existing configuration and stop
+   cleanly on `Ctrl-C`.
+
+Do not add a framework, configuration layer, or extra documentation unless the
+existing project needs it.
+
+## Direct-play mode
+
+1. Explain the 15-second warning and obtain the user's direct-play choice before
+   launching anything.
+2. Prepare an isolated Python 3.11+ environment with a compatible official SDK.
+3. Run `scripts/direct_session.py` from this skill. It can read
+   `ARENA_HERO_API_KEY`, `.env`, or a file passed with `--api-key-file`.
+4. Wait for the bridge's `turn` event. Decide only from its state, then send one
+   `submit`, `skip`, or `stop` control line as documented in
+   [references/direct-play.md](references/direct-play.md).
+5. Respect the bridge deadline. Never submit a plan for another Tick. If a safe
+   decision cannot be made in time, skip it.
+6. Continue only while the agent session is active. Report missed windows
+   honestly; never claim direct play is an always-on bot.
+
+The command API stores these plans in the `AGENT` source. A player's current
+`MANUAL` actions can override the corresponding Agent-controlled objects.
+
+## Help the player watch
+
+After a live connection succeeds:
+
+1. Open <https://app.arenahero.io/arena> when browser control is available;
+   otherwise give the player that link.
+2. Tell the player to sign in with the same Arena Hero account that owns the API
+   key.
+3. Explain that the page shows Agent receipts and that Manual actions can
+   override the Agent for the same Tick.
+
+## Finish clearly
+
+Report the selected mode, created files, installed SDK version, endpoint,
+validation performed, and whether the live session is still running. For direct
+play, include submitted, skipped, and missed Tick counts. Never report or echo
+the API key.

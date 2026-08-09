@@ -1,0 +1,30 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Local tooling and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Arena Hero local runtime artifacts
+*.log
+arena-hero-*.json
+runtime/

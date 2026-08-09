@@ -1,0 +1,244 @@
+"""Deterministic bounded pathfinding and safe fallback movement."""
+
+from __future__ import annotations
+
+from heapq import heappop, heappush
+from time import perf_counter
+from typing import Iterable
+from uuid import UUID
+
+from arena_hero import Direction, UnitType, UnitView
+
+from .context import DecisionContext
+from .models import AgentConfig, Position, ReservationTable
+
+
+DIRECTIONS = (Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT)
+
+
+def distance(a: Position, b: Position) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def destination(origin: Position, direction: Direction) -> Position:
+    dx, dy = direction.delta
+    return origin[0] + dx, origin[1] + dy
+
+
+def adjacent_direction(origin: Position, target: Position) -> Direction | None:
+    delta = target[0] - origin[0], target[1] - origin[1]
+    return next((direction for direction in DIRECTIONS if direction.delta == delta), None)
+
+
+def shot_range(
+    origin: Position, target: Position, obstacles: Iterable[Position]
+) -> int | None:
+    dx, dy = target[0] - origin[0], target[1] - origin[1]
+    range_value = max(abs(dx), abs(dy))
+    if range_value not in range(1, 4):
+        return None
+    if dx and dy and abs(dx) != abs(dy):
+        return None
+    step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+    step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+    blocked = set(obstacles)
+    if any(
+        (origin[0] + step_x * step, origin[1] + step_y * step) in blocked
+        for step in range(1, range_value)
+    ):
+        return None
+    return range_value
+
+
+def enemy_threat_cells(context: DecisionContext) -> set[Position]:
+    cells = set(context.enemy_occupancy)
+    for enemy in context.enemies:
+        if isinstance(enemy, UnitView) and enemy.unit_type is UnitType.VANGUARD:
+            cells.update(destination(enemy.position, direction) for direction in DIRECTIONS)
+        elif isinstance(enemy, UnitView) and enemy.unit_type is UnitType.RANGER:
+            for step_x, step_y in (
+                (0, -1),
+                (0, 1),
+                (-1, 0),
+                (1, 0),
+                (-1, -1),
+                (-1, 1),
+                (1, -1),
+                (1, 1),
+            ):
+                for range_value in range(1, 4):
+                    cell = (
+                        enemy.position[0] + step_x * range_value,
+                        enemy.position[1] + step_y * range_value,
+                    )
+                    if shot_range(
+                        enemy.position, cell, context.obstacle_cells
+                    ) is not None:
+                        cells.add(cell)
+    return cells
+
+
+def bounded_astar(
+    start: Position,
+    goal: Position,
+    *,
+    blocked: set[Position],
+    deadline: float,
+    node_limit: int,
+) -> Direction | None:
+    """Return only the current safe first step; unknown distant cells may replan."""
+    if start == goal:
+        return None
+    margin = min(12, max(4, distance(start, goal) // 3 + 2))
+    min_x, max_x = min(start[0], goal[0]) - margin, max(start[0], goal[0]) + margin
+    min_y, max_y = min(start[1], goal[1]) - margin, max(start[1], goal[1]) + margin
+
+    queue: list[tuple[int, int, Position]] = []
+    heappush(queue, (distance(start, goal), 0, start))
+    came_from: dict[Position, Position] = {}
+    cost = {start: 0}
+    visited = 0
+
+    while queue and visited < node_limit and perf_counter() < deadline:
+        _, current_cost, current = heappop(queue)
+        if current == goal:
+            step = current
+            while came_from.get(step) != start:
+                previous = came_from.get(step)
+                if previous is None:
+                    return None
+                step = previous
+            return adjacent_direction(start, step)
+        if current_cost != cost.get(current):
+            continue
+        visited += 1
+        for direction in DIRECTIONS:
+            neighbor = destination(current, direction)
+            if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
+                continue
+            if neighbor in blocked and neighbor != goal:
+                continue
+            new_cost = current_cost + 1
+            if new_cost >= cost.get(neighbor, 1 << 60):
+                continue
+            cost[neighbor] = new_cost
+            came_from[neighbor] = current
+            heappush(
+                queue,
+                (new_cost + distance(neighbor, goal), new_cost, neighbor),
+            )
+    return None
+
+
+def bounded_path_cost(
+    start: Position,
+    goal: Position,
+    *,
+    blocked: set[Position],
+    deadline: float,
+    node_limit: int,
+) -> int | None:
+    """Return an obstacle-aware shortest-path cost within a bounded search."""
+    if start == goal:
+        return 0
+    margin = min(12, max(4, distance(start, goal) // 3 + 2))
+    min_x, max_x = min(start[0], goal[0]) - margin, max(start[0], goal[0]) + margin
+    min_y, max_y = min(start[1], goal[1]) - margin, max(start[1], goal[1]) + margin
+    queue: list[tuple[int, int, Position]] = [(distance(start, goal), 0, start)]
+    costs = {start: 0}
+    visited = 0
+    while queue and visited < node_limit and perf_counter() < deadline:
+        _, current_cost, current = heappop(queue)
+        if current == goal:
+            return current_cost
+        if current_cost != costs.get(current):
+            continue
+        visited += 1
+        for direction in DIRECTIONS:
+            neighbor = destination(current, direction)
+            if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
+                continue
+            if neighbor in blocked and neighbor != goal:
+                continue
+            candidate_cost = current_cost + 1
+            if candidate_cost >= costs.get(neighbor, 1 << 60):
+                continue
+            costs[neighbor] = candidate_cost
+            heappush(
+                queue,
+                (
+                    candidate_cost + distance(neighbor, goal),
+                    candidate_cost,
+                    neighbor,
+                ),
+            )
+    return None
+
+
+def deterministic_fallback(
+    actor_id: UUID,
+    start: Position,
+    goal: Position,
+    blocked: set[Position],
+) -> Direction | None:
+    ranked = sorted(
+        DIRECTIONS,
+        key=lambda direction: (
+            distance(destination(start, direction), goal),
+            (list(DIRECTIONS).index(direction) - actor_id.int) % len(DIRECTIONS),
+            direction.value,
+        ),
+    )
+    return next(
+        (
+            direction
+            for direction in ranked
+            if destination(start, direction) not in blocked
+        ),
+        None,
+    )
+
+
+def plan_step(
+    *,
+    actor_id: UUID,
+    start: Position,
+    goal: Position,
+    context: DecisionContext,
+    persistent_obstacles: set[Position],
+    reservations: ReservationTable,
+    deadline: float,
+    config: AgentConfig,
+    avoid_threats: bool = False,
+) -> Direction | None:
+    if start == goal:
+        return None
+    blocked = set(persistent_obstacles) | set(context.enemy_occupancy)
+    if avoid_threats:
+        blocked.update(enemy_threat_cells(context))
+    direction = bounded_astar(
+        start,
+        goal,
+        blocked=blocked,
+        deadline=deadline,
+        node_limit=config.astar_node_limit,
+    )
+    if direction is None:
+        direction = deterministic_fallback(actor_id, start, goal, blocked)
+    if direction is None:
+        return None
+    cell = destination(start, direction)
+    if cell in blocked or not reservations.reserve(cell):
+        alternatives = sorted(
+            DIRECTIONS,
+            key=lambda candidate: (
+                distance(destination(start, candidate), goal),
+                candidate.value,
+            ),
+        )
+        for candidate in alternatives:
+            cell = destination(start, candidate)
+            if cell not in blocked and reservations.reserve(cell):
+                return candidate
+        return None
+    return direction

@@ -1,0 +1,806 @@
+# Arena Hero v0.14 game rules
+
+This is the complete gameplay contract bundled with the Arena Hero skill. Read
+the whole file before writing a tactic or controlling a live Turn.
+
+This contract was reviewed against Arena Hero server revision
+`b24cfcd22b82c0af0f3993397d2696629762e7e5` on 6 August 2026.
+If a live server reports newer or incompatible rules, stop rule-dependent play
+and update this bundle instead of mixing versions.
+
+This reference covers gameplay mechanics. Account registration, OAuth, private
+statistics, API-key management, and operator procedures are intentionally
+outside its scope.
+
+## Contents
+
+1. [World and terrain](#world-and-terrain)
+2. [Tick lifecycle and resolution order](#tick-lifecycle-and-resolution-order)
+3. [Vision and information boundaries](#vision-and-information-boundaries)
+4. [Core, production, migration, and pricing](#core-production-migration-and-pricing)
+5. [Units and actions](#units-and-actions)
+6. [Movement and cell capacity](#movement-and-cell-capacity)
+7. [Champion Beacon](#champion-beacon)
+8. [Combat](#combat)
+9. [Core destruction and respawn](#core-destruction-and-respawn)
+10. [Commands, priority, replacement, and receipts](#commands-priority-replacement-and-receipts)
+
+## World and terrain
+
+### Persistent shared world
+
+- Every player shares one permanent two-dimensional square-grid world.
+- There are no seasons, match resets, final winner, NPCs, monsters, or
+  server-controlled fleets.
+- A player owns at most one living Core at a time.
+- Each Unit and each generation of a Core has a non-enumerable UUID. The UUID
+  remains stable while the object lives and is never reused after death.
+- A visible Core includes its public `owner_username`, rendered as `@username`;
+  internal account IDs, email addresses, and Unit ownership remain private.
+- A player activated during resolution is not inserted into a half-resolved
+  snapshot. The server assigns a persistent activation Tick and processes the
+  player's first spawn through the deterministic respawn resolver.
+
+### Terrain kinds
+
+Every cell has exactly one terrain kind:
+
+| Terrain | Units may enter | Core may migrate into it | Blocks vision | Blocks Ranger fire |
+|---|---:|---:|---:|---:|
+| `EMPTY` | yes | yes | no | no |
+| `RESOURCE` | yes | no | no | no |
+| `OBSTACLE` | no | no | yes | yes |
+
+Cores and Units occupy cells but are not terrain. Obstacles and the chunk
+backbone are permanent. Resource nodes are dynamic: one successful harvest
+removes the node and changes that cell back to `EMPTY`.
+
+### Deterministic infinite generation
+
+- The map is generated in 32 x 32 chunks.
+- Generation uses a permanent secret world seed and a versioned HMAC-SHA256
+  contract. Clients never receive the seed.
+- The same seed, generator version, balance, and coordinates always produce the
+  same permanent obstacle and backbone layout.
+- Neighboring chunks have deterministic shared boundary passages.
+- Every passable pocket connects to the chunk backbone, although one-cell
+  chokepoints are allowed.
+- `[0, 0]` and its route to the chunk backbone are always `EMPTY`, so the
+  Champion Beacon cannot be walled off by generation.
+- A Core spawn cell has at least two passable cardinal neighbors.
+- A generator-contract mismatch prevents the service from starting. A resource
+  contract migration is the exception described below: it preserves world and
+  player state while replacing the legacy resource layout.
+
+### Dynamic resource-node quota
+
+Resources use a per-chunk quota. For chunk coordinate `c`, define:
+
+```text
+axis(c) = c       when c >= 0
+axis(c) = -c - 1  when c < 0
+
+ring(cx, cy) = axis(cx) + axis(cy)
+quota(cx, cy) = max(2, floor(16 * 8 / (8 + ring(cx, cy))))
+```
+
+The four chunks with `cx` and `cy` each in `{-1, 0}` form ring 0 and each has a
+quota of 16 nodes. Quotas decline with the summed ring and never fall below 2.
+Chunk size remains 32 x 32.
+
+After settlement of every fourth logical Tick, the server counts the resource
+nodes still present in each tracked chunk and adds only the missing number:
+
+```text
+missing = max(0, quota(cx, cy) - current_nodes)
+```
+
+Unharvested nodes stay at their current positions. They do not move, age,
+duplicate, or accumulate above the quota. A successful harvest removes one node
+immediately during the Worker phase; refill happens only at the four-Tick
+boundary after all ordinary Tick resolution.
+
+Worker cargo dropped on death is a separate persistent pile on the Worker's
+final cell. Piles do not count toward the natural-node quota. A normal Worker
+recovers 1 resource per successful action; a Beacon Worker recovers up to 2,
+never more than the pile actually contains. Any remainder stays on the cell.
+
+Refill is deterministic pseudorandom selection using the permanent world seed,
+the resource-contract version, the refill Tick, chunk coordinates, and candidate
+coordinates. Candidate cells must:
+
+- be passable non-obstacle cells in the permanent map;
+- not belong to the chunk backbone;
+- not already contain a resource node;
+- contain no Core in the post-settlement world.
+
+A Unit or the ground Champion Beacon does not disqualify a candidate. Resource
+nodes occupy no entity-capacity slot. Candidate ordering and selection must not
+depend on process randomness, map iteration order, wall-clock time, or unordered
+database results.
+
+Refill emits no global coordinate list and does not reveal fogged cells. A new
+node appears to a player only when its cell is inside that player's current
+vision in a later complete `state`.
+
+At a gameplay-contract migration boundary, keep the existing world, players,
+Cores, Units, Beacon, Tick, plans, events, and statistics. The finite-resource
+release replaces the legacy permanent resource layout in one atomic migration;
+old resource coordinates are not grandfathered. The v0.6 capacity release
+preserves the same state. It raises the minimum Core capacity to 10, so the
+upgrade itself cannot destroy inventory. Later population losses still destroy
+inventory above the resulting capacity during resolution. The v0.8
+   diagonal-fire, v0.9 Core-resource-capture, v0.10 post-combat HP-recovery,
+   v0.11 excess-Unit maintenance damage, v0.12 Core-self-destruct, v0.13
+   target-free Ranger cell-fire, and v0.14 dynamic Unit-price releases also
+preserve the world and only
+upgrade rules metadata at an `OPEN` or `COMMITTED` boundary; a Tick already
+`LOCKED` or `RESOLVING` must finish under its old rules first.
+
+Coordinates are signed 64-bit integers represented as `[x, y]`.
+
+## Tick lifecycle and resolution order
+
+### Command and resolution phases
+
+Every logical Tick has a fixed global command phase and a variable-length
+resolution phase:
+
+1. The server announces `tick N`; commands are still closed.
+2. The server prepares a complete private state for every player.
+3. The server opens one global command window for 15 seconds.
+4. It publishes each player's `state`; that player may submit immediately.
+5. The gate locks the final valid plans when the global window closes.
+6. The engine resolves the Tick.
+7. One database transaction atomically commits the world and new clock.
+8. The server announces the next Tick.
+
+`tick` is informational. `state` is the only signal to act.
+
+The 15-second window opens before states are published one player at a time. A
+player receives only the time left in the global window; receiving `state` does
+not start a private 15-second timer. The protocol intentionally does not expose
+the opening or deadline timestamps.
+
+Resolution time does not consume the next command window. The server never
+skips logical Ticks to catch up with wall-clock time, never resolves two Ticks
+concurrently, and pauses logical timers while offline.
+
+### Authoritative resolution order
+
+The following order is part of the rule contract:
+
+1. Lock the final valid Agent and Manual plans.
+2. Resolve every `SELF_DESTRUCT`, remove those Units, and drop any Worker cargo
+   on their final cells.
+3. Destroy Core resources above the new capacity after those removals.
+4. Resolve Unit movement and Core migrations reaching their fourth Tick.
+5. Validate new Core `START_MOVE` actions.
+6. Resolve Champion Beacon pickup and drop.
+7. Resolve Worker harvest and deposit.
+8. Freeze one immutable combat snapshot and validate and accumulate all legal
+   attacks.
+9. Apply damage simultaneously and remove dead Units. For each combat-destroyed
+    Core, transfer what fits to its highest-damage attacker's surviving Core;
+    destroy overflow, then remove the destroyed Core and its fleet. Finally,
+    destroy any remaining inventory above capacity reduced by combat.
+10. Resolve `SELF_DESTRUCT` for every Core that survived combat. Destroy its
+    inventory and fleet, and drop Worker cargo and the Beacon at their actual
+    positions.
+11. Resolve surviving Unit `HEAL` actions in ascending raw UUID byte order.
+12. Snapshot each player's living population, then resolve each remaining
+    stationary Core's `HEAL`, `REPAIR_SHIELD`, or dynamically priced `SPAWN`
+    action. These actions may spend resources captured in step 9.
+13. Immediately attempt to respawn newly destroyed Cores and process any
+    previously delayed spawn retries.
+14. After every fourth resolved Tick, refill each tracked 32 x 32 chunk up to
+    its current quota using the post-settlement world.
+15. Atomically commit the world, dynamic resources, results, statistics, journal, and new
+    clock.
+16. Announce the next Tick and publish fresh private states.
+
+### Atomicity, determinism, and recovery
+
+- No client can observe a partially resolved Tick.
+- Map iteration order, wall-clock time, process randomness, and unordered
+  database results cannot decide an outcome.
+- The same world state, resource layout, locked plans, and refill Tick produce
+  the same result byte for byte.
+- If state preparation fails, the server does not open the command window.
+- If state publication fails, the gate aborts. Recovery reannounces the same
+  Tick and opens a new full 15-second window.
+- If the server crashes while the window is open, persisted plans remain.
+  Recovery sends the same `tick`, fresh complete `state`, latest receipts, and
+  opens a new full window. New submissions may replace the recovered plans.
+- If the server crashes after plans are locked, it does not reopen the window.
+  It deterministically replays the persisted locked plans.
+- Downtime pauses the world.
+
+## Vision and information boundaries
+
+### Vision radii
+
+Vision uses Manhattan distance:
+
+| Object | Radius |
+|---|---:|
+| Core | 5 |
+| Worker | 3 |
+| Vanguard | 4 |
+| Ranger | 5 |
+
+The player's current view is the union of every living friendly object's view.
+
+Obstacles block vision using an integer supercover line. The obstacle cell
+itself is visible, but cells behind it are not. If a line passes exactly through
+a corner shared by two cells, both cells count; an obstacle on either side
+blocks the line.
+
+Units, Cores, and resource cells do not block vision. They do not block a
+Ranger's shot, either. Only obstacle terrain blocks Ranger fire.
+
+### Contents of `state`
+
+Each complete state contains:
+
+- every friendly Core and Unit, even when outside friendly vision;
+- enemy Cores and Units only while visible;
+- visible terrain, grouped into `OBSTACLE` and `RESOURCE` objects;
+- the Champion Beacon coordinate for everybody, always;
+- Beacon `GROUND` or `CARRIED` status and an ownerless `carrier_id` only when
+  the Beacon cell is visible.
+
+Visible enemy objects have `controlled: false`. Enemy Cores include public
+`owner_username`; enemy Units have no owner identity. Worker cargo is private
+and appears only on friendly Workers.
+
+### Exploration memory
+
+The server sends only the current view. It does not store or replay a player's
+full explored map. A client may remember permanent obstacles and backbone
+knowledge. Remembered resource nodes are stale hints only: a node may have been
+harvested outside vision, and a later refill may create a different visible node.
+A remembered Unit, Core, resource node, or Beacon carrier must not be treated as
+current truth.
+
+## Core, production, migration, and pricing
+
+### Core attributes and actions
+
+| Attribute | Value |
+|---|---:|
+| Maximum HP | 5 |
+| Maximum shield | 5 |
+| Maximum shield while holding the Beacon | 10 |
+| Vision | 5 |
+| Starting resources after spawn or respawn | 5 |
+
+Combat damage consumes Core shield before Core HP.
+
+### Resource storage
+
+Population counts living Units, not the Core. Core storage has a minimum
+capacity of 10. Above two Units, each living Unit provides 5 points of storage:
+
+```text
+resource_capacity = max(10, population x 5)
+```
+
+The limit is strict. Zero, one, and two living Units all provide a capacity of
+10; three living Units provide 15. Whenever population falls, stored resources
+above the new capacity are destroyed by the end of the Tick.
+The owner receives `CORE_RESOURCE_OVERFLOW_DESTROYED` with
+`{amount: int, capacity: int}`. A new or respawned player starts with one Worker
+and 5 resources, leaving 5 free capacity.
+
+A Worker deposits only what fits. Any remainder stays as Worker cargo. A full
+Core resolves the action as `DEPOSIT_FAILED` with `CORE_RESOURCE_FULL`; the
+Worker keeps all cargo. A successful full or partial deposit reports
+`{amount: int, capacity: int, remaining: int}`.
+
+A plan may specify at most one Core action:
+
+- `SPAWN` with `unit_type`;
+- `HEAL`;
+- `REPAIR_SHIELD`;
+- `START_MOVE` with a cardinal `direction`;
+- `CANCEL_MOVE`;
+- `PICKUP_BEACON`;
+- `DROP_BEACON`;
+- `SELF_DESTRUCT`;
+- `WAIT`.
+
+### Core self-destruct
+
+Any living Core may submit `{"type":"SELF_DESTRUCT"}` with no other fields.
+It has no resource, Unit, movement-state, or cooldown restriction. A migrating
+Core advances or completes its movement first and remains attackable during the
+Tick.
+
+Combat has priority. If an enemy attack destroys the Core, normal destruction
+participation and resource capture apply and the self-destruct does not run. If
+the Core survives combat, it self-destructs before Unit healing, Core healing,
+shield repair, or spawning:
+
+- the Core inventory is destroyed without refund or transfer;
+- every owned Unit is removed and increments `units_lost`;
+- Worker cargo and a carried Beacon drop at each carrier's actual post-movement
+  position;
+- no damage, destruction participation, or loot is awarded;
+- the normal same-Tick respawn attempt runs and increments `respawn_count`.
+
+The private `CORE_DESTROYED` event uses reason `SELF_DESTRUCT`, omits
+`destroyed_by`, and is followed by `CORE_RESPAWNED` when placement succeeds.
+The replacement Core may self-destruct again on the next Tick.
+
+### Production and dynamic prices
+
+Population counts living Units only. Let `N` be the population when Core actions
+resolve:
+
+```text
+k = max(0, floor((N - 20) / 5) + 1)
+price = round_half_up(base_price x (13 / 10)^k)
+```
+
+The server evaluates the rational number exactly and rounds only once at the
+end. A half-unit rounds upward.
+
+| Unit | Base price | N 0-19 | N 20-24 | N 25-29 | N 30-34 |
+|---|---:|---:|---:|---:|---:|
+| Worker | 5 | 5 | 7 | 8 | 11 |
+| Vanguard | 10 | 10 | 13 | 17 | 22 |
+| Ranger | 12 | 12 | 16 | 20 | 26 |
+
+The 20th Unit is base-priced; the 21st uses the first increased price. The
+initial Worker and every respawn Worker are free.
+
+- A Core may spawn at most one Unit per Tick.
+- The new Unit appears on the Core cell.
+- A cell holds at most two occupying entities, and the Core already uses one
+  slot. A Core colocated with one Unit cannot spawn another.
+- A full-cell spawn fails with `CELL_UNIT_LIMIT` and spends no resources.
+- A newly spawned Unit cannot act in its creation Tick.
+- It is created after combat and cannot be attacked during its birth Tick.
+- Worker deposits resolve before combat, so deposited resources may fund Unit
+  healing and the Core action in the same Tick. Captured enemy Core inventory
+  may do the same.
+
+Pricing uses the population after same-Tick Unit self-destruction and combat
+deaths. A current state is only a preview: those deaths may make the server
+charge less. `CORE_SPAWN_SUCCEEDED.values.cost` and
+`CORE_SPAWN_FAILED/INSUFFICIENT_RESOURCES.values.required` are authoritative.
+
+### HP recovery
+
+`HEAL` consumes a Unit's or Core's complete action and resolves after
+simultaneous combat damage. Every HP actually restored costs 1 resource from
+the owning Core. One action automatically restores as many missing HP as the
+remaining balance can pay for, up to the object's maximum HP.
+
+A Unit must still be alive and colocated with its own stationary Core.
+Unit heals resolve in ascending raw UUID byte order before the Core action. The Core
+action then uses the remaining resources. Fatal damage cannot be healed because
+the object is removed before this phase.
+
+A Unit killed by combat is already gone and spends nothing.
+
+It is valid to queue a heal at full HP or with no current resources. Nonfatal
+combat damage or captured resources may make it useful before resolution. If
+the condition is still unmet, the action fails privately and spends nothing.
+Successful events are `UNIT_HEAL_SUCCEEDED` and `CORE_HEAL_SUCCEEDED`, with
+`{amount: int, hp: int, cost: int}`. Failed events are `UNIT_HEAL_FAILED` with
+`HP_FULL`, `NOT_AT_OWN_CORE`, `CORE_MOVING`, or
+`INSUFFICIENT_RESOURCES`, and `CORE_HEAL_FAILED` with `HP_FULL` or
+`INSUFFICIENT_RESOURCES`. Lifetime totals use `unit_hp_recovered` and
+`core_hp_recovered`.
+
+### Shield repair
+
+`REPAIR_SHIELD` spends exactly 1 resource to restore exactly 1 shield and cannot
+exceed the current shield cap. A failure reports `SHIELD_FULL` or
+`INSUFFICIENT_RESOURCES`.
+
+Holding the Beacon raises the cap to 10 but grants no free shield. Losing the
+Beacon immediately clamps shield above 5 back to 5.
+
+### Four-Tick Core migration
+
+Moving a Core one cardinal cell takes four logical Ticks:
+
+```text
+START_MOVE resolves -> progress 1/4
+next Tick           -> progress 2/4
+next Tick           -> progress 3/4
+next Tick           -> real movement attempt
+```
+
+- Migration progresses without resubmitting an action. `WAIT` does not pause it.
+- Changing direction requires `CANCEL_MOVE`, which resets progress to zero.
+- While migrating, the Core cannot spawn, heal, repair, pick up or drop the Beacon,
+  or receive Worker deposits, but it may `SELF_DESTRUCT`.
+- It still takes damage and retains its resource inventory.
+- Colocated Units do not move with it.
+- A carried Beacon remains at the Core's current logical position until the real
+  move succeeds, then follows the Core.
+- Completing or cancelling migration restores normal Core functions on the next
+  Tick.
+- A new `START_MOVE` is checked after this Tick's real movement resolves. A
+  previous occupant that successfully left no longer blocks the start; an
+  occupant that stayed or an enemy that just entered does. A friendly Unit in
+  the destination is allowed if the terrain and final ownership are legal.
+- Starting migration reserves nothing. Other objects may occupy or cross the
+  destination before the fourth-Tick attempt.
+- The real move joins the same global dependency graph as Unit movement.
+- The move may fail because of impassable terrain, signed-coordinate overflow,
+  an occupant that does not leave, a contested destination, an enemy entering
+  the destination, or final cell capacity.
+- A failed fourth-Tick move leaves the Core in place and clears migration
+  progress.
+
+There is no per-Tick maintenance charge. Population changes storage capacity and
+the price of the next Unit, but never automatically spends resources or damages
+Units.
+
+## Units and actions
+
+Every Unit has a stable UUID while alive, occupies one cell slot, moves at most
+one cardinal cell per Tick, and performs at most one action.
+
+| Unit | HP | Vision | Base price | Attack |
+|---|---:|---:|---:|---|
+| Worker | 2 | 3 | 5 | none |
+| Vanguard | 4 | 4 | 10 | 1 damage to adjacent target cell |
+| Ranger | 2 | 5 | 12 | 1 damage at eight-direction range 1-3 |
+
+Every Unit supports `MOVE`, `PICKUP_BEACON`, `DROP_BEACON`, `HEAL`,
+`SELF_DESTRUCT`, and `WAIT`.
+
+### Self-destruct
+
+`{"type":"SELF_DESTRUCT"}` removes the Unit before movement and spawn pricing and consumes its
+action for the Tick. It gives no production-cost refund, deals no area damage,
+and awards no destruction participation. Worker cargo drops on the final cell. A carried
+Beacon drops at the Unit's cell and cannot be picked up until the next Tick.
+The owner receives `UNIT_SELF_DESTRUCTED`, and `units_lost` increases by one.
+
+### Unit healing
+
+`{"type":"HEAL"}` consumes the Unit's full action. After combat, the Unit
+must still be alive and share a cell with its own stationary Core. It restores
+1 HP per Core resource and may restore several HP at once. Unit heals resolve
+in ascending raw UUID byte order before the Core action. Fatal damage cannot be
+healed. A dynamic failure spends nothing; see the HP-recovery section for
+events and reasons.
+
+### Worker
+
+Worker-specific actions are `HARVEST` and `DEPOSIT`.
+
+- `HARVEST` requires an empty Worker on a `RESOURCE` cell.
+- It collects 1 resource, or 2 if the owner holds the Champion Beacon.
+- Dropped Worker cargo is recovered before a natural node. Recovery never takes
+  more than the pile contains, and an unfinished pile remains on the cell.
+- A recovery emits `HARVEST_SUCCEEDED` with source `DROPPED_CARGO`; it does not
+  increment harvested-resource or Beacon-bonus statistics.
+- One successful natural harvest consumes the whole node, whether it grants 1
+  or 2.
+- When multiple eligible empty Workers harvest the same node in one Tick, only
+  the lowest Worker UUID in ascending raw-byte order succeeds. Every other
+  eligible contender receives `HARVEST_FAILED` with reason
+  `RESOURCE_DEPLETED`.
+- A Worker with cargo receives `HARVEST_FAILED` with `CARGO_FULL` and is not an
+  eligible contender. If no resource node exists at resolution, the failure is
+  `NOT_RESOURCE_CELL`.
+- Bonus cargo already carried remains 2 after the owner loses the Beacon.
+- `DEPOSIT` requires the Worker to share a cell with its own normal, receptive
+  Core.
+- A migrating Core or a Core recovering from migration cannot receive a
+  deposit.
+- A failed deposit leaves cargo on the Worker.
+- Core storage is capped at `max(10, population x 5)`. `DEPOSIT` moves only
+  what fits; a full Core returns `CORE_RESOURCE_FULL`.
+- Any Worker death adds its complete cargo amount to a persistent resource pile
+  on the final cell. The owner receives `WORKER_CARGO_DROPPED`.
+- Workers cannot attack.
+
+### Vanguard
+
+The Vanguard-specific action is `SWEEP` with one cardinal `direction`.
+
+- It targets the adjacent cell.
+- Every enemy Unit in that cell takes 1 damage.
+- An enemy Core in that cell also takes 1 damage.
+- Friendly objects take no damage.
+- Damage from several sweeps adds in the shared combat snapshot.
+
+### Ranger
+
+The Ranger-specific action remains `SHOOT`. It always has `expected_cell` and
+may optionally include `target_id` for backward-compatible precision fire.
+
+A cell shot succeeds only when:
+
+1. Ranger and `expected_cell` share a horizontal, vertical, or exact 45-degree
+   diagonal line;
+2. distance along that line is 1, 2, or 3 — relative offset `(3, 3)` is range 3,
+   while `(2, 1)` is not aligned;
+3. no intermediate cell contains an obstacle.
+
+Movement resolves first. The server selects the lowest-HP hostile then in the
+cell, breaking HP ties by raw UUID order. An empty cell produces the ordinary
+`SHOT_MISSED`. Units and Cores never block Ranger fire, regardless of owner;
+there is no front-to-back ordering inside one cell. For diagonal fire, only the
+intermediate diagonal cells are checked; obstacles beside the line do not block it.
+
+When `target_id` is present, precision mode hits only that object if it remains
+hostile and at `expected_cell`; it never retargets another occupant. The command
+endpoint intentionally accepts an unseen or nonexistent target UUID so it cannot
+be used as a fog-of-war oracle. At resolution, an empty cell, a missing, friendly,
+or moved precision target, invalid range, and a blocked line all produce the same
+private `SHOT_MISSED` result. A cell-shot miss omits `target_id`; a hit reports
+the object actually selected by the server.
+
+An action may contain only the fields allowed for its type. An unrelated field,
+including `null`, rejects the entire plan with `UNEXPECTED_ACTION_FIELDS`.
+
+## Movement and cell capacity
+
+### Base constraints
+
+- Unit movement is one cardinal cell and consumes the Unit's action.
+- Obstacles block every object.
+- Resource cells accept Units but reject migrating Cores.
+- A cell holds at most two occupying entities. Core, Worker, Vanguard, and
+  Ranger each count as one.
+- Different players' objects may never finish a Tick in the same cell.
+- Unit moves and finishing Core migrations resolve together in one global
+  dependency graph, not in request order.
+- A historical over-capacity cell is not repaired by deleting objects. It
+  cannot receive moves or spawns and may only shed occupants until capacity is
+  legal again.
+
+### Contested destinations
+
+- If different players try to enter the same destination, all competing moves
+  fail. Submission time, fleet size, source, and database order do not break the
+  tie.
+- If one player's own objects compete for fewer free slots than requested, the
+  lowest object UUIDs in ascending raw-byte order receive the slots. The rest
+  fail with `CELL_UNIT_LIMIT`.
+
+### Occupied destinations and dependency chains
+
+An object may enter an occupied cell only if the current occupants all leave
+successfully and final ownership and capacity remain legal.
+
+```text
+A -> B's old cell
+B -> C's old cell
+C -> empty cell
+```
+
+If `C` succeeds, the chain can succeed. If any dependency cannot leave, failure
+propagates backward. If a cell contains two objects belonging to one player,
+both must leave before an enemy can enter.
+
+Two objects belonging to different players cannot swap positions across one
+edge. Longer cycles of three or more positions may succeed when every final cell
+is legal; the shortest cycle normally possible on the cardinal square grid uses
+four cells.
+
+A Core completing migration participates in the same graph. A stationary Core
+is an occupied dependency that an enemy cannot enter.
+
+A route selected in the official web frontend is local Manual automation, not a
+server action. The frontend recalculates after each new state and submits only
+the next `MOVE` or `START_MOVE`. Closing the frontend stops that route.
+
+## Champion Beacon
+
+- Exactly one indestructible Champion Beacon exists.
+- It starts at `[0, 0]`; restarts do not reset its position.
+- Its coordinate is always public. `GROUND` or `CARRIED` status and ownerless
+  `carrier_id` appear only when its cell is visible.
+- The Beacon occupies no capacity slot and blocks neither movement, vision, nor
+  Ranger fire.
+- A Unit or normal non-migrating Core sharing the ground Beacon's cell may spend
+  its full action on `PICKUP_BEACON`.
+- Only the current carrier may use `DROP_BEACON`.
+- Moving across the Beacon does not pick it up automatically.
+- A living carrier cannot have the Beacon taken directly.
+- If several objects try to pick up a ground Beacon in one Tick, the lowest
+  carrier UUID in ascending raw-byte order wins.
+- Beacon actions resolve before Worker actions. A successful pickup grants the
+  harvest bonus in the same Tick; a successful drop removes it in the same Tick.
+- Holding the Beacon raises that player's Core shield cap from 5 to 10.
+- Pickup grants no shield and performs no repair.
+- Losing the Beacon clamps current Core shield above 5 down to 5.
+- An eligible empty Worker collects 2 instead of 1 while its owner holds the
+  Beacon. Both units come from the same consumed node; the bonus does not create
+  or preserve another node.
+- Cargo of 2 stays on the Worker after the bonus is lost and may be deposited
+  together.
+- The Beacon follows a Unit whenever its move succeeds.
+- A migrating Core's Beacon remains at the Core's logical position until the
+  fourth-Tick real move succeeds.
+- If a Beacon carried at the start of the Tick is dropped, its carrier dies, or
+  the owner's Core is destroyed, it lands at the carrier's final actual
+  position. No other object may pick it up until the next Tick.
+
+## Combat
+
+Combat occurs after movement, Beacon actions, and Worker actions, but before HP
+recovery, shield repair, and production.
+
+1. The engine freezes one immutable combat snapshot.
+2. It validates every locked attack against that snapshot.
+3. It accumulates damage from every legal attack.
+4. It applies all damage simultaneously.
+5. It removes dead Units and destroyed Cores only afterward.
+
+After combat removal, a surviving Core first resolves `SELF_DESTRUCT`. Surviving
+Units then heal, and each remaining Core may heal, repair shield, or spawn. A repaired shield cannot absorb damage from the Tick
+that just ended, a newly spawned Unit cannot be attacked during its birth Tick,
+and fatal damage cannot be healed.
+
+An object killed during combat still performs a legal attack locked against the
+snapshot. Mutual destruction is valid. Request order, completion order, database
+row order, and Manual versus Agent source grant no initiative.
+
+The current rules have no random damage, dodge, critical hits, armor, automatic retaliation,
+stamina, levels, or equipment.
+
+### Vanguard damage
+
+`SWEEP` damages every enemy Unit and any enemy Core in the adjacent target cell
+for 1. Multiple sweeps add.
+
+### Ranger damage
+
+`SHOOT` damages one enemy object for 1 when the target-cell and line rules remain
+valid in the combat snapshot. Without `target_id`, the lowest-HP hostile in the
+cell is selected after movement, with raw UUID order breaking ties. With
+`target_id`, only that precise object can be hit. Only obstacles in intermediate
+shot cells block the shot. Units, Cores, and obstacles beside a diagonal never do.
+
+### Core damage and fleet removal
+
+All Core damage consumes shield before HP. If combined damage reduces Core HP to
+zero, the fleet is removed after every already-locked legal snapshot attack has
+contributed. When several players damage the same object in the Tick that
+destroys it, every attacker receives destruction participation. Resource
+ownership is decided separately by total damage to that Core, never input order.
+
+## Core destruction and respawn
+
+When Core HP reaches zero in combat, or a surviving Core resolves
+`SELF_DESTRUCT`:
+
+- the Core is removed;
+- when combat caused the destruction, its inventory is offered to the player
+  who dealt the most damage to that Core during this Tick; self-destruction
+  destroys it;
+- every Unit belonging to that player is removed;
+- cargo carried by those Workers remains on each final cell;
+- locked actions for those objects no longer matter;
+- a carried Beacon drops under the Beacon rule;
+- the player temporarily enters `RESPAWNING` while the spawn resolver runs.
+
+Every attacker still receives normal Core-destruction participation. For the
+inventory, the engine adds each player's damage to that Core during the
+destruction Tick. Highest damage wins; tied damage uses the lower raw player UUID.
+The winner must have a Core that survives all combat damage. Only the
+space inside its post-combat `max(10, population x 5)` capacity is stored; all
+overflow is destroyed.
+
+If the winner's Core also dies in that combat Tick, the victim's entire
+inventory is destroyed. It does not enter the winner's replacement Core or pass
+to the runner-up. There is no automatic population-maintenance damage. When several Cores
+die in one Tick, victims resolve by raw player UUID order, so earlier captures
+consume capacity before later ones.
+
+A surviving winner receives `CORE_RESOURCES_CAPTURED` with
+`{amount: int, available: int, destroyed: int, capacity: int}`. `amount` is the
+amount actually stored, `available` is the victim's pre-destruction inventory,
+and `destroyed` is the part that did not fit. The event is still emitted with
+`amount: 0` when the winner's Core is already full.
+
+Combat destruction takes priority over a queued Core self-destruct. A
+self-destroyed Core grants no attack damage, destruction participation, or
+inventory capture. Its private `CORE_DESTROYED` event has reason
+`SELF_DESTRUCT` and no `destroyed_by`; combat destruction uses reason `ATTACK`.
+
+There is no respawn cooldown. The deterministic resolver attempts to place a
+replacement Core and Worker later in the same resolution Tick. Under normal
+conditions, the next published state is already `ACTIVE` and contains both
+`CORE_DESTROYED` and `CORE_RESPAWNED` events.
+
+A successful respawn creates:
+
+| Asset | Value |
+|---|---:|
+| Core | 5 HP and 5 shield |
+| Resources | 5 |
+| Workers | 1 |
+| Spawn protection | none |
+
+The Core and Worker receive fresh UUIDs.
+
+The deterministic resolver seeks a passable empty spawn cell 20-30 Manhattan
+cells from the nearest living Core, prefers lower nearby entity density, and
+requires at least two passable neighbors. Only when it finds no legal cell does
+the player remain `RESPAWNING`; `respawn_at_tick` then identifies the next-Tick
+retry using a new deterministic candidate set.
+
+## Commands, priority, replacement, and receipts
+
+### Agent and Manual source slots
+
+Each player has one `AGENT` plan slot and one `MANUAL` plan slot per Tick.
+Actions merge per controlled object:
+
+```text
+Manual explicit action > Agent explicit action > WAIT
+```
+
+- An object omitted from the Agent plan waits unless Manual supplies an action.
+- An object omitted from the Manual plan falls back to Agent.
+- Manual must submit explicit `WAIT` to cancel an Agent action for that object.
+- All Agent clients for the player share one Agent slot.
+- All browser tabs for the player share one Manual slot.
+
+### Complete replacement
+
+Each successful POST completely replaces the prior plan in that source slot. It
+does not patch or merge with the older plan. To preserve actions for other
+objects, the new plan must send them again.
+
+### Static and dynamic validation
+
+Static validation occurs before persistence and includes:
+
+- one JSON object with no unknown fields;
+- a positive Tick;
+- lowercase hyphenated Unit UUID keys;
+- every acting Unit belongs to the player;
+- each action type is allowed for that object;
+- required fields are present;
+- unrelated fields are absent.
+
+One static problem atomically rejects the whole request and leaves the previous
+valid plan unchanged.
+
+Dynamic facts resolve later, including empty firing cells, moved precision
+targets, full destinations, contested movement, insufficient resources, Beacon UUID tie-breaking,
+same-node harvest contention or depletion, and blocked Ranger lines. These do
+not reject the POST; they fail during Tick resolution.
+
+### Ordering and limits
+
+Valid requests for the same `(player, tick, source)` are serialized in the order
+they enter the gate. Each stored plan replaces the prior one. The protocol has
+no client-supplied plan version.
+
+Each source accepts at most 64 new submissions per Tick after the idempotency
+precheck. Both valid and statically invalid requests count. Further requests
+fail with `429 COMMAND_RATE_LIMITED`, leaving the last valid plan unchanged.
+
+An idempotency key is 8-128 visible ASCII bytes:
+
+- same key and same body returns the original HTTP response;
+- same key and different body returns `IDEMPOTENCY_CONFLICT`;
+- replaying the same request does not broadcast another receipt.
+
+### Acknowledgements and receipts
+
+After storing a plan:
+
+1. HTTP returns minimal `202 Accepted` receipt metadata.
+2. Every live connection for that player receives the normalized stored plan in
+   `received.plan`.
+3. A reconnect during the same open Tick restores the latest receipt from each
+   source.
+
+Receipts are cleared when the next Tick begins. They are current-Tick state, not
+a plan-history service. Other players never receive the plan.

@@ -1,0 +1,16 @@
+[project]
+name = "arenahero-tactic"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "arena-hero>=0.2.9,<0.3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pyyaml>=6,<7",
+  "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

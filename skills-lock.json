@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "arena-hero": {
+      "source": "arena-hero/arena-hero-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "c9f7306e03b9aca0a13b7dc065286dd048342a0ea4107737f80b853a34ba5ad6"
+    }
+  }
+}
