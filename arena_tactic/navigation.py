@@ -229,6 +229,11 @@ def plan_step(
         return None
     cell = destination(start, direction)
     if cell in blocked or not reservations.reserve(cell):
+        # An adjacent goal is already occupied at capacity. Stepping sideways
+        # cannot make progress and causes a two-cell oscillation when the goal
+        # alternates between visible and remembered resource assignment.
+        if distance(start, goal) == 1:
+            return None
         alternatives = sorted(
             DIRECTIONS,
             key=lambda candidate: (

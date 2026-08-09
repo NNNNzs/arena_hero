@@ -97,6 +97,24 @@ def test_remembered_invisible_resource_is_only_a_reconnaissance_target():
     assert intent.reason == "reobserve_remembered_resource"
 
 
+def test_worker_waits_instead_of_stepping_away_from_blocked_adjacent_resource():
+    worker = unit(1, UnitType.WORKER, (0, 0))
+    guards = (
+        unit(2, UnitType.VANGUARD, (0, 1)),
+        unit(3, UnitType.VANGUARD, (0, 1)),
+    )
+    result = choose_actions(
+        turn(
+            owned_core=core(position=(-2, 0)),
+            units=(worker, *guards),
+            resource_cells=((0, 1),),
+        )
+    )
+    intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    assert intent.action is ActionKind.WAIT
+    assert intent.reason == "resource_route_blocked"
+
+
 def test_cargo_worker_waits_at_moving_core_destination():
     moving_core = core(position=(0, 0), state=CoreState.MOVING)
     worker = unit(1, UnitType.WORKER, (1, 0), cargo=1)
