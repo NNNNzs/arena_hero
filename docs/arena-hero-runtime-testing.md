@@ -68,11 +68,23 @@ git diff --check
 
 ## 7. 实时运行边界
 
-只有用户明确要求时才运行：
+前台调试只有用户明确要求时才运行：
 
 ```bash
 source .venv/bin/activate
 python3 tactic.py
 ```
 
-不要将其作为后台服务启动。实时验证应单独报告安装的 SDK 版本、收到的首个 Turn、提交结果和非敏感事件；不得输出密钥、Cookie 或 Authorization Header。
+24 小时运行使用项目根目录的 Docker Compose 服务：
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8787/livez
+curl http://127.0.0.1:8787/healthz
+docker compose logs -f --tail=100 arena-hero
+```
+
+容器负责进程重启，`tactic.py` 负责 SDK 流关闭后的重连，`/livez` 表示
+进程仍在运行，`/healthz` 表示最近已收到 Arena Hero 的 Turn。实时验证应
+单独报告安装的 SDK 版本、收到的首个 Turn、提交结果和非敏感事件；不得输出
+密钥、Cookie 或 Authorization Header。

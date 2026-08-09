@@ -1,0 +1,47 @@
+services:
+  arena-hero:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arena-hero
+    restart: unless-stopped
+    init: true
+    # Development container: run as root so it can read the host project tree
+    # even when the source directory has private 0700/0600 permissions.
+    user: "0:0"
+    entrypoint: ["python", "/app/tactic.py"]
+    env_file:
+      - .env
+    environment:
+      ARENA_HERO_HEALTH_HOST: 0.0.0.0
+      ARENA_HERO_HEALTH_PORT: 8787
+      ARENA_HERO_RECONNECT_DELAY: 10
+      PYTHONDONTWRITEBYTECODE: 1
+    ports:
+      # Dashboard and compatible JSON health/status endpoints share one server.
+      - "8787:8787"
+    volumes:
+      # Development mode: mount only source/runtime paths. .env is deliberately
+      # not mounted into the container; Compose injects its variables via env_file.
+      - ./tactic.py:/app/tactic.py:ro
+      - ./arena_tactic:/app/arena_tactic:ro
+      - ./runtime:/app/runtime:rw
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,urllib.request;
+          data=json.load(urllib.request.urlopen('http://127.0.0.1:8787/livez', timeout=3));
+          raise SystemExit(0 if data.get('running') else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -65,7 +65,8 @@ sequenceDiagram
 - 实现 HTTP、WebSocket、重试、receipt 或状态模型。
 - 修改官方 SDK 或绕过 SDK 的状态校验。
 - 伪造不可见对象、隐藏资源数量、敌方 Unit 所有者或未来坐标。
-- 自动启动服务、后台守护进程或浏览器。
+- 启动 Arena Hero 官方游戏服务器、浏览器或其他外部服务。
+- 绕过容器/进程管理器自行实现守护进程；长期运行由 Docker Compose 负责。
 - 将代码上传为服务器端脚本。
 - 在没有用户明确要求时启动实时对局。
 
@@ -73,7 +74,7 @@ sequenceDiagram
 
 | 路径 | 当前职责 |
 | --- | --- |
-| `tactic.py` | API Key 加载、SDK Turn 循环、单次提交、成功后持久化和安全退出 |
+- `tactic.py` | API Key 加载、SDK Turn 循环、单次提交、成功后持久化、自动重连和健康端口 |
 | `arena_tactic/context.py` | 从当前 Turn 构建不可变 `DecisionContext`，还原受障碍遮挡的可见格 |
 | `arena_tactic/memory.py` | `AgentMemory`、事件去重、资源失效、探索记忆和原子 JSON 写入 |
 | `arena_tactic/navigation.py` | 有界 A*、路径成本、威胁格和确定性超时回退 |

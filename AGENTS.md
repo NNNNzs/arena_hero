@@ -16,7 +16,10 @@ controlled object, and submits one complete Agent plan for the current Tick.
 | `docs/arena-hero-tactic-design.md` | Overall architecture, rules mapping, recovery, and design decisions |
 | `docs/arena-hero-strategy.md` | Strategic modes, thresholds, scoring, economy, combat, and migration tables |
 | `docs/arena-hero-runtime-testing.md` | Runtime, persistence, redacted replay, metrics, test, and live-run boundaries |
+| `docs/arena-hero-service.md` | Docker Compose 24/7 operation and status endpoints |
 | `pyproject.toml` | Python 3.11+ metadata and official SDK dependency |
+| `Dockerfile` | Python runtime/dependency image; source/runtime paths are mounted in development |
+| `docker-compose.yml` | Development source mount, restart policy, health port, and log rotation |
 | `.agents/skills/arena-hero/` | Complete official Arena Hero skill and bundled references |
 | `.env` | Local API credential; never commit this file |
 | `.venv/` | Local Python virtual environment; never commit this directory |
@@ -31,11 +34,32 @@ python3 -m pytest -q
 PYTHONPATH=.agents/skills/arena-hero python3 -m pytest -q .agents/skills/arena-hero/tests
 ```
 
-Run the live tactic only when explicitly requested:
+Run the live tactic in the foreground only for debugging. For 24/7 development
+operation, use Docker Compose; source code is bind-mounted into the container:
 
 ```bash
 source .venv/bin/activate
 python3 tactic.py
+```
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8787/livez
+curl http://127.0.0.1:8787/status
+docker compose logs -f --tail=100 arena-hero
+```
+
+After changing Python or Dashboard source, reload without rebuilding:
+
+```bash
+docker compose restart arena-hero
+```
+
+Rebuild only after changing `pyproject.toml`, the Dockerfile, or runtime
+dependencies:
+
+```bash
+docker compose up -d --build
 ```
 
 ## Tactical invariants
@@ -55,6 +79,7 @@ python3 tactic.py
 
 ## Change boundaries
 
-Keep tactical decisions in testable pure helpers where practical. Do not add a
-framework or start a background service. Validate syntax and dependency health
-before live play, and report live verification separately from local tests.
+Keep tactical decisions in testable pure helpers where practical. The service
+wrapper must remain a thin worker, health endpoint, and reconnect boundary; do
+not add a web framework. Validate syntax, dependency health, image build, and
+the live health endpoint separately from real-match verification.
