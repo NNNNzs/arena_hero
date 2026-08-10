@@ -10,6 +10,7 @@ from uuid import UUID
 from arena_hero import Direction, UnitType
 
 if TYPE_CHECKING:
+    from .domain import DecisionTrace
     from .memory import AgentMemory
 
 
@@ -61,6 +62,11 @@ class AgentConfig:
     event_history_limit: int = 512
     exploration_sector_ticks: int = 6
     movement_failure_cooldown_ticks: int = 4
+    scheduler_shadow: bool = False
+    worker_bt_canary: bool = False
+    beacon_campaign_v1: bool = False
+    core_migration_v1: bool = False
+    core_attack_campaign_v1: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +102,7 @@ class DecisionResult:
     wait_reasons: tuple[str, ...]
     next_memory: AgentMemory
     timed_out: bool = False
+    trace: DecisionTrace | None = None
 
 
 @dataclass(slots=True)

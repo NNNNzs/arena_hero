@@ -88,3 +88,35 @@ docker compose logs -f --tail=100 arena-hero
 进程仍在运行，`/healthz` 表示最近已收到 Arena Hero 的 Turn。实时验证应
 单独报告安装的 SDK 版本、收到的首个 Turn、提交结果和非敏感事件；不得输出
 密钥、Cookie 或 Authorization Header。
+
+# 行为树迁移的已实现兼容层（Phase 1 与 Phase 2 shadow）
+
+Legacy strategy 目前仍是唯一实际动作来源。`LegacyPlannerAdapter`
+projects validated current-Turn actions into schema-v1 entity traces without
+changing controller allocation or the replay-v1 record. Trace records contain
+only irreversible entity aliases and allowlisted scalar fields, and are bounded
+by validated byte, entity, and node limits. After an accepted submission is
+committed, `BoundedTraceSink` uses a condition-coordinated bounded deque and a
+dedicated standard library writer thread to append
+`runtime/decision-trace.jsonl`. Queue pressure atomically evicts the oldest
+detail, retains a compact current-Tick summary, and writes complete dropped-Tick
+ranges without truncating their accounting. The sink has explicit `flush()` and
+`close()` lifecycle methods; reconnect and shutdown paths close the writer.
+
+Agent state is written as schema v3. The loader accepts v1 and v2 snapshots,
+preserves map/resource/event/task state, and safely returns empty state for an
+unknown or malformed schema. Persisted task and event references are aliases;
+they are rebound only to matching entities in the next authoritative Turn.
+
+`runtime/audit.jsonl` uses the same bounded asynchronous writer and an explicit
+credential-free audit allowlist. It is ready for the later command API but is
+not produced by the current runtime, which has no command write path. Trace/audit rotate in
+their own directory (trace 32 MiB plus three history files; audit 16 MiB plus
+seven); replay remains schema-v1 and rotates at 64 MiB plus three history files.
+
+当 `AgentConfig.scheduler_shadow=True` 时，`runtime.py` 还会从当前实体生成
+只读的 scheduler shadow 记录并写入 trace；它不会排队 SDK 动作，实际计划仍由
+legacy strategy 产生。`worker_bt_canary` 目前仅保留 flag 和 trace 标记，尚未
+接管 Worker 动作；Beacon、Core migration 和 enemy-Core attack objectives 同样
+是默认关闭且未接入动作管线的纯逻辑模块。完整事实型进度见
+[`arena-hero-implementation-progress.md`](arena-hero-implementation-progress.md)。

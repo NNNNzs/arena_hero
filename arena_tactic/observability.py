@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from collections import Counter
-from hashlib import blake2s
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,8 @@ from uuid import UUID
 from arena_hero import CoreView, UnitView
 
 from .context import DecisionContext
+from .domain.trace import DecisionTrace, trace_record
+from .identity import entity_alias
 from .models import DecisionResult
 
 
@@ -103,7 +106,13 @@ def summary_line(
 
 
 def _alias(value: UUID | None) -> str | None:
-    return blake2s(value.bytes, digest_size=6).hexdigest() if value else None
+    alias = entity_alias(value)
+    return alias.removeprefix("entity_") if alias else None
+
+
+def decision_trace_record(trace: DecisionTrace) -> dict[str, Any]:
+    """Serialize only the explicit, credential-free trace allowlist."""
+    return trace_record(trace)
 
 
 def _object_record(value: CoreView | UnitView) -> dict[str, Any]:
@@ -218,8 +227,22 @@ def replay_record(
 
 
 class ReplayWriter:
-    def __init__(self, path: Path) -> None:
+    """Synchronous v1 replay append with bounded, same-directory rotation."""
+
+    def __init__(
+        self,
+        path: Path,
+        max_file_bytes: int = 64 * 1024 * 1024,
+        history_files: int = 3,
+    ) -> None:
+        if max_file_bytes <= 0:
+            raise ValueError("max_file_bytes must be positive")
+        if history_files < 0:
+            raise ValueError("history_files must be nonnegative")
         self.path = path
+        self.max_file_bytes = max_file_bytes
+        self.history_files = history_files
+        self._lock = threading.Lock()
 
     def append(
         self,
@@ -227,16 +250,38 @@ class ReplayWriter:
         result: DecisionResult,
         submission: Any,
     ) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(
             replay_record(context, result, submission),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         )
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(line + "\n")
-            stream.flush()
+        encoded = (line + "\n").encode("utf-8")
+        if len(encoded) > self.max_file_bytes:
+            # Preserve v1 JSONL rather than writing a partial record. Normal
+            # records are far below the production 64 MiB limit.
+            return
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            size = self.path.stat().st_size if self.path.exists() else 0
+            if size and size + len(encoded) > self.max_file_bytes:
+                self._rotate_files()
+            with self.path.open("ab") as stream:
+                stream.write(encoded)
+                stream.flush()
+
+    def _rotate_files(self) -> None:
+        if self.history_files == 0:
+            self.path.unlink(missing_ok=True)
+            return
+        oldest = self.path.with_name(f"{self.path.name}.{self.history_files}")
+        oldest.unlink(missing_ok=True)
+        for index in range(self.history_files - 1, 0, -1):
+            source = self.path.with_name(f"{self.path.name}.{index}")
+            if source.exists():
+                os.replace(source, self.path.with_name(f"{self.path.name}.{index + 1}"))
+        if self.path.exists():
+            os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
 
 
 def replay_metrics(path: Path) -> dict[str, Any]:

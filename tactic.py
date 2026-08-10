@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from arena_hero import ArenaHeroClient
 
 from arena_tactic import AgentRuntime, DecisionResult, MemoryStore
+from arena_tactic.domain import BoundedTraceSink
 from arena_tactic.context import DecisionContext
 from arena_tactic.dashboard import DASHBOARD_HTML, DashboardDataStore, redact_error
 from arena_tactic.observability import ReplayWriter, summary_line
@@ -130,23 +131,27 @@ def play(api_key: str, *, status: ServiceStatus | None = None, stop: threading.E
     stop = stop or threading.Event()
     state_file = Path(__file__).with_name("runtime") / "agent-state.json"
     replay = ReplayWriter(Path(__file__).with_name("runtime") / "replay.jsonl")
-    runtime = AgentRuntime(memory_store=MemoryStore(state_file))
+    trace_sink = BoundedTraceSink(Path(__file__).with_name("runtime") / "decision-trace.jsonl")
+    runtime = AgentRuntime(memory_store=MemoryStore(state_file), trace_sink=trace_sink)
     base_url = os.environ.get("ARENA_HERO_BASE_URL", "https://api.arenahero.io")
-    with ArenaHeroClient(api_key=api_key, base_url=base_url) as game:
-        for turn in game.turns():
-            if stop.is_set():
-                break
-            status.update(connected=True, last_error=None, last_tick=turn.tick)
-            context = DecisionContext.from_turn(turn)
-            result: DecisionResult = runtime.decide(turn)
-            accepted = turn.submit()
-            if accepted.accepted:
-                runtime.commit(result)
-                replay.append(context, result, accepted)
-                status.increment("accepted")
-            else:
-                status.increment("rejected")
-            print(summary_line(context, result, accepted), flush=True)
+    try:
+        with ArenaHeroClient(api_key=api_key, base_url=base_url) as game:
+            for turn in game.turns():
+                if stop.is_set():
+                    break
+                status.update(connected=True, last_error=None, last_tick=turn.tick)
+                context = DecisionContext.from_turn(turn)
+                result: DecisionResult = runtime.decide(turn)
+                accepted = turn.submit()
+                if accepted.accepted:
+                    runtime.commit(result)
+                    replay.append(context, result, accepted)
+                    status.increment("accepted")
+                else:
+                    status.increment("rejected")
+                print(summary_line(context, result, accepted), flush=True)
+    finally:
+        runtime.close()
     status.update(connected=False)
 
 

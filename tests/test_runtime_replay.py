@@ -47,8 +47,9 @@ def test_memory_store_round_trip_is_versioned_and_controller_free(tmp_path):
     assert loaded.last_tick == 4
     assert loaded.obstacles == {(1, 2)}
     payload = json.loads(store.path.read_text(encoding="utf-8"))
-    assert payload["version"] == 2
+    assert payload["version"] == 3
     assert "controller" not in store.path.read_text(encoding="utf-8").lower()
+    assert str(uuid(1)) not in store.path.read_text(encoding="utf-8")
     assert not store.path.with_suffix(".json.tmp").exists()
 
 
@@ -69,10 +70,80 @@ def test_memory_store_migrates_version_one_without_losing_exploration(tmp_path):
         encoding="utf-8",
     )
     loaded = store.load()
-    assert loaded.version == 2
+    assert loaded.version == 3
     assert loaded.last_tick == 7
     assert loaded.obstacles == {(1, 0)}
     assert loaded.explored == {(0, 0), (0, 1)}
+
+
+def test_memory_store_loads_v2_and_preserves_operational_state(tmp_path):
+    store = MemoryStore(tmp_path / "agent-state.json")
+    store.path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "last_tick": 9,
+                "obstacles": [[4, 5]],
+                "explored": [[1, 1]],
+                "resource_observations": {"3,2": 8},
+                "temporary_blocks": {"2,2": 12},
+                "processed_event_ids": ["legacy-event"],
+                "event_counts": {"UNIT_MOVE_FAILED": 2},
+                "unit_tasks": {str(uuid(1)): {"kind": "explore", "target": [9, 9]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = store.load()
+
+    assert loaded.version == 3
+    assert loaded.obstacles == {(4, 5)}
+    assert loaded.explored == {(1, 1)}
+    assert loaded.resource_observations == {(3, 2): 8}
+    assert loaded.temporary_blocks == {(2, 2): 12}
+    assert loaded.processed_event_ids == ["legacy-event"]
+    assert loaded.event_counts == {"UNIT_MOVE_FAILED": 2}
+    assert loaded.unit_tasks
+
+
+def test_memory_unknown_schema_falls_back_safely():
+    loaded = AgentMemory.from_dict(
+        {
+            "version": 999,
+            "last_tick": 999,
+            "obstacles": [["bad", "cell"]],
+            "unit_tasks": {"unsafe": {"controller": "not allowed"}},
+        }
+    )
+
+    assert loaded.version == 3
+    assert loaded.last_tick == 0
+    assert loaded.obstacles == set()
+    assert loaded.unit_tasks == {}
+
+
+def test_memory_partial_corruption_preserves_parseable_permanent_obstacles():
+    loaded = AgentMemory.from_dict({"version": 3, "obstacles": [[1, 2], ["bad"], [3, 4]], "explored": "corrupt", "event_counts": []})
+    assert loaded.obstacles == {(1, 2), (3, 4)}
+
+
+def test_safe_task_rejects_nested_secrets_and_complete_uuids():
+    malicious = {"kind": "explore", "target": [1, 2], "step": {"authorization": "Bearer bad"}, "sector": {"nested": str(uuid(77))}, "cookie": "bad", "token": "bad"}
+    memory = AgentMemory(unit_tasks={str(uuid(1)): malicious})
+    raw = json.dumps(memory.to_dict())
+    assert "explore" in raw and "[1, 2]" in raw
+    for forbidden in ("authorization", "cookie", "token", "secret", str(uuid(77))):
+        assert forbidden not in raw.lower()
+
+
+def test_v2_alias_rebind_preserves_task_and_processed_event_dedupes_next_turn():
+    event_id = uuid(88)
+    loaded = AgentMemory.from_dict({"version": 2, "unit_tasks": {str(uuid(1)): {"kind": "explore", "target": [9, 9]}}, "processed_event_ids": [str(event_id)], "event_counts": {"UNIT_MOVE_FAILED": 1}})
+    context = DecisionContext.from_turn(turn(tick=10, owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), events=(event(88, "UNIT_MOVE_FAILED", actor_id=uuid(1)),)))
+    advanced = loaded.advance(context, AgentConfig())
+    assert advanced.unit_tasks[str(uuid(1))]["kind"] == "explore"
+    assert advanced.event_counts["UNIT_MOVE_FAILED"] == 1
 
 
 def test_memory_is_only_committed_after_explicit_success(tmp_path):
@@ -100,6 +171,24 @@ def test_redacted_replay_and_offline_metrics_exclude_credentials(tmp_path):
     assert metrics["ticks"] == 1
     assert metrics["accepted_ticks"] == 1
     assert metrics["action_counts"]["SPAWN"] == 1
+
+
+def test_replay_v1_rotates_by_size_without_changing_record_schema(tmp_path):
+    writer = ReplayWriter(tmp_path / "replay.jsonl", max_file_bytes=900, history_files=3)
+    for tick in range(1, 20):
+        game_turn = turn(tick=tick, owned_core=core(), resources=10)
+        writer.append(DecisionContext.from_turn(game_turn), choose_actions(game_turn), SimpleNamespace(accepted=True))
+
+    files = sorted(tmp_path.glob("replay.jsonl*"))
+    assert files == [
+        writer.path,
+        writer.path.with_name("replay.jsonl.1"),
+        writer.path.with_name("replay.jsonl.2"),
+        writer.path.with_name("replay.jsonl.3"),
+    ]
+    records = [json.loads(line) for file in files for line in file.read_text().splitlines()]
+    assert records and all(record["schema_version"] == 1 for record in records)
+    assert all(file.stat().st_size <= 900 for file in files)
 
 
 def test_terminal_summary_includes_redacted_per_actor_intents_and_events():
@@ -211,3 +300,31 @@ def test_useful_opportunity_prevents_all_wait():
         turn(owned_core=core(position=(-2, 0)), units=(worker,), resource_cells=((2, 0),))
     )
     assert any(intent.action is not ActionKind.WAIT for intent in result.intents)
+
+
+def test_memory_rejects_untrusted_event_identifiers_and_counts():
+    loaded = AgentMemory.from_dict({
+        "version": 3,
+        "processed_event_ids": ["entity_ab12", "event_ABC-123", "raw secret token", "../../cookie"],
+        "event_counts": {"UNIT_MOVE_FAILED": 2, "authorization": 9, "bad-value": 1},
+    })
+    assert loaded.processed_event_ids == ["entity_ab12", "event_ABC-123"]
+    assert loaded.event_counts == {"UNIT_MOVE_FAILED": 2}
+    encoded = json.dumps(loaded.to_dict()).lower()
+    assert "secret" not in encoded and "cookie" not in encoded and "authorization" not in encoded
+
+
+def test_corrupt_memory_is_quarantined_and_obstacles_salvaged(tmp_path):
+    path = tmp_path / "memory.json"
+    path.write_text('{"version":3,"obstacles":[[1,2],[-3,4]],"broken":', encoding="utf-8")
+    loaded = MemoryStore(path).load()
+    assert loaded.obstacles == {(1, 2), (-3, 4)}
+    assert not path.exists()
+    assert len(list(tmp_path.glob("memory.json.corrupt-*"))) == 1
+
+
+def test_corrupt_memory_without_salvage_returns_empty_and_is_quarantined(tmp_path):
+    path = tmp_path / "memory.json"
+    path.write_text("not-json", encoding="utf-8")
+    assert MemoryStore(path).load().to_dict() == AgentMemory().to_dict()
+    assert len(list(tmp_path.glob("memory.json.corrupt-*"))) == 1
