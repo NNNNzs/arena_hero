@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 class BehaviorStatus(StrEnum):
@@ -48,6 +48,14 @@ class Blackboard:
 @dataclass(frozen=True, slots=True)
 class TickContext:
     tick: int
+    """Immutable per-tick inputs supplied by a controller-free caller.
+
+    Behavior nodes may inspect these inputs but must never retain a Turn or an
+    SDK controller in the Blackboard.  Keeping the payload outside the board
+    makes the running cursor safe to reuse with the next authoritative state.
+    """
+
+    data: Mapping[str, Any] = field(default_factory=dict)
 
 
 class Node:
@@ -109,8 +117,22 @@ class Composite(Node):
 class Sequence(Composite):
     def tick(self, context: TickContext, board: Blackboard) -> NodeResult:
         start = board.cursors.get(self.node_id, 0)
+        last = NodeResult(BehaviorStatus.SUCCESS)
+        # Resume the running child, but reevaluate preceding Conditions against
+        # the fresh authoritative Tick.  This lets a changed fact (for example
+        # arriving on a resource cell) preempt a stale route cursor without
+        # replaying completed Action nodes.
+        for index in range(0, start):
+            child = self.children[index]
+            if not isinstance(child, Condition):
+                continue
+            result = child.tick(context, board)
+            if result.status is BehaviorStatus.FAILURE:
+                board.cursors.pop(self.node_id, None)
+                return self._record(board, result)
         for index in range(start, len(self.children)):
             result = self.children[index].tick(context, board)
+            last = result
             if result.status is BehaviorStatus.RUNNING:
                 board.cursors[self.node_id] = index
                 return self._record(board, result)
@@ -118,7 +140,9 @@ class Sequence(Composite):
                 board.cursors.pop(self.node_id, None)
                 return self._record(board, result)
         board.cursors.pop(self.node_id, None)
-        return self._record(board, NodeResult(BehaviorStatus.SUCCESS))
+        # A successful action may carry the controller-free candidate Intent.
+        # Do not lose it merely because its enclosing Sequence completed.
+        return self._record(board, last)
 
 
 class Selector(Composite):
@@ -201,9 +225,15 @@ class Tree:
     def __init__(self, tree_id: str, root: Node) -> None:
         self.tree_id, self.root = tree_id, root
 
-    def tick(self, tick: int, board: Blackboard) -> NodeResult:
+    def tick(
+        self,
+        tick: int,
+        board: Blackboard,
+        *,
+        data: Mapping[str, Any] | None = None,
+    ) -> NodeResult:
         board.clear_tick_trace()
-        return self.root.tick(TickContext(tick), board)
+        return self.root.tick(TickContext(tick, data or {}), board)
 
     def halt(self, tick: int, board: Blackboard, reason: str) -> Checkpoint:
         running = tuple(sorted(board.cursors))

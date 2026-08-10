@@ -12,5 +12,19 @@ test = [
   "pytest>=8,<10",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["tactic"]
+
+[tool.setuptools.packages.find]
+include = ["arena_tactic*"]
+exclude = ["runtime*", "tests*"]
+
+[tool.setuptools.package-data]
+arena_tactic = ["web/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

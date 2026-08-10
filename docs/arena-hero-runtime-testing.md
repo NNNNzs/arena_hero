@@ -6,20 +6,20 @@
 sequenceDiagram
     participant SDK as Current Turn
     participant R as AgentRuntime
-    participant S as Strategy
+    participant P as Command/Scheduler/BT
     participant V as Validation
-    participant P as Persistence
+    participant M as Persistence
 
     SDK->>R: complete authoritative state
     R->>R: DecisionContext + AgentMemory.advance
-    R->>S: mode and ActionIntent proposals
-    S-->>R: scored controller-free intents
+    R->>P: accepted commands, objectives, assignments and per-entity proposals
+    P-->>R: controller-free ActionIntent proposals + trace
     R->>V: current-object legality and reservations
     V-->>R: final and rejected intents
     R->>SDK: map to current controllers
     SDK->>SDK: submit exactly once
     SDK-->>R: Accepted receipt
-    R->>P: atomic memory + redacted JSONL replay
+    R->>M: atomic memory + redacted JSONL replay + trace/audit
 ```
 
 `tactic.py` 只负责 API Key 加载、官方同步 SDK 循环、一次提交、成功提交后的持久化和 `Ctrl-C` 退出。`choose_actions(turn)` 是离线兼容入口：它生成并映射计划，但不连接网络、不提交、不写磁盘。
@@ -33,7 +33,7 @@ sequenceDiagram
 
 ## 3. 记忆与事件
 
-默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。状态包含版本号、最后 Tick、模式迟滞、连续无资源 Tick、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、Unit 任务、已处理事件 ID 和脱敏计数。v2 加载器会自动迁移旧的 v1 状态。
+默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。schema v3 状态包含版本号、最后 Tick、模式兼容标签、连续无资源 Tick、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、legacy Unit 任务、人工任务、scheduler assignment、policy、objective lifecycle、已处理事件 ID 和脱敏计数。加载器兼容 v1/v2；所有跨 Tick 实体引用都是不可逆 alias，绝不保存 controller。
 
 事件按 `event_id` 去重。资源耗尽或成功采集会淘汰旧资源观察；移动失败会读取上一计划保存的实际下一格，普通失败将其冷却 4 Tick，地形阻挡将其记录为永久障碍，并让探索任务轮换扇区；存入失败会清理对应 Unit 任务；Core 重生会清空旧 Unit 任务。生产、治疗、射击、移动和重生结果全部进入事件计数，下一 Turn 的完整状态仍是事实来源。
 
@@ -59,8 +59,11 @@ python3 -m compileall -q tactic.py arena_tactic tests
 python3 -m pip check
 python3 -m pytest -q
 PYTHONPATH=.agents/skills/arena-hero python3 -m pytest -q .agents/skills/arena-hero/tests
+python3 -m arena_tactic.canary runtime/replay.jsonl --min-ticks 500
 git diff --check
 ```
+
+最后一条仅做离线验证：它读取 `replay.jsonl` 及轮转历史，选取最新的最长连续 Tick 区间后两次执行完整 scheduler/BT/objective canary，检查动作签名确定性、零超时、零被拒 intent、p95 小于 500ms、最大耗时小于 900ms，以及连续 replay Tick 不少于阈值。未达到 Tick 数时输出 JSON 证据并以退出码 `2` 结束；它不会连接、提交或读取凭据。
 
 测试覆盖模式切换与迟滞、治疗与生产预算、Ranger/Vanguard 评分、视野 integer-supercover、Ranger 中间射击格、A* 绕障、四扇区探索、目标持久化、失败格冷却、地形障碍学习、资源唯一分配、两实体容量、UUID 决胜、当前目标校验、事件去重、资源枯竭与补充、连续移动失败、敌 Core 突现、Core 受损、Beacon 掉落、原子记忆、脱敏回放、确定性属性和 20 Unit 性能。
 
@@ -89,34 +92,10 @@ docker compose logs -f --tail=100 arena-hero
 单独报告安装的 SDK 版本、收到的首个 Turn、提交结果和非敏感事件；不得输出
 密钥、Cookie 或 Authorization Header。
 
-# 行为树迁移的已实现兼容层（Phase 1 与 Phase 2 shadow）
+# 行为树、命令与 canary 迁移状态
 
-Legacy strategy 目前仍是唯一实际动作来源。`LegacyPlannerAdapter`
-projects validated current-Turn actions into schema-v1 entity traces without
-changing controller allocation or the replay-v1 record. Trace records contain
-only irreversible entity aliases and allowlisted scalar fields, and are bounded
-by validated byte, entity, and node limits. After an accepted submission is
-committed, `BoundedTraceSink` uses a condition-coordinated bounded deque and a
-dedicated standard library writer thread to append
-`runtime/decision-trace.jsonl`. Queue pressure atomically evicts the oldest
-detail, retains a compact current-Tick summary, and writes complete dropped-Tick
-ranges without truncating their accounting. The sink has explicit `flush()` and
-`close()` lifecycle methods; reconnect and shutdown paths close the writer.
+`LegacyPlannerAdapter` 仍可将最终动作投影为兼容 trace；默认 action source 仍是 legacy strategy。启用 `planner_canary=True` 时，runtime 不调用 `strategy.propose_intents`，而由当前 Turn 的 command、scheduler assignment、四类行为树、Beacon/Core 迁移/敌 Core objective 和统一 validation 形成完整计划。各功能均有可单独关闭的 `AgentConfig` 开关；`tactic.py` 仅在对应 `ARENA_HERO_*` 环境变量精确为 `1` 时打开，`ARENA_HERO_FULL_CANARY=1` 会显式打开完整新管线。关闭变量立即回退 legacy，不要求数据回退。
 
-Agent state is written as schema v3. The loader accepts v1 and v2 snapshots,
-preserves map/resource/event/task state, and safely returns empty state for an
-unknown or malformed schema. Persisted task and event references are aliases;
-they are rebound only to matching entities in the next authoritative Turn.
+`runtime/decision-trace.jsonl` 与 `runtime/audit.jsonl` 通过有界异步 sink 追加脱敏 allowlist 字段；trace/audit 分别按 32 MiB×4、16 MiB×8 轮转，replay 保持 schema-v1 并按 64 MiB×4 轮转。Command API 的人工任务、策略、Core 迁移、紧急停机在当前 Tick 只进入队列，只有服务端 accepted 后才持久化；空白重启队列会从已提交的 memory 恢复 policy 读模型。
 
-`runtime/audit.jsonl` uses the same bounded asynchronous writer and an explicit
-credential-free audit allowlist. It is ready for the later command API but is
-not produced by the current runtime, which has no command write path. Trace/audit rotate in
-their own directory (trace 32 MiB plus three history files; audit 16 MiB plus
-seven); replay remains schema-v1 and rotates at 64 MiB plus three history files.
-
-当 `AgentConfig.scheduler_shadow=True` 时，`runtime.py` 还会从当前实体生成
-只读的 scheduler shadow 记录并写入 trace；它不会排队 SDK 动作，实际计划仍由
-legacy strategy 产生。`worker_bt_canary` 目前仅保留 flag 和 trace 标记，尚未
-接管 Worker 动作；Beacon、Core migration 和 enemy-Core attack objectives 同样
-是默认关闭且未接入动作管线的纯逻辑模块。完整事实型进度见
-[`arena-hero-implementation-progress.md`](arena-hero-implementation-progress.md)。
+当前仓库的脱敏 replay 有 348 条记录，最长连续区间为 149 Tick；完整离线 canary 的性能与确定性检查均通过，但不满足 Phase 9 的至少 500 个代表性连续 Tick 门槛。因此不得删除 legacy 默认路径，也不能把离线结果表述为真实服务验证。完整事实型进度见 [`arena-hero-implementation-progress.md`](arena-hero-implementation-progress.md)。

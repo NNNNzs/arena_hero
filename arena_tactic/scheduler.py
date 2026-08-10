@@ -21,6 +21,7 @@ class ScheduledTask:
     age: int = 0
     target_key: str | None = None
     target_capacity: int = 1
+    eligible_aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.target_capacity <= 0:
@@ -129,7 +130,9 @@ class DeterministicScheduler:
             roles = self._roles(task)
             candidates = tuple(sorted(
                 (actor for actor in actors_by_alias.values()
-                 if actor.alias not in used_actors and ("ANY" in roles or actor.role in roles)),
+                 if actor.alias not in used_actors
+                 and (not item.eligible_aliases or actor.alias in item.eligible_aliases)
+                 and ("ANY" in roles or actor.role in roles)),
                 key=lambda actor: actor.alias,
             ))
             needed = task.min_assignees

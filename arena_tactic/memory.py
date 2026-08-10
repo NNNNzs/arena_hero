@@ -24,6 +24,7 @@ _SENSITIVE = ("credential", "controller", "authorization", "cookie", "token", "s
 _UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 _EVENT_COUNT_RE = re.compile(r"^[A-Z0-9_]+$")
 _EVENT_ID_RE = re.compile(r"^(?:entity_[0-9a-f]{4,64}|event_[A-Za-z0-9_-]{1,96}|legacy-[A-Za-z0-9_-]{1,64})$")
+_MANUAL_TASKS = frozenset({"RETREAT_TO_CORE", "HOLD_POSITION", "HARVEST_VISIBLE", "MOVE_TO_CELL"})
 
 
 def _safe_event_id(value: Any) -> str:
@@ -103,6 +104,98 @@ def _safe_cell_map(value: Any) -> dict[Position, int]:
     return result
 
 
+def _safe_objective_states(value: Any) -> dict[str, dict[str, Any]]:
+    """Keep only the small controller-free lifecycle checkpoints we own."""
+    if not isinstance(value, dict):
+        return {}
+    states: dict[str, dict[str, Any]] = {}
+    for name in ("beacon", "migration", "attack"):
+        raw = value.get(name)
+        if not isinstance(raw, dict):
+            continue
+        state: dict[str, Any] = {}
+        stage = raw.get("stage")
+        if isinstance(stage, str) and re.fullmatch(r"[A-Z_]{1,32}", stage):
+            state["stage"] = stage
+        for key in ("carrier_alias", "target_alias"):
+            item = raw.get(key)
+            if isinstance(item, str) and _EVENT_ID_RE.fullmatch(item):
+                state[key] = item
+        for key in ("destination", "recovery_cell"):
+            item = raw.get(key)
+            if isinstance(item, (list, tuple)) and len(item) == 2 and all(type(axis) is int for axis in item):
+                state[key] = list(item)
+        for key in ("replan_count",):
+            item = raw.get(key)
+            if type(item) is int and item >= 0:
+                state[key] = item
+        if type(raw.get("start_attempted")) is bool:
+            state["start_attempted"] = raw["start_attempted"]
+        if type(raw.get("manual")) is bool:
+            state["manual"] = raw["manual"]
+        if state:
+            states[name] = state
+    return states
+
+
+def _safe_manual_assignments(value: Any) -> dict[str, dict[str, Any]]:
+    """Persist only bounded, alias-keyed manual tasks; never raw IDs or payloads."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for alias, raw in value.items():
+        if not isinstance(alias, str) or not _EVENT_ID_RE.fullmatch(alias) or not isinstance(raw, dict):
+            continue
+        kind = raw.get("kind")
+        until = raw.get("until_tick")
+        priority = raw.get("priority")
+        if kind not in _MANUAL_TASKS or type(until) is not int or until < 0 or type(priority) is not int or not 0 <= priority <= 1000:
+            continue
+        item: dict[str, Any] = {"kind": kind, "until_tick": until, "priority": priority}
+        target = raw.get("target")
+        if isinstance(target, (list, tuple)) and len(target) == 2 and all(type(axis) is int for axis in target):
+            item["target"] = list(target)
+        if kind == "MOVE_TO_CELL" and "target" not in item:
+            continue
+        result[alias] = item
+    return result
+
+
+def _safe_scheduler_assignments(value: Any) -> dict[str, dict[str, Any]]:
+    """Persist only alias-keyed scheduler outputs and their bounded lease."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for alias, raw in value.items():
+        if not isinstance(alias, str) or not _EVENT_ID_RE.fullmatch(alias) or not isinstance(raw, dict):
+            continue
+        task_id, kind, role = raw.get("task_id"), raw.get("kind"), raw.get("role")
+        priority, lease = raw.get("priority"), raw.get("lease_until_tick")
+        if not all(isinstance(value, str) and len(value) <= 96 for value in (task_id, kind, role)):
+            continue
+        if type(priority) is not int or not 0 <= priority <= 1000 or type(lease) is not int or lease < 0:
+            continue
+        item: dict[str, Any] = {"task_id": task_id, "kind": kind, "role": role,
+                                "priority": priority, "lease_until_tick": lease}
+        target = raw.get("target")
+        if isinstance(target, (list, tuple)) and len(target) == 2 and all(type(axis) is int for axis in target):
+            item["target"] = list(target)
+        result[alias] = item
+    return result
+
+
+def _safe_policy_state(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
+    version, effective = value.get("version"), value.get("effective_tick")
+    posture = value.get("posture")
+    if type(version) is not int or version < 0 or type(effective) is not int or effective < 0:
+        return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
+    if posture not in {"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"}:
+        return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
+    return {"version": version, "posture": posture, "effective_tick": effective}
+
+
 @dataclass(slots=True)
 class AgentMemory:
     version: int = MEMORY_VERSION
@@ -115,6 +208,10 @@ class AgentMemory:
     resource_observations: dict[Position, int] = field(default_factory=dict)
     temporary_blocks: dict[Position, int] = field(default_factory=dict)
     unit_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    manual_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    scheduler_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    policy_state: dict[str, Any] = field(default_factory=lambda: {"version": 0, "posture": "BALANCED", "effective_tick": 0})
+    objective_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     processed_event_ids: list[str] = field(default_factory=list)
     event_counts: dict[str, int] = field(default_factory=dict)
     submitted_ticks: int = 0
@@ -155,6 +252,15 @@ class AgentMemory:
             cell: blocked_until
             for cell, blocked_until in next_memory.temporary_blocks.items()
             if blocked_until >= context.tick
+        }
+        current_aliases = {entity_alias(item_id) for item_id in context.current_objects}
+        next_memory.manual_assignments = {
+            alias: task for alias, task in next_memory.manual_assignments.items()
+            if alias in current_aliases and int(task.get("until_tick", -1)) >= context.tick
+        }
+        next_memory.scheduler_assignments = {
+            alias: task for alias, task in next_memory.scheduler_assignments.items()
+            if alias in current_aliases and int(task.get("lease_until_tick", -1)) >= context.tick
         }
 
         if len(next_memory.explored) > config.explored_history_limit:
@@ -285,6 +391,10 @@ class AgentMemory:
                 for unit_id, task in self.unit_tasks.items()
                 if (alias := _persisted_task_key(unit_id))
             },
+            "manual_assignments": _safe_manual_assignments(self.manual_assignments),
+            "scheduler_assignments": _safe_scheduler_assignments(self.scheduler_assignments),
+            "policy_state": _safe_policy_state(self.policy_state),
+            "objective_states": _safe_objective_states(self.objective_states),
             "processed_event_ids": [
                 safe
                 for value in self.processed_event_ids
@@ -328,6 +438,10 @@ class AgentMemory:
                     for unit_id, task in (tasks.items() if isinstance(tasks, dict) else ())
                     if (alias := _persisted_task_key(str(unit_id)))
                 },
+                manual_assignments=_safe_manual_assignments(data.get("manual_assignments", {})),
+                scheduler_assignments=_safe_scheduler_assignments(data.get("scheduler_assignments", {})),
+                policy_state=_safe_policy_state(data.get("policy_state", {})),
+                objective_states=_safe_objective_states(data.get("objective_states", {})),
                 processed_event_ids=[
                     safe
                     for value in (events if isinstance(events, list) else [])

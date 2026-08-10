@@ -65,6 +65,29 @@ def test_validator_limits_two_entities_per_destination():
     assert any(item.rejection_reason == "friendly_cell_capacity_exceeded" for item in rejected)
 
 
+def test_planner_canary_capacity_conflict_is_rerouted_without_a_rejected_intent():
+    workers = (
+        unit(1, UnitType.WORKER, (-1, 0)),
+        unit(2, UnitType.WORKER, (1, 0)),
+        unit(3, UnitType.WORKER, (0, -1)),
+    )
+    context = DecisionContext.from_turn(turn(owned_core=core(position=(10, 10)), units=workers))
+    intents = tuple(
+        ActionIntent(worker.id, False, ActionKind.MOVE, 10, "capacity_test", direction=direction,
+                     target_cell=(0, 0), reserved_cell=(0, 0))
+        for worker, direction in zip(workers, (Direction.RIGHT, Direction.LEFT, Direction.DOWN), strict=True)
+    )
+
+    accepted, rejected = validate_intents(intents, context, AgentConfig(planner_canary=True))
+
+    assert not rejected
+    assert len(accepted) == len(context.current_objects)
+    assert sum(intent.action is ActionKind.MOVE for intent in accepted) == 3
+    rerouted = next(intent for intent in accepted if intent.actor_id == workers[2].id)
+    assert rerouted.reason == "arbitrator_capacity_reroute"
+    assert rerouted.reserved_cell != (0, 0)
+
+
 def test_validator_rejects_stale_ranger_target():
     ranger = unit(1, UnitType.RANGER, (0, 0))
     game_turn = turn(owned_core=core(), units=(ranger,))

@@ -14,7 +14,7 @@ from .models import (
     RejectedIntent,
     ReservationTable,
 )
-from .navigation import destination, shot_range
+from .navigation import DIRECTIONS, destination, distance, shot_range
 
 
 _UNIT_ACTIONS = {
@@ -157,6 +157,9 @@ def validate_intents(
         assert isinstance(actor, UnitView)
         cell = destination(actor.position, intent.direction)  # type: ignore[arg-type]
         if not reservations.reserve(cell):
+            if config.planner_canary:
+                selected[actor_id] = _capacity_repair(intent, actor, context, reservations)
+                continue
             rejected.append(RejectedIntent(intent, "friendly_cell_capacity_exceeded"))
             del selected[actor_id]
 
@@ -182,3 +185,35 @@ def validate_intents(
         ),
         tuple(rejected),
     )
+
+
+def _capacity_repair(
+    intent: ActionIntent,
+    actor: UnitView,
+    context: DecisionContext,
+    reservations: ReservationTable,
+) -> ActionIntent:
+    """Keep a canary plan complete when another current move consumed a slot.
+
+    This is the unified final arbitration layer: all entity trees may propose
+    independently, but only it has the final cross-role reservation order.
+    It does not relax terrain or enemy checks, and it records the reroute so
+    an operator can distinguish it from a normal tree decision.
+    """
+    target = intent.target_cell or destination(actor.position, intent.direction)  # type: ignore[arg-type]
+    alternatives = sorted(
+        DIRECTIONS,
+        key=lambda direction: (distance(destination(actor.position, direction), target), direction.value),
+    )
+    for direction in alternatives:
+        cell = destination(actor.position, direction)
+        if cell in context.obstacle_cells or cell in context.enemy_occupancy:
+            continue
+        if reservations.reserve(cell):
+            return ActionIntent(
+                actor.id, False, ActionKind.MOVE, intent.score,
+                "arbitrator_capacity_reroute", direction=direction,
+                target_cell=intent.target_cell, reserved_cell=cell,
+            )
+    return ActionIntent(actor.id, False, ActionKind.WAIT, intent.score, "arbitrator_capacity_wait",
+                        target_cell=intent.target_cell)

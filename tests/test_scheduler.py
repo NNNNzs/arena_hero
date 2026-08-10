@@ -4,6 +4,7 @@ from arena_tactic.domain import Goal, GoalSource, GoalStatus, Task, TaskStatus
 from arena_tactic.scheduler import Actor, DeterministicScheduler, ScheduledTask
 from arena_tactic import AgentRuntime
 from arena_tactic.models import AgentConfig
+from arena_tactic.identity import entity_alias
 from .factories import core, turn, unit
 
 
@@ -67,13 +68,75 @@ def test_shadow_scheduler_records_trace_without_changing_legacy_sdk_plan():
     assert any(item["goal"] == "SCHEDULER_SHADOW" for item in result.trace.goal_summaries)
 
 
-def test_new_objective_flags_are_disabled_by_default_and_do_not_change_legacy_plan():
+def test_new_objective_flags_are_disabled_by_default():
     config = AgentConfig()
-    assert not config.scheduler_shadow and not config.worker_bt_canary
+    assert not config.scheduler_shadow and not config.worker_bt_canary and not config.vanguard_bt_canary and not config.ranger_bt_canary and not config.core_bt_canary
     assert not config.beacon_campaign_v1 and not config.core_migration_v1 and not config.core_attack_campaign_v1
 
-    baseline = turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), resource_cells=((1, 0),))
-    flagged = turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), resource_cells=((1, 0),))
-    AgentRuntime().decide(baseline)
-    AgentRuntime(config=AgentConfig(beacon_campaign_v1=True, core_migration_v1=True, core_attack_campaign_v1=True)).decide(flagged)
-    assert flagged.plan.model_dump(mode="json") == baseline.plan.model_dump(mode="json")
+
+
+def test_scheduler_shadow_marks_an_enabled_worker_canary_as_active():
+    game_turn = turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), resource_cells=((1, 0),))
+
+    result = AgentRuntime(config=AgentConfig(scheduler_shadow=True, worker_bt_canary=True)).decide(game_turn)
+
+    shadow = next(item for item in result.trace.goal_summaries if item["goal"] == "SCHEDULER_SHADOW")
+    assert shadow["worker_canary"] == "ACTIVE"
+
+
+def test_enabled_phase_4_to_6_objectives_persist_and_only_replace_allowed_actions():
+    target = core(value=200, position=(3, 0), controlled=False)
+    baseline = turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), enemies=(target,))
+    observed = turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), enemies=(target,))
+    runtime = AgentRuntime(config=AgentConfig(
+        beacon_campaign_v1=True, core_migration_v1=True, core_attack_campaign_v1=True,
+    ))
+
+    result = runtime.decide(observed)
+
+    core_action = observed.plan.model_dump(mode="json")["core_action"]
+    assert core_action["type"] == "START_MOVE"
+    shadow_goals = {item["goal"] for item in result.trace.goal_summaries if item["status"] == "SHADOW"}
+    assert shadow_goals == {"CONTROL_BEACON", "MIGRATE_CORE", "ATTACK_ENEMY_CORE"}
+    assert result.next_memory.objective_states["migration"]["stage"] == "START"
+    runtime.commit(result)
+    assert runtime.memory.objective_states == result.next_memory.objective_states
+
+
+def test_planner_canary_persists_scheduler_assignments_and_behavior_trees_consume_them():
+    first_worker = unit(1, UnitType.WORKER, (0, 0))
+    second_worker = unit(2, UnitType.WORKER, (0, 1))
+    vanguard = unit(3, UnitType.VANGUARD, (4, 0))
+    runtime = AgentRuntime(config=AgentConfig(planner_canary=True))
+    first = runtime.decide(turn(tick=1, owned_core=core(), units=(first_worker, second_worker, vanguard), resource_cells=((2, 0),)))
+
+    first_alias = entity_alias(first_worker.id)
+    assert first_alias is not None
+    assert first.next_memory.scheduler_assignments[first_alias]["kind"] == "HARVEST_RESOURCE"
+    assert next(item for item in first.intents if item.actor_id == first_worker.id).reason == "bt_worker_move_to_visible_resource"
+    assert next(item for item in first.intents if item.actor_id == vanguard.id).reason == "bt_vanguard_defend_core"
+    worker_trace = next(item for item in first.trace.entity_traces if item.actor_alias == first_alias)
+    assert worker_trace.current_task == "HARVEST_RESOURCE" and worker_trace.assignment_status == "SCHEDULED"
+    transition = next(item for item in first.trace.task_transitions if item["actor_alias"] == first_alias)
+    assert transition["goal"] == "economy_goal"
+    assert transition["lock"] == "resource:2,0"
+    assert transition["lease_until_tick"] == 3 and transition["target"] == (2, 0)
+    runtime.commit(first)
+    second = runtime.decide(turn(tick=2, owned_core=core(), units=(first_worker, second_worker, vanguard), resource_cells=((2, 0),)))
+
+    assert second.next_memory.scheduler_assignments[first_alias]["task_id"] == first.next_memory.scheduler_assignments[first_alias]["task_id"]
+
+
+def test_scheduler_canary_projects_active_beacon_and_attack_objectives_into_assignments():
+    vanguard = unit(1, UnitType.VANGUARD, (0, 0))
+    ranger = unit(2, UnitType.RANGER, (0, 1))
+    beacon = AgentRuntime(config=AgentConfig(planner_canary=True, beacon_campaign_v1=True)).decide(
+        turn(owned_core=core(), units=(vanguard, ranger), beacon_position=(5, 0))
+    )
+    assert {item["kind"] for item in beacon.next_memory.scheduler_assignments.values()} == {"BEACON_ESCORT"}
+
+    enemy = core(value=200, position=(8, 0), controlled=False)
+    attack = AgentRuntime(config=AgentConfig(planner_canary=True, core_attack_campaign_v1=True)).decide(
+        turn(owned_core=core(), units=(vanguard, ranger), enemies=(enemy,))
+    )
+    assert {item["kind"] for item in attack.next_memory.scheduler_assignments.values()} == {"ATTACK_RALLY"}

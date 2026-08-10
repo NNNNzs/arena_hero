@@ -10,6 +10,7 @@ from uuid import UUID
 from arena_hero import Direction, UnitType
 
 if TYPE_CHECKING:
+    from .command_center import PreparedCommands
     from .domain import DecisionTrace
     from .memory import AgentMemory
 
@@ -63,10 +64,15 @@ class AgentConfig:
     exploration_sector_ticks: int = 6
     movement_failure_cooldown_ticks: int = 4
     scheduler_shadow: bool = False
+    scheduler_canary: bool = False
     worker_bt_canary: bool = False
+    vanguard_bt_canary: bool = False
+    ranger_bt_canary: bool = False
+    core_bt_canary: bool = False
     beacon_campaign_v1: bool = False
     core_migration_v1: bool = False
     core_attack_campaign_v1: bool = False
+    planner_canary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +109,7 @@ class DecisionResult:
     next_memory: AgentMemory
     timed_out: bool = False
     trace: DecisionTrace | None = None
+    prepared_commands: PreparedCommands | None = None
 
 
 @dataclass(slots=True)

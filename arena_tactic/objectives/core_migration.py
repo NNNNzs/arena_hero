@@ -20,7 +20,7 @@ class MigrationStage(StrEnum):
 class CoreMigrationInput:
     tick: int
     destination: tuple[int, int]
-    cargo_workers_away: int
+    cargo_workers_pending: int
     capacity: int
     stored_resources: int
     core_moving: bool
@@ -46,8 +46,13 @@ class CoreMigrationPlan:
             stage, started, replans = MigrationStage.REPLAN, False, replans + 1
         elif facts.core_moving:
             stage, started = MigrationStage.MOVING, True
-        elif facts.cargo_workers_away:
+        elif facts.cargo_workers_pending:
             stage = MigrationStage.RECALL
+        elif stage is MigrationStage.MOVING:
+            # The server has resolved the prior leg and supplied a fresh
+            # stationary Core.  Re-arm exactly one next leg from this current
+            # position; do not reuse an old controller or destination cell.
+            stage, started = MigrationStage.START, False
         elif stage in {MigrationStage.RECALL, MigrationStage.REPLAN}:
             stage = MigrationStage.START
 
