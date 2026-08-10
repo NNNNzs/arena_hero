@@ -128,7 +128,11 @@ def _project_record(record: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(position, list) or len(position) != 2 or not all(type(axis) is int for axis in position) or not identity or not kind:
             return None
         return {"alias": identity, "kind": kind, "position": position,
-                "hp": _integer(value.get("hp")), "cargo": _integer(value.get("cargo")), "enemy": enemy}
+                "hp": _integer(value.get("hp")), "shield": _integer(value.get("shield")),
+                "cargo": _integer(value.get("cargo")), "state": _safe_text(value.get("state"), maximum=24),
+                "destination": list(value.get("destination")) if isinstance(value.get("destination"), list)
+                and len(value["destination"]) == 2 and all(type(axis) is int for axis in value["destination"]) else None,
+                "enemy": enemy}
     beacon = state.get("beacon") if isinstance(state.get("beacon"), dict) else {}
     raw_units = state.get("units") if isinstance(state.get("units"), list) else []
     raw_enemies = state.get("visible_enemies") if isinstance(state.get("visible_enemies"), list) else []
@@ -178,8 +182,16 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
         entities.append({
             "alias": alias, "kind": _safe_text(item.get("entity_kind"), maximum=24),
             "task": _safe_text(item.get("current_task"), maximum=48),
+            "goal": _safe_text(item.get("goal"), maximum=64),
             "action": _safe_text(item.get("action"), maximum=24),
             "status": _safe_text(item.get("status"), maximum=24),
+            "task_status": _safe_text(item.get("task_status"), maximum=24),
+            "assignment_status": _safe_text(item.get("assignment_status"), maximum=24),
+            "current_cell": list(item.get("current_cell")) if isinstance(item.get("current_cell"), (list, tuple)) and len(item["current_cell"]) == 2 and all(type(axis) is int for axis in item["current_cell"]) else None,
+            "target_cell": list(item.get("target_cell")) if isinstance(item.get("target_cell"), (list, tuple)) and len(item["target_cell"]) == 2 and all(type(axis) is int for axis in item["target_cell"]) else None,
+            "next_step": _safe_text(item.get("next_step"), maximum=80),
+            "wake_condition": _safe_text(item.get("wake_condition"), maximum=100),
+            "eta_ticks": _integer(item.get("eta_ticks")),
             "reason": _safe_text((item.get("reason_codes") or [None])[0], maximum=80),
             "blocker": _safe_text(item.get("blocker"), maximum=80),
             "waited_ticks": _integer(item.get("waited_ticks")) or 0,
@@ -188,6 +200,16 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
                  "status": _safe_text(node.get("status"), maximum=24),
                  "reason": _safe_text(node.get("reason"), maximum=80)}
                 for node in item.get("node_path", ())[:12] if isinstance(node, dict)
+            ],
+            "candidate_intents": [
+                {key: value for key, value in {
+                    "action": _safe_text(candidate.get("action"), maximum=24),
+                    "direction": _safe_text(candidate.get("direction"), maximum=16),
+                    "target_cell": list(candidate.get("target_cell")) if isinstance(candidate.get("target_cell"), (list, tuple)) and len(candidate["target_cell"]) == 2 and all(type(axis) is int for axis in candidate["target_cell"]) else None,
+                    "score": _number(candidate.get("score")),
+                    "reason": _safe_text(candidate.get("reason"), maximum=80),
+                }.items() if value is not None}
+                for candidate in item.get("candidate_intents", ())[:8] if isinstance(candidate, dict)
             ],
             "assignment": {
                 "task_id": _safe_text(raw_assignment.get("task_id"), maximum=96),
@@ -232,6 +254,33 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
             for value in record.get("task_transitions", ())[:100] if isinstance(value, dict)
         ],
     }
+
+
+def _merge_entity_state(command_center: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Join trace decisions to the same-Tick redacted replay snapshot."""
+    if command_center is None:
+        return None
+    state_tick = current.get("tick") if isinstance(current, dict) else None
+    synced = state_tick == command_center.get("tick")
+    state_by_alias = {
+        (item.get("alias") if str(item.get("alias", "")).startswith("entity_") else f"entity_{item.get('alias')}"): item
+        for item in (current or {}).get("map", {}).get("friendly", ())
+        if isinstance(item, dict) and item.get("alias")
+    }
+    entities = []
+    for entity in command_center.get("entities", ()):
+        if not isinstance(entity, dict):
+            continue
+        state = state_by_alias.get(entity.get("alias")) if synced else None
+        entities.append({**entity, "trace_tick": command_center.get("tick"), "state_synced": synced,
+                         "state_sync_label": "已同步" if synced else "等待下一份权威状态",
+                         "position": state.get("position") if state else None,
+                         "hp": state.get("hp") if state else None,
+                         "shield": state.get("shield") if state else None,
+                         "cargo": state.get("cargo") if state else None,
+                         "object_state": state.get("state") if state else None,
+                         "destination": state.get("destination") if state else None})
+    return {**command_center, "state_tick": state_tick, "state_synced": synced, "entities": entities}
 
 
 class DashboardDataStore:
@@ -305,7 +354,7 @@ class DashboardDataStore:
                 for item in traces[-self.recent_limit:]
                 for task in item["tasks"]
             ][-100:]
-            command_center = {**command_center, "timeline": timeline}
+            command_center = _merge_entity_state({**command_center, "timeline": timeline}, latest)
         return {
             "schema_version": 1,
             "generated_at": int(time.time()),
@@ -364,11 +413,11 @@ DASHBOARD_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Arena Hero · 作战指挥中心</title><link rel="stylesheet" href="/static/command-center.css"></head><body><main>
 <header><div><h1>ARENA HERO 作战指挥中心</h1><div class="muted">仅展示当前脱敏事实；写命令在下一次成功提交后生效</div></div><div id="status" class="status">正在获取状态</div></header>
-<section class="grid"><div class="card metric"><div class="muted">最近 Tick</div><div id="tick" class="value">—</div></div><div class="card metric"><div class="muted">资源 / 容量</div><div id="resources" class="value">—</div></div><div class="card metric"><div class="muted">策略模式</div><div id="mode" class="value">—</div></div><div class="card metric"><div class="muted">命令语义</div><div class="value">Next Tick</div></div>
-<div class="card wide"><h2>战术地图（当前可见）</h2><svg id="map" class="map" viewBox="0 0 400 260" role="img" aria-label="当前可见战术地图"></svg></div><div class="card side"><h2>紧急控制</h2><p class="muted">默认关闭写操作；仅限本机认证会话。</p><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button><p id="loginState" class="muted"></p><button id="stop" class="danger">紧急停机</button> <button id="resume" class="neutral">恢复自动</button></div>
-<div class="card wide"><h2>Goal / 任务</h2><div id="goals" class="muted">尚无 trace</div></div>
-<div class="card wide"><h2>实体与行为树路径</h2><div id="entities" class="muted">尚无实体 trace</div></div><div class="card side"><h2>下达任务</h2><input id="taskAlias" placeholder="entity_…"><select id="taskKind"><option>HOLD_POSITION</option><option>RETREAT_TO_CORE</option><option>HARVEST_VISIBLE</option><option>MOVE_TO_CELL</option></select><input id="taskTarget" placeholder="目标 x,y（仅移动）"><button id="assign" class="neutral">排队任务</button><p id="taskState" class="muted"></p></div>
-<div class="card wide"><h2>任务、租约与阻塞</h2><div id="tasks" class="muted">尚无 scheduler trace</div></div><div class="card side"><h2>命令审计状态</h2><div id="commands" class="muted">尚无命令</div></div>
-<div class="card wide"><h2>任务依赖、目标锁与租约时间线</h2><div id="timeline" class="muted">尚无 scheduler trace</div></div>
-<div class="card wide"><h2>Core 迁移</h2><p class="muted">只会在下一权威 Tick 对当前正常 Core 选择一条安全相邻腿。</p><input id="migrationTarget" placeholder="目标 x,y"><button id="migrate" class="neutral">排队迁移</button> <button id="cancelMigration" class="neutral">取消迁移</button></div><div class="card side"><h2>策略姿态</h2><p class="muted">当前生效：<span id="policyCurrent">BALANCED</span></p><select id="policyPosture"><option>BALANCED</option><option>DEFENSIVE</option><option>ECONOMY</option><option>AGGRESSIVE</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可读取和更新。</p></div></section>
+<section class="grid"><div class="card metric"><div class="muted">最近 Tick</div><div id="tick" class="value">—</div></div><div class="card metric"><div class="muted">资源 / 容量</div><div id="resources" class="value">—</div></div><div class="card metric"><div class="muted">策略模式</div><div id="mode" class="value">—</div></div><div class="card metric"><div class="muted">单位在线</div><div id="unitCount" class="value">—</div></div>
+<div class="card map-card"><div class="section-head"><div><h2>战术地图</h2><p class="muted">当前可见态势与单位目标</p></div><span id="mapSummary" class="tag">—</span></div><svg id="map" class="map" viewBox="0 0 400 260" role="img" aria-label="当前可见战术地图"></svg></div>
+<aside class="card unit-panel"><div class="section-head"><div><h2>单位列表</h2><p class="muted">选择一个单位查看状态与计划</p></div><span id="unitFilterCount" class="tick">—</span></div><input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位"><div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div><div id="unitList" class="unit-list muted">尚无单位</div></aside>
+<section class="card detail-panel"><h2>单位状态与决策链</h2><div id="unitDetail" class="unit-detail"><div class="empty-detail">从左侧选择单位</div></div><div class="detail-actions"><h3>人工任务</h3><p class="muted">只对当前选中单位生效，仍会在下一权威 Tick 重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button><span id="loginState" class="muted"></span></div><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="neutral">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></section>
+<div class="card wide"><h2>目标与任务概览</h2><div id="goals" class="muted">尚无决策记录</div><div id="tasks" class="muted"></div></div><div class="card side"><h2>命令审计</h2><div id="commands" class="muted">尚无命令</div></div>
+<div class="card wide"><h2>任务切换时间线</h2><div id="timeline" class="muted">尚无任务切换记录</div></div>
+<div class="card wide"><h2>核心迁移</h2><p class="muted">只会在下一权威 Tick 对当前正常核心选择一条安全相邻腿。</p><input id="migrationTarget" placeholder="目标 x,y"><button id="migrate" class="neutral">排队迁移</button> <button id="cancelMigration" class="neutral">取消迁移</button></div><div class="card side"><h2>策略姿态</h2><p class="muted">当前生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可读取和更新。</p></div></section>
 </main><script src="/static/command-center.js"></script><script src="/static/tactical-map.js"></script></body></html>"""

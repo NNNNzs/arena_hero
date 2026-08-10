@@ -98,6 +98,9 @@ def test_command_api_convenience_task_route_becomes_deferred_assign_command():
     assert response is not None and response.status == 202
     assert queue.snapshot()[0].type.value == "ASSIGN_TASK"
     assert queue.snapshot()[0].payload["entity_alias"] == alias
+    tasks = api.handle("GET", "/api/v1/tasks", {"Cookie": cookie}, b"")
+    assert tasks is not None
+    assert json.loads(tasks.body)["tasks"][0]["entity_alias"] == alias
 
 
 def test_command_api_pause_and_resume_routes_enqueue_bounded_commands():

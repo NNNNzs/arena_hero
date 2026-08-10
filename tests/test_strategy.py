@@ -97,6 +97,19 @@ def test_remembered_invisible_resource_is_only_a_reconnaissance_target():
     assert intent.reason == "reobserve_remembered_resource"
 
 
+def test_workers_keep_exploring_when_frontier_is_exhausted_and_no_resource_is_visible():
+    worker = unit(1, UnitType.WORKER, (0, 0))
+    memory = AgentMemory(explored={(x, y) for x in range(-2, 3) for y in range(-2, 3)})
+    result = choose_actions(
+        turn(owned_core=core(position=(-3, 0)), units=(worker,)),
+        memory=memory,
+    )
+    intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason == "explore_sector_frontier"
+    assert intent.target_cell is not None
+
+
 def test_worker_waits_instead_of_stepping_away_from_blocked_adjacent_resource():
     worker = unit(1, UnitType.WORKER, (0, 0))
     guards = (

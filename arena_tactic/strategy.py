@@ -290,7 +290,37 @@ def _frontier_assignments(
     frontier = memory.frontier() - blocked
     assigned: set[Position] = set()
     result: dict[str, Position] = {}
-    if not units or not frontier:
+    if not units:
+        return result
+
+    # When the remembered frontier is exhausted, keep reconnaissance moving
+    # by projecting a bounded target three cells into each unit's assigned
+    # sector. The target is still validated by navigation before submission.
+    if not frontier:
+        for index, unit in enumerate(units):
+            sector = (
+                (index * len(_EXPLORATION_SECTORS)) // len(units) + sector_offset
+            ) % len(_EXPLORATION_SECTORS)
+            dx, dy = _EXPLORATION_SECTORS[sector]
+            candidates = (
+                (unit.position[0] + dx * 3, unit.position[1] + dy * 3),
+                (unit.position[0] + dx * 4, unit.position[1] + dy * 4),
+            )
+            target = next(
+                (cell for cell in candidates if cell not in blocked and cell not in assigned),
+                None,
+            )
+            if target is None:
+                continue
+            assigned.add(target)
+            result[str(unit.id)] = target
+            memory.unit_tasks[str(unit.id)] = {
+                "kind": task_kind,
+                "target": list(target),
+                "sector": sector,
+                "sector_since": context.tick,
+                "failures": 0,
+            }
         return result
 
     for index, unit in enumerate(units):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -15,6 +16,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from .command_center import CommandError, CommandQueue
 from .domain import Command
+
+
+_ENTITY_ALIAS = re.compile(r"^entity_[0-9a-f]{12}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,9 +285,16 @@ class CommandApi:
 
 
 def _command_record(command: Command, version: int) -> dict[str, Any]:
-    return {"command_id": command.command_id, "status": command.status.value, "type": command.type.value,
-            "command_version": version, "effective_not_before_tick": command.not_before_tick,
-            "expires_at_tick": command.expires_at_tick, "apply_result": dict(command.apply_result)}
+    record = {"command_id": command.command_id, "status": command.status.value, "type": command.type.value,
+              "command_version": version, "effective_not_before_tick": command.not_before_tick,
+              "expires_at_tick": command.expires_at_tick, "apply_result": dict(command.apply_result)}
+    # An alias is the approved public identifier for a manual task.  Returning
+    # it lets the local UI queue a later CANCEL without exposing raw payloads
+    # or SDK UUIDs.
+    alias = command.payload.get("entity_alias")
+    if isinstance(alias, str) and _ENTITY_ALIAS.fullmatch(alias):
+        record["entity_alias"] = alias
+    return record
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

@@ -39,8 +39,18 @@ def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_pa
     assert content_type.startswith("text/html")
     assert "作战指挥中心" in body.decode()
     assert "policyPosture" in body.decode()
+    assert "taskPriority" in body.decode()
+    assert "单位状态与决策链" in body.decode()
+    assert "当前任务" not in body.decode()  # labels are rendered from live entity cards
     static = _http_response("/static/command-center.js", status, DashboardDataStore(replay, cache_seconds=0))
     assert static is not None and static[2].startswith("application/javascript") and b"setPolicy" in static[1]
+    assert b"cancelEntity" in static[1] and b"syncEntityChoices" in static[1]
+    assert "下一步" in static[1].decode() and b"state_synced" in static[1]
+    static_text = static[1].decode()
+    for chinese_label in ("当前任务", "当前动作", "下一步", "触发条件", "决策链", "执行中", "移动", "采集资源", "紧急停机"):
+        assert chinese_label in static_text
+    for dictionary_key in ("actionLabels", "statusLabels", "goalLabels", "reasonLabels", "wakeLabels", "commandLabels"):
+        assert dictionary_key in static_text
     map_asset = _http_response("/static/tactical-map.js", status, DashboardDataStore(replay, cache_seconds=0))
     assert map_asset is not None and map_asset[2].startswith("application/javascript")
 
@@ -123,6 +133,50 @@ def test_dashboard_projects_only_redacted_command_center_trace_fields(tmp_path: 
     assert payload["command_center"]["timeline"] == [{"tick": 11, **task}]
     assert "do-not-expose" not in body.decode()
     assert "raw-id" not in body.decode()
+
+
+def test_dashboard_merges_same_tick_state_into_unit_decision_card(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    trace = tmp_path / "decision-trace.jsonl"
+    replay.write_text(json.dumps({"tick": 11, "state": {
+        "resources": 4, "resource_capacity": 10, "population": 1,
+        "core": {"id": "entity_000000000001", "kind": "CORE", "position": [0, 0], "hp": 5, "shield": 3, "state": "NORMAL"},
+        "units": [{"id": "entity_0123456789ab", "kind": "UNIT", "unit_type": "WORKER", "position": [2, 1], "hp": 2, "cargo": 1}],
+    }, "intents": [], "events": []}) + "\n", encoding="utf-8")
+    trace.write_text(json.dumps({"record_type": "decision_trace", "tick": 11,
+        "entity_traces": [{"actor_alias": "entity_0123456789ab", "entity_kind": "WORKER",
+                           "current_task": "HARVEST_RESOURCE", "goal": "ECONOMY", "action": "MOVE",
+                           "status": "RUNNING", "task_status": "RUNNING", "assignment_status": "SCHEDULED",
+                           "current_cell": [2, 1], "target_cell": [3, 1], "next_step": "HARVEST",
+                           "wake_condition": "arrive_at_resource", "eta_ticks": 2,
+                           "reason_codes": ["path_to_resource"], "node_path": [],
+                           "candidate_intents": [{"action": "MOVE", "direction": "RIGHT", "score": 750}] }],
+        "goal_summaries": [], "task_transitions": [], "command_results": []}) + "\n", encoding="utf-8")
+    result = _http_response("/api/dashboard", ServiceStatus(), DashboardDataStore(replay, trace_path=trace, cache_seconds=0))
+    assert result is not None
+    _, body, _ = result
+    entity = json.loads(body)["command_center"]["entities"][0]
+    assert entity["state_synced"] is True and entity["position"] == [2, 1]
+    assert entity["hp"] == 2 and entity["cargo"] == 1
+    assert entity["next_step"] == "HARVEST" and entity["wake_condition"] == "arrive_at_resource"
+    assert entity["candidate_intents"][0]["action"] == "MOVE"
+
+
+def test_dashboard_marks_stale_trace_without_merging_state(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    trace = tmp_path / "decision-trace.jsonl"
+    replay.write_text(json.dumps({"tick": 12, "state": {"resources": 1, "resource_capacity": 10, "population": 1,
+        "units": [{"id": "entity_0123456789ab", "kind": "UNIT", "unit_type": "WORKER", "position": [8, 8], "hp": 2, "cargo": 0}]}, "intents": [], "events": []}) + "\n", encoding="utf-8")
+    trace.write_text(json.dumps({"record_type": "decision_trace", "tick": 11,
+        "entity_traces": [{"actor_alias": "entity_0123456789ab", "entity_kind": "WORKER", "current_task": "HARVEST",
+                           "goal": "ECONOMY", "action": "MOVE", "status": "RUNNING", "reason_codes": ["stale"]}],
+        "goal_summaries": [], "task_transitions": [], "command_results": []}) + "\n", encoding="utf-8")
+    result = _http_response("/api/dashboard", ServiceStatus(), DashboardDataStore(replay, trace_path=trace, cache_seconds=0))
+    assert result is not None
+    _, body, _ = result
+    entity = json.loads(body)["command_center"]["entities"][0]
+    assert entity["state_synced"] is False and entity["position"] is None
+    assert entity["state_sync_label"] == "等待下一份权威状态"
 
 
 def test_dashboard_api_does_not_expose_sensitive_or_unapproved_fields(tmp_path: Path):
