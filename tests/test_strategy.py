@@ -62,6 +62,26 @@ def test_defense_mode_uses_exit_hysteresis():
     assert choose_mode(context, memory, AgentConfig()) is StrategicMode.DEFEND
 
 
+def test_attack_mode_survives_one_tick_of_lost_enemy_core_visibility():
+    enemy_core = core(value=300, position=(5, 0), controlled=False)
+    combat = (
+        unit(10, UnitType.VANGUARD, (0, 1)),
+        unit(11, UnitType.VANGUARD, (1, 0)),
+        unit(12, UnitType.RANGER, (0, 2)),
+    )
+    config = AgentConfig(attack_exit_grace_ticks=4)
+    attack_context = DecisionContext.from_turn(
+        turn(tick=10, owned_core=core(), units=combat, enemies=(enemy_core,))
+    )
+    assert choose_mode(attack_context, AgentMemory(), config) is StrategicMode.ATTACK
+
+    lost_visibility = DecisionContext.from_turn(
+        turn(tick=11, owned_core=core(), units=combat, enemies=())
+    )
+    memory = AgentMemory(last_mode=StrategicMode.ATTACK, mode_since_tick=10)
+    assert choose_mode(lost_visibility, memory, config) is StrategicMode.ATTACK
+
+
 def test_worker_resource_assignments_are_unique():
     workers = (
         unit(1, UnitType.WORKER, (0, 1)),

@@ -51,6 +51,10 @@ class AgentConfig:
     minimum_resource_reserve: int = 5
     defense_enter_distance: int = 4
     defense_exit_distance: int = 6
+    # Enemy cores can disappear from one authoritative Turn when they leave
+    # vision. Keep an already-started attack alive briefly instead of letting
+    # the strategic mode fall through to BEACON on the very next Turn.
+    attack_exit_grace_ticks: int = 4
     migration_idle_ticks: int = 8
     early_workers: int = 3
     early_vanguards: int = 2

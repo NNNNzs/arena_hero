@@ -120,10 +120,13 @@ def choose_mode(
     )
     attack_stay = (
         memory.last_mode is StrategicMode.ATTACK
-        and enemy_core_visible
         and combat_count >= 2
         and core.hp == CORE_MAX_HP
         and core.shield >= 2
+        and (
+            enemy_core_visible
+            or context.tick - memory.mode_since_tick <= config.attack_exit_grace_ticks
+        )
     )
     if attack_enter or attack_stay:
         return StrategicMode.ATTACK
