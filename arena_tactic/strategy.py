@@ -1173,7 +1173,27 @@ def _plan_rangers(
     return intents
 
 
-def _spawn_target(context: DecisionContext, config: AgentConfig) -> UnitType | None:
+def _past_early_roster(context: DecisionContext, config: AgentConfig) -> bool:
+    """Return *True* when the early-wave roster targets are all met."""
+    counts = Counter(unit.unit_type for unit in context.units)
+    return (
+        counts[UnitType.WORKER] >= config.early_workers
+        and counts[UnitType.VANGUARD] >= config.early_vanguards
+        and counts[UnitType.RANGER] >= config.early_rangers
+    )
+
+
+def _spawn_target(
+    context: DecisionContext,
+    config: AgentConfig,
+    mode: StrategicMode,
+) -> UnitType | None:
+    """Return the best unit type to spawn next, or *None* when satisfied.
+
+    In **wartime** (``DEFEND`` / ``ATTACK``) the production bias shifts
+    toward combat units: Workers above the early-wave target are skipped
+    unless the Worker deficit is the *only* remaining gap.
+    """
     counts = Counter(unit.unit_type for unit in context.units)
     early = (
         (UnitType.WORKER, config.early_workers),
@@ -1193,7 +1213,19 @@ def _spawn_target(context: DecisionContext, config: AgentConfig) -> UnitType | N
         for index, (unit_type, target) in enumerate(mature)
         if counts[unit_type] < target
     ]
-    return max(deficits, default=(0, 0, None))[2]
+    if not deficits:
+        return None
+
+    wartime = mode in (StrategicMode.DEFEND, StrategicMode.ATTACK)
+    if wartime:
+        # In wartime, prefer combat units.  Only produce a Worker if
+        # there are *no* combat-unit deficits at all.
+        combat_deficits = [
+            d for d in deficits if d[2] is not UnitType.WORKER
+        ]
+        if combat_deficits:
+            return max(combat_deficits)[2]
+    return max(deficits)[2]
 
 
 def _spawn_cell_is_free(
@@ -1320,14 +1352,27 @@ def _plan_core(
             estimated_cost=1,
         )
 
-    spawn_type = _spawn_target(context, config)
+    spawn_type = _spawn_target(context, config, mode)
     if (
         spawn_type is not None
         and context.population < config.max_population
         and _spawn_cell_is_free(context, unit_intents)
     ):
         price = unit_cost(spawn_type, context.population)
-        if available_resources >= price + reserve:
+        # In peacetime, once the mature roster is filled, conserve
+        # resources for future wartime production by requiring an extra
+        # buffer beyond the normal reserve.
+        peacetime_conserve = (
+            config.peacetime_resource_buffer > 0
+            and mode not in (StrategicMode.DEFEND, StrategicMode.ATTACK)
+            and _past_early_roster(context, config)
+        )
+        effective_reserve = (
+            reserve + config.peacetime_resource_buffer
+            if peacetime_conserve
+            else reserve
+        )
+        if available_resources >= price + effective_reserve:
             return ActionIntent(
                 actor_id=core.id,
                 is_core=True,

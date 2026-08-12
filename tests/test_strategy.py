@@ -401,11 +401,11 @@ def test_core_spawn_order_reserve_and_population_cap():
     choose_actions(reserved_turn)
     assert reserved_turn.plan.core_action.type == "WAIT"
 
-    twenty = tuple(
+    forty = tuple(
         unit(index + 1, (UnitType.WORKER, UnitType.VANGUARD, UnitType.RANGER)[index % 3], (index + 1, 2))
-        for index in range(20)
+        for index in range(40)
     )
-    capped_turn = turn(owned_core=core(), units=twenty, resources=100)
+    capped_turn = turn(owned_core=core(), units=forty, resources=200)
     choose_actions(capped_turn)
     assert capped_turn.plan.core_action.type != "SPAWN"
 
@@ -487,3 +487,163 @@ def test_missing_core_never_invents_an_action():
     assert result.intents == ()
     assert game_turn.plan.core_action is None
     assert game_turn.plan.unit_actions == {}
+
+
+# --- Population-40 / resource-capacity-200 / wartime-production tests ---
+
+
+def _make_mature_roster():
+    """12 Workers + 12 Vanguards + 16 Rangers = 40 units."""
+    units = []
+    idx = 1
+    for _ in range(12):
+        units.append(unit(idx, UnitType.WORKER, (idx, 0)))
+        idx += 1
+    for _ in range(12):
+        units.append(unit(idx, UnitType.VANGUARD, (idx, 1)))
+        idx += 1
+    for _ in range(16):
+        units.append(unit(idx, UnitType.RANGER, (idx, 2)))
+        idx += 1
+    return tuple(units)
+
+
+def test_population_40_stops_production_when_mature_roster_filled():
+    """At pop=40 (12W/12V/16R), resource_capacity=200 — no spawn."""
+    roster = _make_mature_roster()
+    assert len(roster) == 40
+    game_turn = turn(owned_core=core(), units=roster, resources=200)
+    result = choose_actions(game_turn)
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is not ActionKind.SPAWN
+    # Verify resource_capacity comes from Turn, not hardcoded
+    assert game_turn.resource_capacity == 200
+
+
+def test_resource_capacity_200_derives_from_population_40():
+    """resource_capacity = max(10, population*5) → 200 at pop 40."""
+    roster = _make_mature_roster()
+    game_turn = turn(owned_core=core(), units=roster, resources=100)
+    assert game_turn.resource_capacity == 200
+    assert game_turn.resource_space == 100  # capacity 200 - resources 100
+
+
+def test_mature_roster_gap_fills_largest_deficit():
+    """When 2 Vanguards and 4 Rangers are missing, Ranger is produced."""
+    roster = (
+        *(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 13)),      # 12 Workers (full)
+        *(unit(i, UnitType.VANGUARD, (i, 1)) for i in range(13, 23)),    # 10 Vanguards (gap=2)
+        *(unit(i, UnitType.RANGER, (i, 2)) for i in range(23, 33)),     # 12 Rangers (gap=4)
+    )
+    # 34 units total, pop < 40
+    game_turn = turn(owned_core=core(), units=roster, resources=200)
+    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=0))
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN
+    assert core_intent.unit_type is UnitType.RANGER  # largest deficit
+
+
+def test_peacetime_resource_conservation_after_mature_roster_filled():
+    """In ECONOMY/EXPLORE mode, peacetime buffer blocks production."""
+    # 12W/12V/14R → gap = 2 Rangers, but mature roster not filled yet
+    roster = (
+        *(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 13)),
+        *(unit(i, UnitType.VANGUARD, (i, 1)) for i in range(13, 25)),
+        *(unit(i, UnitType.RANGER, (i, 2)) for i in range(25, 39)),
+    )
+    # 38 units, not mature yet (rangers=14 < 16) — should still produce
+    game_turn = turn(owned_core=core(), units=roster, resources=200, resource_cells=((5, 0),))
+    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40))
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN  # roster not filled, produce freely
+
+
+def test_peacetime_conserve_blocks_production_when_roster_filled_and_buffer_insufficient():
+    """Once mature roster is filled, peacetime buffer blocks production."""
+    roster = _make_mature_roster()
+    # resources=80: price for ranger at pop 39 = 34; reserve=5; buffer=40 → need 34+5+40=79.  Just enough.
+    # But at pop=40 we can't spawn (cap hit).  Use 39 instead:
+    roster39 = roster[:39]  # 12W/12V/15R — one Ranger short of mature
+    game_turn = turn(owned_core=core(), units=roster39, resources=80, resource_cells=((5, 0),))
+    # With buffer=40 and price=34+reserve=5: need 79. 80 >= 79 → should produce
+    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40))
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN  # 80 >= 34+5+40 = 79
+
+    # Now with buffer=40 and resources=78 → 78 < 79 → should NOT produce
+    game_turn2 = turn(owned_core=core(), units=roster39, resources=78, resource_cells=((5, 0),))
+    result2 = choose_actions(game_turn2, config=AgentConfig(peacetime_resource_buffer=40))
+    core_intent2 = next(intent for intent in result2.intents if intent.is_core)
+    assert core_intent2.action is not ActionKind.SPAWN
+
+
+def test_wartime_production_prefers_combat_units_over_workers():
+    """In DEFEND/ATTACK mode, Workers above early target are skipped."""
+    # 3 Workers (early met), 0 Vanguards (gap=12), 0 Rangers (gap=16)
+    roster = tuple(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 4))
+    nearby_enemy = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    game_turn = turn(
+        owned_core=core(),
+        units=roster,
+        enemies=(nearby_enemy,),
+        resources=200,
+    )
+    result = choose_actions(game_turn)
+    assert result.mode is StrategicMode.DEFEND
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN
+    # Wartime: should prefer VANGUARD over Worker
+    assert core_intent.unit_type is UnitType.VANGUARD
+
+
+def test_wartime_skips_worker_when_combat_gaps_exist():
+    """In DEFEND, combat-unit deficits take priority over Worker gaps."""
+    # 3 Workers (early met), 10 Vanguards (gap=2), 10 Rangers (gap=6)
+    roster = (
+        *(unit(i, UnitType.WORKER, (0, i)) for i in range(1, 4)),
+        *(unit(i, UnitType.VANGUARD, (i, 1)) for i in range(4, 14)),
+        *(unit(i, UnitType.RANGER, (i, 2)) for i in range(14, 24)),
+    )
+    nearby_enemy = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    game_turn = turn(
+        owned_core=core(),
+        units=roster,
+        enemies=(nearby_enemy,),
+        resources=200,
+    )
+    result = choose_actions(game_turn)
+    assert result.mode is StrategicMode.DEFEND
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN
+    # Wartime: early met, mature phase — combat deficits first
+    # Worker gap=9, Vanguard gap=2, Ranger gap=6 → Ranger wins
+    assert core_intent.unit_type is UnitType.RANGER
+
+
+def test_peacetime_respects_normal_deficit_order():
+    """In ECONOMY mode without buffer, standard deficit order applies."""
+    # 8 Workers (early met), 10 Vanguards (early met), 10 Rangers (early met)
+    # → mature phase: Worker gap=4, Vanguard gap=2, Ranger gap=6
+    roster = (
+        *(unit(i, UnitType.WORKER, (10, i)) for i in range(1, 9)),
+        *(unit(i, UnitType.VANGUARD, (i + 10, 1)) for i in range(4, 14)),
+        *(unit(i, UnitType.RANGER, (i + 10, 2)) for i in range(14, 24)),
+    )
+    game_turn = turn(
+        owned_core=core(),
+        units=roster,
+        resources=200,
+        resource_cells=((5, 0),),
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=uuid(999),
+    )
+    result = choose_actions(
+        game_turn,
+        config=AgentConfig(peacetime_resource_buffer=0),
+    )
+    assert result.mode is StrategicMode.ECONOMY
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN
+    # mature phase: Worker=2(-0), Vanguard=2(-1), Ranger=6(-2)
+    # max by (deficit, -index) → (6, -2) → RANGER
+    assert core_intent.unit_type is UnitType.RANGER

@@ -47,7 +47,7 @@ class AgentConfig:
     """Centralized behavior settings intended for replay-based tuning."""
 
     planning_budget_ms: float = 500.0
-    max_population: int = 20
+    max_population: int = 40
     minimum_resource_reserve: int = 5
     defense_enter_distance: int = 4
     defense_exit_distance: int = 6
@@ -59,9 +59,13 @@ class AgentConfig:
     early_workers: int = 3
     early_vanguards: int = 2
     early_rangers: int = 1
-    mature_workers: int = 8
-    mature_vanguards: int = 6
-    mature_rangers: int = 6
+    mature_workers: int = 12
+    mature_vanguards: int = 12
+    mature_rangers: int = 16
+    # Extra resource buffer kept in peacetime so wartime production can
+    # afford expensive late-game units.  Only applies when the mature
+    # roster is already filled; 0 disables the peacetime conservation.
+    peacetime_resource_buffer: int = 40
     astar_node_limit: int = 1_500
     explored_history_limit: int = 20_000
     event_history_limit: int = 512
