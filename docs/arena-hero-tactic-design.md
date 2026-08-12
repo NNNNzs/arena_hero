@@ -129,7 +129,7 @@ flowchart TD
 
 当前 `choose_actions()` 会返回 `DecisionResult` 并把完整动作队列写入传入的当前 Turn。决策优先级是：生命周期安全、Core 紧急防御、治疗、Worker 存取、合法攻击、生产、Beacon、探索与安全迁移。
 
-Agent 不绑定单一战斗流派。`RESPAWN`、`RECOVER`、`DEFEND`、`ECONOMY`、`EXPLORE`、`BEACON` 和 `ATTACK` 七种模式由当前权威状态与少量退出迟滞共同决定。记忆只保存永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、Unit 任务、事件 ID 和脱敏统计；历史敌人绝不用于当前攻击。
+Agent 不绑定单一战斗流派。`RESPAWN`、`RECOVER`、`DEFEND`、`ECONOMY`、`EXPLORE`、`BEACON` 和 `ATTACK` 七种模式由当前权威状态与少量退出迟滞共同决定。战斗 Unit 在默认 legacy 策略中具有明确任务：最多 2 Vanguard + 1 Ranger `core_guard`，余下 Vanguard `patrol`（5–8 格外围），余下 Ranger `hunter`（7–10 格前沿）；当前可见敌人连续接近 Core 时才临时从外围组成最多 2 Vanguard + 1 Ranger 的 `intercept`，且不抽空近卫。记忆保存永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察及其有界复查失败/冷却、Unit 任务、事件 ID 和脱敏统计；另有仅用于判断当前可见敌人趋势的短期脱敏敌情轨迹。历史敌人绝不用于当前攻击或移动目标，失视、Core 缺失与重生会清理该轨迹和旧任务。无可见资源时仅保留一名 Worker 复查历史坐标，其余 Worker 继续扇区探索；连续两次可见为空的旧资源观察冷却 8 Tick，当前重新发现会立即恢复。
 
 移动采用 500ms 总预算内的有界 A*，资源按最短路径成本唯一分配，终点容量最多两个己方实体。探索者按原始 UUID 稳定覆盖东、南、西、北扇区，保留边界目标并周期轮换；移动失败会冷却实际尝试格或学习永久地形。搜索超时会退化为确定性的当前安全相邻步。当前有收益且合法的采集、存入、治疗、攻击、生产、Beacon 或探索机会存在时，不允许无理由全体等待。
 

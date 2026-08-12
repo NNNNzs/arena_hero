@@ -11,7 +11,7 @@ from arena_tactic.context import DecisionContext
 from arena_tactic.models import ActionKind
 from arena_tactic.strategy import choose_mode
 
-from .factories import core, turn, unit, uuid
+from .factories import core, event, turn, unit, uuid
 
 
 def _early_roster():
@@ -127,7 +127,145 @@ def test_workers_keep_exploring_when_frontier_is_exhausted_and_no_resource_is_vi
     intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
     assert intent.action is ActionKind.MOVE
     assert intent.reason == "explore_sector_frontier"
+
+
+def test_no_visible_resource_keeps_only_one_worker_on_remembered_recheck():
+    workers = tuple(
+        unit(index, UnitType.WORKER, (0, index)) for index in range(1, 4)
+    )
+    memory = AgentMemory(
+        last_tick=1,
+        resource_observations={(10, 0): 1, (10, 1): 1, (10, 2): 1},
+    )
+
+    result = choose_actions(
+        turn(tick=2, owned_core=core(position=(-5, 0)), units=workers),
+        memory=memory,
+    )
+    worker_intents = [
+        intent for intent in result.intents if intent.actor_id in {worker.id for worker in workers}
+    ]
+
+    assert sum(intent.reason == "reobserve_remembered_resource" for intent in worker_intents) == 1
+    assert sum(intent.reason == "explore_sector_frontier" for intent in worker_intents) == 2
+
+
+def test_visible_resource_clears_recheck_cooldown_and_is_harvestable_again():
+    resource = (0, 0)
+    worker = unit(1, UnitType.WORKER, resource)
+    memory = AgentMemory(
+        last_tick=10,
+        resource_recheck_cooldowns={resource: 20},
+    )
+
+    result = choose_actions(
+        turn(
+            tick=11,
+            owned_core=core(position=(-5, 0)),
+            units=(worker,),
+            resource_cells=(resource,),
+        ),
+        memory=memory,
+    )
+    intent = next(item for item in result.intents if item.actor_id == worker.id)
+
+    assert intent.action is ActionKind.HARVEST
+    assert result.next_memory.resource_observations[resource] == 11
+    assert resource not in result.next_memory.resource_recheck_cooldowns
     assert intent.target_cell is not None
+
+
+def test_default_combat_roster_keeps_guards_but_patrols_and_hunts_elsewhere():
+    combat = (
+        *(unit(index, UnitType.VANGUARD, (0, index)) for index in range(1, 5)),
+        *(unit(index, UnitType.RANGER, (1, index)) for index in range(5, 8)),
+    )
+    result = choose_actions(turn(owned_core=core(), units=combat, beacon_status=BeaconStatus.CARRIED, beacon_carrier_id=uuid(999)))
+    tasks = result.next_memory.unit_tasks
+
+    kinds = [tasks[str(actor.id)]["kind"] for actor in combat]
+    assert kinds.count("core_guard") == 3
+    assert kinds.count("patrol") == 2
+    assert kinds.count("hunter") == 2
+    assert any(
+        intent.reason == "patrol_outer_ring"
+        for intent in result.intents
+    )
+    assert any(
+        intent.reason == "hunter_forward_recon"
+        for intent in result.intents
+    )
+
+
+def test_patrol_and_hunter_rosters_receive_distinct_sector_targets():
+    combat = (
+        *(unit(index, UnitType.VANGUARD, (0, index)) for index in range(1, 6)),
+        *(unit(index, UnitType.RANGER, (1, index)) for index in range(6, 10)),
+    )
+    result = choose_actions(turn(tick=8, owned_core=core(), units=combat, beacon_status=BeaconStatus.CARRIED, beacon_carrier_id=uuid(999)))
+    tasks = result.next_memory.unit_tasks
+    patrol_targets = [tasks[str(actor.id)]["target"] for actor in combat if tasks[str(actor.id)]["kind"] == "patrol"]
+    hunter_targets = [tasks[str(actor.id)]["target"] for actor in combat if tasks[str(actor.id)]["kind"] == "hunter"]
+
+    assert len(patrol_targets) >= 2 and len({tuple(target) for target in patrol_targets}) == len(patrol_targets)
+    assert len(hunter_targets) >= 2 and len({tuple(target) for target in hunter_targets}) == len(hunter_targets)
+
+
+def test_approaching_enemy_forms_intercept_without_emptying_core_guards():
+    combat = (
+        *(unit(index, UnitType.VANGUARD, (0, index)) for index in range(1, 6)),
+        *(unit(index, UnitType.RANGER, (1, index)) for index in range(6, 9)),
+    )
+    enemy_first = unit(200, UnitType.WORKER, (8, 0), controlled=False)
+    first = choose_actions(turn(tick=10, owned_core=core(), units=combat, enemies=(enemy_first,)))
+    enemy_nearer = unit(200, UnitType.WORKER, (7, 0), controlled=False)
+    second = choose_actions(
+        turn(tick=11, owned_core=core(), units=combat, enemies=(enemy_nearer,)),
+        memory=first.next_memory,
+    )
+    tasks = second.next_memory.unit_tasks
+
+    assert sum(task["kind"] == "intercept" for task in tasks.values()) == 3
+    assert sum(task["kind"] == "core_guard" for task in tasks.values()) == 3
+    assert second.mode is not StrategicMode.DEFEND
+
+
+def test_enemy_departure_or_lost_visibility_does_not_leave_stale_intercept():
+    combat = (
+        *(unit(index, UnitType.VANGUARD, (0, index)) for index in range(1, 5)),
+        *(unit(index, UnitType.RANGER, (1, index)) for index in range(5, 7)),
+    )
+    near = unit(200, UnitType.WORKER, (6, 0), controlled=False)
+    first = choose_actions(turn(tick=10, owned_core=core(), units=combat, enemies=(near,)))
+    farther = unit(200, UnitType.WORKER, (8, 0), controlled=False)
+    departed = choose_actions(turn(tick=11, owned_core=core(), units=combat, enemies=(farther,)), memory=first.next_memory)
+    lost = choose_actions(turn(tick=12, owned_core=core(), units=combat), memory=departed.next_memory)
+
+    assert all(task["kind"] != "intercept" for task in departed.next_memory.unit_tasks.values())
+    assert all(task["kind"] != "intercept" for task in lost.next_memory.unit_tasks.values())
+    assert lost.mode is not StrategicMode.ATTACK
+
+
+def test_missing_or_respawned_core_clears_enemy_tracks_and_old_combat_tasks():
+    fighter = unit(1, UnitType.VANGUARD, (1, 0))
+    enemy = unit(200, UnitType.WORKER, (6, 0), controlled=False)
+    observed = choose_actions(turn(tick=10, owned_core=core(), units=(fighter,), enemies=(enemy,)))
+    assert observed.next_memory.enemy_tracks
+
+    missing = choose_actions(turn(tick=11, owned_core=None), memory=observed.next_memory)
+    assert missing.next_memory.enemy_tracks == {}
+    assert missing.next_memory.unit_tasks == {}
+
+    reborn = choose_actions(turn(tick=12, owned_core=core(value=101), units=(fighter,)), memory=missing.next_memory)
+    assert reborn.next_memory.enemy_tracks == {}
+    assert all(task["kind"] != "intercept" for task in reborn.next_memory.unit_tasks.values())
+
+    event_reborn = choose_actions(
+        turn(tick=13, owned_core=core(value=102), units=(fighter,), events=(event(301, "CORE_RESPAWNED", tick=12),)),
+        memory=observed.next_memory,
+    )
+    assert event_reborn.next_memory.enemy_tracks == {}
+    assert all(task["kind"] != "intercept" for task in event_reborn.next_memory.unit_tasks.values())
 
 
 def test_worker_waits_instead_of_stepping_away_from_blocked_adjacent_resource():

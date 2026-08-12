@@ -8,6 +8,7 @@ be exercised without credentials, network access, or a possible live submit.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -17,27 +18,71 @@ from arena_hero import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class FrozenRedactedReplay:
+    """Immutable, validated replay-v1 input captured at one point in time.
+
+    Records remain JSON text so every hydration creates separate record, state,
+    and ``Turn`` object graphs for independent offline replay runs.
+    """
+
+    records: tuple[str, ...]
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+
+def freeze_redacted_replay(path: Path, *, limit: int | None = None) -> FrozenRedactedReplay:
+    """Capture valid records from one replay file as a read-only input snapshot."""
+    return _freeze_redacted_replay_paths((path,), limit=limit)
+
+
+def load_frozen_redacted_replay(snapshot: FrozenRedactedReplay) -> tuple[Turn, ...]:
+    """Rehydrate fresh offline ``Turn`` values from a fixed replay snapshot."""
+    return tuple(
+        _turn_from_record(json.loads(record), sequence=index)
+        for index, record in enumerate(snapshot.records)
+    )
+
+
 def load_redacted_replay(path: Path, *, limit: int | None = None) -> tuple[Turn, ...]:
     """Load valid replay-v1 lines into deterministic offline ``Turn`` values."""
-    records: list[dict] = []
+    return load_frozen_redacted_replay(freeze_redacted_replay(path, limit=limit))
+
+
+def _freeze_redacted_replay_paths(paths: tuple[Path, ...], *, limit: int | None) -> FrozenRedactedReplay:
+    records: list[str] = []
+    for path in paths:
+        records.extend(_valid_redacted_replay_lines(path))
+    if limit is not None:
+        records = records[-limit:]
+    return FrozenRedactedReplay(tuple(records))
+
+
+def _valid_redacted_replay_lines(path: Path) -> list[str]:
+    """Return validated JSON lines without retaining mutable decoded records."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return ()
+        return []
+    records: list[str] = []
     for line in lines:
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict) and item.get("schema_version") == 1 and isinstance(item.get("state"), dict):
-            records.append(item)
-    if limit is not None:
-        records = records[-limit:]
-    return tuple(_turn_from_record(item, sequence=index) for index, item in enumerate(records))
+            records.append(line)
+    return records
 
 
 def load_redacted_replay_history(path: Path, *, limit: int | None = None) -> tuple[Turn, ...]:
     """Load replay rotation history oldest-to-newest without treating files as live state."""
+    return load_frozen_redacted_replay(freeze_redacted_replay_history(path, limit=limit))
+
+
+def freeze_redacted_replay_history(path: Path, *, limit: int | None = None) -> FrozenRedactedReplay:
+    """Capture replay rotations oldest-to-newest as one read-only input snapshot."""
     history: list[Path] = []
     prefix = f"{path.name}."
     try:
@@ -50,9 +95,8 @@ def load_redacted_replay_history(path: Path, *, limit: int | None = None) -> tup
         suffix = candidate.name.removeprefix(prefix)
         if suffix.isdigit() and int(suffix) > 0:
             history.append(candidate)
-    turns = tuple(turn for item in sorted(history, key=lambda item: int(item.name.removeprefix(prefix)), reverse=True)
-                  for turn in load_redacted_replay(item)) + load_redacted_replay(path)
-    return turns[-limit:] if limit is not None else turns
+    paths = (*sorted(history, key=lambda item: int(item.name.removeprefix(prefix)), reverse=True), path)
+    return _freeze_redacted_replay_paths(paths, limit=limit)
 
 
 def _offline_uuid(alias: object, *, fallback: str) -> UUID:

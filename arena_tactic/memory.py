@@ -104,6 +104,28 @@ def _safe_cell_map(value: Any) -> dict[Position, int]:
     return result
 
 
+def _safe_enemy_tracks(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for alias, raw in value.items():
+        if not isinstance(alias, str) or not _EVENT_ID_RE.fullmatch(alias) or not isinstance(raw, dict):
+            continue
+        position = raw.get("last_position")
+        if not (isinstance(position, (list, tuple)) and len(position) == 2 and all(type(axis) is int for axis in position)):
+            continue
+        values = (raw.get("last_seen_tick"), raw.get("previous_distance_to_core"), raw.get("approach_streak"))
+        if not all(type(item) is int and item >= 0 for item in values):
+            continue
+        result[alias] = {
+            "last_position": list(position),
+            "last_seen_tick": values[0],
+            "previous_distance_to_core": values[1],
+            "approach_streak": values[2],
+        }
+    return result
+
+
 def _safe_objective_states(value: Any) -> dict[str, dict[str, Any]]:
     """Keep only the small controller-free lifecycle checkpoints we own."""
     if not isinstance(value, dict):
@@ -206,6 +228,9 @@ class AgentMemory:
     obstacles: set[Position] = field(default_factory=set)
     explored: set[Position] = field(default_factory=set)
     resource_observations: dict[Position, int] = field(default_factory=dict)
+    resource_recheck_failures: dict[Position, int] = field(default_factory=dict)
+    resource_recheck_cooldowns: dict[Position, int] = field(default_factory=dict)
+    enemy_tracks: dict[str, dict[str, Any]] = field(default_factory=dict)
     temporary_blocks: dict[Position, int] = field(default_factory=dict)
     unit_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     manual_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -235,6 +260,12 @@ class AgentMemory:
             if blocked_until >= tick
         }
 
+    def active_resource_recheck_cooldowns(self, tick: int) -> set[Position]:
+        return {
+            cell for cell, blocked_until in self.resource_recheck_cooldowns.items()
+            if blocked_until >= tick
+        }
+
     def advance(
         self, context: DecisionContext, config: AgentConfig
     ) -> "AgentMemory":
@@ -253,6 +284,41 @@ class AgentMemory:
             for cell, blocked_until in next_memory.temporary_blocks.items()
             if blocked_until >= context.tick
         }
+        next_memory.resource_recheck_cooldowns = {
+            cell: blocked_until
+            for cell, blocked_until in next_memory.resource_recheck_cooldowns.items()
+            if blocked_until >= context.tick
+        }
+        if context.core is None:
+            # A missing Core means respawn admission/retry: neither old Unit
+            # roles nor enemy approach history applies to the next generation.
+            next_memory.unit_tasks.clear()
+            next_memory.enemy_tracks.clear()
+        else:
+            next_memory.enemy_tracks = {
+                alias: track
+                for alias, track in next_memory.enemy_tracks.items()
+                if context.tick - int(track.get("last_seen_tick", 0)) <= config.enemy_track_ttl_ticks
+            }
+            for enemy in context.enemies:
+                alias = entity_alias(enemy.id)
+                if alias is None:
+                    continue
+                previous = next_memory.enemy_tracks.get(alias, {})
+                current_distance = abs(enemy.position[0] - context.core.position[0]) + abs(enemy.position[1] - context.core.position[1])
+                consecutive = int(previous.get("last_seen_tick", -1)) == context.tick - 1
+                previous_distance = previous.get("previous_distance_to_core")
+                streak = (
+                    int(previous.get("approach_streak", 0)) + 1
+                    if consecutive and type(previous_distance) is int and current_distance < previous_distance
+                    else 0
+                )
+                next_memory.enemy_tracks[alias] = {
+                    "last_position": list(enemy.position),
+                    "last_seen_tick": context.tick,
+                    "previous_distance_to_core": current_distance,
+                    "approach_streak": streak,
+                }
         current_aliases = {entity_alias(item_id) for item_id in context.current_objects}
         next_memory.manual_assignments = {
             alias: task for alias, task in next_memory.manual_assignments.items()
@@ -285,10 +351,27 @@ class AgentMemory:
                 )
 
         # Current visible facts overwrite remembered resource observations.
+        # A stale hint gets two authoritative empty rechecks before it is
+        # cooled, avoiding both one-frame churn and indefinite pursuit.
         for cell in context.resource_cells:
             next_memory.resource_observations[cell] = context.tick
-        for cell in context.observed_cells - context.resource_cells:
-            next_memory.resource_observations.pop(cell, None)
+            next_memory.resource_recheck_failures.pop(cell, None)
+            next_memory.resource_recheck_cooldowns.pop(cell, None)
+        for cell in tuple(next_memory.resource_observations):
+            if cell in context.resource_cells:
+                continue
+            if cell not in context.observed_cells:
+                next_memory.resource_recheck_failures.pop(cell, None)
+                continue
+            failures = next_memory.resource_recheck_failures.get(cell, 0) + 1
+            if failures >= config.resource_recheck_failure_threshold:
+                next_memory.resource_observations.pop(cell, None)
+                next_memory.resource_recheck_failures.pop(cell, None)
+                next_memory.resource_recheck_cooldowns[cell] = (
+                    context.tick + config.resource_recheck_cooldown_ticks
+                )
+            else:
+                next_memory.resource_recheck_failures[cell] = failures
 
         processed = set(next_memory.processed_event_ids)
         counts = Counter(next_memory.event_counts)
@@ -336,6 +419,7 @@ class AgentMemory:
                 next_memory.unit_tasks.pop(str(event.actor_id), None)
             if event.event_type == "CORE_RESPAWNED":
                 next_memory.unit_tasks.clear()
+                next_memory.enemy_tracks.clear()
                 next_memory.no_resource_ticks = 0
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"
@@ -343,6 +427,7 @@ class AgentMemory:
                 or event.event_type == "HARVEST_SUCCEEDED"
             ):
                 next_memory.resource_observations.pop(event.position, None)
+                next_memory.resource_recheck_failures.pop(event.position, None)
         next_memory.event_counts = dict(counts)
         next_memory.processed_event_ids = next_memory.processed_event_ids[
             -config.event_history_limit :
@@ -382,6 +467,15 @@ class AgentMemory:
                 _cell_key(cell): tick
                 for cell, tick in sorted(self.resource_observations.items())
             },
+            "resource_recheck_failures": {
+                _cell_key(cell): failures
+                for cell, failures in sorted(self.resource_recheck_failures.items())
+            },
+            "resource_recheck_cooldowns": {
+                _cell_key(cell): blocked_until
+                for cell, blocked_until in sorted(self.resource_recheck_cooldowns.items())
+            },
+            "enemy_tracks": _safe_enemy_tracks(self.enemy_tracks),
             "temporary_blocks": {
                 _cell_key(cell): blocked_until
                 for cell, blocked_until in sorted(self.temporary_blocks.items())
@@ -432,6 +526,9 @@ class AgentMemory:
                 obstacles=_safe_cells(data.get("obstacles", [])),
                 explored=_safe_cells(data.get("explored", [])),
                 resource_observations=_safe_cell_map(data.get("resource_observations", {})),
+                resource_recheck_failures=_safe_cell_map(data.get("resource_recheck_failures", {})),
+                resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
+                enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
                 temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
                 unit_tasks={
                     alias: _safe_task(task)

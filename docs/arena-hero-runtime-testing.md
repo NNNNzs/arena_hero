@@ -29,13 +29,13 @@ sequenceDiagram
 - `DecisionContext` 是不可变的当前 Turn 快照，包含 Core、己方 Unit、当前可见敌人、资源、障碍、Beacon、占用索引、容量和上 Tick 事件。
 - `ActionIntent` 不持有 SDK Controller，只保存当前对象 UUID、动作、目标、评分、原因、预计成本和预留格。
 - `DecisionResult` 保存模式、最终意图、被拒意图、动作统计、等待原因、耗时、超时标志和下一版记忆。
-- `AgentMemory` 不保存敌人或 Controller。当前 Turn 会完整覆盖旧的实体和资源事实。
+- `AgentMemory` 不保存敌人 Controller 或可用于攻击的旧敌人事实。它仅以脱敏 alias 保存短期敌情轨迹（最后位置、最后可见 Tick、距 Core 距离、接近连续次数）以判断**当前仍可见**敌人是否接近；失视、Core 缺失或 `CORE_RESPAWNED` 会清空或使其不可用。
 
 ## 3. 记忆与事件
 
-默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。schema v3 状态包含版本号、最后 Tick、模式兼容标签、连续无资源 Tick、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、legacy Unit 任务、人工任务、scheduler assignment、policy、objective lifecycle、已处理事件 ID 和脱敏计数。加载器兼容 v1/v2；所有跨 Tick 实体引用都是不可逆 alias，绝不保存 controller。
+默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。schema v3 状态包含版本号、最后 Tick、模式兼容标签、连续无资源 Tick、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、资源复查失败计数与冷却、legacy Unit 任务、人工任务、scheduler assignment、policy、objective lifecycle、已处理事件 ID 和脱敏计数。新增复查字段在 schema v3 中是可选字段，旧 v1/v2/v3 文件缺失时按空映射加载；所有跨 Tick 实体引用都是不可逆 alias，绝不保存 controller。
 
-事件按 `event_id` 去重。资源耗尽或成功采集会淘汰旧资源观察；移动失败会读取上一计划保存的实际下一格，普通失败将其冷却 4 Tick，地形阻挡将其记录为永久障碍，并让探索任务轮换扇区；存入失败会清理对应 Unit 任务；Core 重生会清空旧 Unit 任务。生产、治疗、射击、移动和重生结果全部进入事件计数，下一 Turn 的完整状态仍是事实来源。
+事件按 `event_id` 去重。资源耗尽或成功采集会淘汰旧资源观察；没有事件但旧资源格连续 2 个权威 Turn 可见且为空时也会淘汰观察并冷却 8 Tick，重新可见的资源会立即恢复观察。移动失败会读取上一计划保存的实际下一格，普通失败将其冷却 4 Tick，地形阻挡将其记录为永久障碍，并让探索任务轮换扇区；存入失败会清理对应 Unit 任务；Core 重生会清空旧 Unit 任务。生产、治疗、射击、移动和重生结果全部进入事件计数，下一 Turn 的完整状态仍是事实来源。
 
 只有服务器返回 `accepted=true` 后，`AgentRuntime.commit()` 才通过同目录临时文件与 `os.replace()` 原子保存下一版记忆。进程在提交前退出不会提前推进持久状态。
 
@@ -65,9 +65,9 @@ git diff --check
 
 最后一条仅做离线验证：它读取 `replay.jsonl` 及轮转历史，选取最新的最长连续 Tick 区间后两次执行完整 scheduler/BT/objective canary，检查动作签名确定性、零超时、零被拒 intent、p95 小于 500ms、最大耗时小于 900ms，以及连续 replay Tick 不少于阈值。未达到 Tick 数时输出 JSON 证据并以退出码 `2` 结束；它不会连接、提交或读取凭据。
 
-测试覆盖模式切换与迟滞、治疗与生产预算、Ranger/Vanguard 评分、视野 integer-supercover、Ranger 中间射击格、A* 绕障、四扇区探索、目标持久化、失败格冷却、地形障碍学习、资源唯一分配、两实体容量、UUID 决胜、当前目标校验、事件去重、资源枯竭与补充、连续移动失败、敌 Core 突现、Core 受损、Beacon 掉落、原子记忆、脱敏回放、确定性属性和 20 Unit 性能。
+测试覆盖模式切换与迟滞、治疗与生产预算、Ranger/Vanguard 评分、近卫/巡逻/猎人不同槽位、接近 Core 的临时拦截与近卫保留、失视/远离不触发历史拦截、Core 缺失/重生清理旧任务和敌情轨迹、视野 integer-supercover、Ranger 中间射击格、A* 绕障、四扇区探索、目标持久化、失败格冷却、地形障碍学习、资源唯一分配、旧资源连续复查失效与重新发现、无可见资源时的积极探索、两实体容量、UUID 决胜、当前目标校验、事件去重、资源枯竭与补充、连续移动失败、敌 Core 突现、Core 受损、Beacon 掉落、原子记忆、脱敏回放、确定性属性和 20 Unit 性能。
 
-这些结果仅证明本地语法、依赖和代表性官方 SDK 状态的行为。它们不证明 API Key 有效、网络可达、服务器接受计划或真实策略收益。
+若实时 replay 正在追加，canary 前必须复制一个固定快照并对该快照运行两次；不能把同一可变 Turn/文件复用于确定性比较，也不能为通过 canary 弱化零超时、零拒绝和性能强断言。这些结果仅证明本地语法、依赖和代表性官方 SDK 状态的行为。它们不证明 API Key 有效、网络可达、服务器接受计划或真实策略收益。
 
 ## 7. 实时运行边界
 

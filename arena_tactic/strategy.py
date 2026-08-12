@@ -19,6 +19,7 @@ from arena_hero import (
 
 from .context import DecisionContext
 from .memory import AgentMemory
+from .identity import entity_alias
 from .models import (
     ActionIntent,
     ActionKind,
@@ -49,6 +50,59 @@ _EXPLORATION_SECTORS = (
     (-1, 0),  # west
     (0, -1),  # north
 )
+
+
+def _combat_target(
+    core: CoreView,
+    index: int,
+    tick: int,
+    minimum_radius: int,
+    maximum_radius: int,
+    rotation_ticks: int,
+) -> Position:
+    """Return a deterministic, distinct sector slot around the current Core."""
+    sector = (index + tick // max(1, rotation_ticks)) % len(_EXPLORATION_SECTORS)
+    radius = minimum_radius + (index // len(_EXPLORATION_SECTORS)) % max(1, maximum_radius - minimum_radius + 1)
+    dx, dy = _EXPLORATION_SECTORS[sector]
+    lateral = ((index // len(_EXPLORATION_SECTORS)) % 2) * 2 - 1
+    if dx:
+        return core.position[0] + dx * radius, core.position[1] + lateral
+    return core.position[0] + lateral, core.position[1] + dy * radius
+
+
+def _combat_rosters(
+    context: DecisionContext, memory: AgentMemory, config: AgentConfig
+) -> tuple[set[UUID], set[UUID], set[UUID], set[UUID]]:
+    """Return stable guard, patrol, hunter and temporary intercept rosters."""
+    vanguards = tuple(sorted(context.vanguards, key=lambda unit: unit.id.bytes))
+    rangers = tuple(sorted(context.rangers, key=lambda unit: unit.id.bytes))
+    guards = {unit.id for unit in vanguards[:config.core_guard_vanguards]}
+    guard_rangers = {unit.id for unit in rangers[:config.core_guard_rangers]}
+    patrol = {unit.id for unit in vanguards if unit.id not in guards}
+    hunters = {unit.id for unit in rangers if unit.id not in guard_rangers}
+    threat = _intercept_target(context, memory, config)
+    if threat is None:
+        return guards, guard_rangers, patrol, hunters
+    intercept_vanguards = set(sorted(patrol, key=lambda unit_id: unit_id.bytes)[:config.intercept_vanguards])
+    intercept_rangers = set(sorted(hunters, key=lambda unit_id: unit_id.bytes)[:config.intercept_rangers])
+    return guards, guard_rangers, intercept_vanguards, intercept_rangers
+
+
+def _intercept_target(
+    context: DecisionContext, memory: AgentMemory, config: AgentConfig
+) -> CoreView | UnitView | None:
+    if context.core is None:
+        return None
+    candidates: list[tuple[int, int, bytes, CoreView | UnitView]] = []
+    for enemy in context.enemies:
+        immediate = _enemy_can_attack_core(enemy, context.core, memory.obstacles)
+        alias = entity_alias(enemy.id)
+        track = memory.enemy_tracks.get(alias or "", {})
+        approaching = int(track.get("approach_streak", 0)) >= config.intercept_approach_streak
+        enemy_distance = distance(enemy.position, context.core.position)
+        if immediate or (approaching and enemy_distance <= config.intercept_distance):
+            candidates.append((0 if immediate else 1, enemy_distance, enemy.id.bytes, enemy))
+    return min(candidates, default=(0, 0, b"", None))[-1]
 
 
 def _enemy_can_attack_core(
@@ -561,9 +615,16 @@ def _plan_workers(
     unassigned = [
         worker for worker in empty_workers if str(worker.id) not in resource_assignments
     ]
-    remembered_targets = set(memory.resource_observations) - set(context.resource_cells)
+    remembered_targets = (
+        set(memory.resource_observations)
+        - set(context.resource_cells)
+        - memory.active_resource_recheck_cooldowns(context.tick)
+    )
+    recheck_workers = tuple(sorted(unassigned, key=lambda unit: str(unit.id)))[
+        : config.resource_recheck_worker_limit
+    ]
     reconnaissance = _assign_unique_targets(
-        unassigned,
+        recheck_workers,
         remembered_targets,
         blocked=worker_blocks,
         deadline=deadline,
@@ -745,6 +806,11 @@ def _plan_vanguards(
         default=None,
     )
     guard_slots = _guard_slots(context, memory)
+    guard_vanguards, _, intercept_vanguards, _ = _combat_rosters(
+        context, memory, config
+    )
+    intercept_enemy = _intercept_target(context, memory, config)
+    patrol_index = 0
 
     for index, vanguard in enumerate(sorted(context.vanguards, key=lambda unit: str(unit.id))):
         adjacent_by_cell: dict[Position, list[CoreView | UnitView]] = {}
@@ -817,6 +883,16 @@ def _plan_vanguards(
             )
             continue
 
+        if vanguard.id in intercept_vanguards and intercept_enemy is not None:
+            intent = _move(
+                vanguard, intercept_enemy.position, "intercept_approaching_core_threat", 680,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
+            )
+            _record_unit_task(memory, context, vanguard, kind="intercept", target=intercept_enemy.position, intent=intent)
+            intents.append(intent or _wait(vanguard, "intercept_route_blocked"))
+            continue
+
         if mode is StrategicMode.BEACON and beacon_vanguard is vanguard:
             if (
                 vanguard.position == context.beacon.position
@@ -851,10 +927,7 @@ def _plan_vanguards(
             continue
 
         target_enemy = _best_visible_enemy(vanguard, context, memory)
-        if target_enemy is not None and mode in (
-            StrategicMode.DEFEND,
-            StrategicMode.ATTACK,
-        ):
+        if target_enemy is not None and mode is StrategicMode.ATTACK:
             intent = _move(
                 vanguard,
                 target_enemy.position,
@@ -871,7 +944,24 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "enemy_approach_blocked"))
             continue
 
-        guard_target = guard_slots[index % len(guard_slots)] if guard_slots else None
+        if vanguard.id not in guard_vanguards:
+            patrol_target = _combat_target(
+                context.core, patrol_index, context.tick, config.patrol_radius_min,
+                config.patrol_radius_max, config.patrol_rotation_ticks,
+            ) if context.core is not None else None
+            patrol_index += 1
+            if patrol_target is not None:
+                intent = _move(
+                    vanguard, patrol_target, "patrol_outer_ring", 360,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
+                )
+                _record_unit_task(memory, context, vanguard, kind="patrol", target=patrol_target, intent=intent)
+                intents.append(intent or _wait(vanguard, "patrol_route_blocked"))
+                continue
+
+        guard_index = tuple(sorted(guard_vanguards, key=lambda unit_id: unit_id.bytes)).index(vanguard.id)
+        guard_target = guard_slots[guard_index % len(guard_slots)] if guard_slots else None
         if guard_target is not None and vanguard.position != guard_target:
             intent = _move(
                 vanguard,
@@ -884,8 +974,11 @@ def _plan_vanguards(
                 deadline=deadline,
                 config=config,
             )
+            _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(vanguard, "guard_route_blocked"))
         else:
+            if guard_target is not None:
+                _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=None)
             intents.append(_wait(vanguard, "holding_defense_ring"))
     return intents
 
@@ -941,26 +1034,10 @@ def _plan_rangers(
     heal_allowances: dict[UUID, int],
 ) -> list[ActionIntent]:
     intents: list[ActionIntent] = []
-    stable_roster = (
-        len(context.workers) >= config.early_workers
-        and len(context.vanguards) >= config.early_vanguards
-        and len(context.rangers) >= config.early_rangers
-    )
-    scout = min(context.rangers, key=lambda unit: str(unit.id), default=None)
-    scout_assignments = (
-        _frontier_assignments(
-            (scout,),
-            memory,
-            context,
-            deadline,
-            config,
-            task_kind="scout",
-            sector_offset=3,
-        )
-        if stable_roster and scout is not None and mode is StrategicMode.EXPLORE
-        else {}
-    )
     guard_slots = _guard_slots(context, memory)
+    _, guard_rangers, _, intercept_rangers = _combat_rosters(context, memory, config)
+    intercept_enemy = _intercept_target(context, memory, config)
+    hunter_index = 0
 
     for index, ranger in enumerate(sorted(context.rangers, key=lambda unit: str(unit.id))):
         shootable = [
@@ -1011,13 +1088,13 @@ def _plan_rangers(
             )
             continue
 
-        scout_target = scout_assignments.get(str(ranger.id))
-        if scout_target is not None:
+        if ranger.id in intercept_rangers and intercept_enemy is not None:
+            staging = _ranger_staging_cell(ranger, intercept_enemy, context, memory)
             intent = _move(
                 ranger,
-                scout_target,
-                "stable_roster_ranger_scout",
-                420,
+                staging,
+                "intercept_ranger_firing_line",
+                620,
                 context=context,
                 memory=memory,
                 reservations=reservations,
@@ -1028,11 +1105,11 @@ def _plan_rangers(
                 memory,
                 context,
                 ranger,
-                kind="scout",
-                target=scout_target,
+                kind="intercept",
+                target=staging,
                 intent=intent,
             )
-            intents.append(intent or _wait(ranger, "scout_route_blocked"))
+            intents.append(intent or _wait(ranger, "intercept_firing_route_blocked"))
             continue
 
         target_enemy = _best_visible_enemy(ranger, context, memory)
@@ -1057,11 +1134,24 @@ def _plan_rangers(
             intents.append(intent or _wait(ranger, "firing_route_blocked"))
             continue
 
-        guard_target = (
-            guard_slots[(index + len(context.vanguards)) % len(guard_slots)]
-            if guard_slots
-            else None
-        )
+        if ranger.id not in guard_rangers:
+            hunter_target = _combat_target(
+                context.core, hunter_index, context.tick, config.hunter_radius_min,
+                config.hunter_radius_max, config.patrol_rotation_ticks,
+            ) if context.core is not None else None
+            hunter_index += 1
+            if hunter_target is not None:
+                intent = _move(
+                    ranger, hunter_target, "hunter_forward_recon", 420,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
+                )
+                _record_unit_task(memory, context, ranger, kind="hunter", target=hunter_target, intent=intent)
+                intents.append(intent or _wait(ranger, "hunter_route_blocked"))
+                continue
+
+        guard_index = tuple(sorted(guard_rangers, key=lambda unit_id: unit_id.bytes)).index(ranger.id)
+        guard_target = guard_slots[(guard_index + len(context.vanguards)) % len(guard_slots)] if guard_slots else None
         if guard_target is not None and ranger.position != guard_target:
             intent = _move(
                 ranger,
@@ -1074,8 +1164,11 @@ def _plan_rangers(
                 deadline=deadline,
                 config=config,
             )
+            _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(ranger, "guard_route_blocked"))
         else:
+            if guard_target is not None:
+                _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=None)
             intents.append(_wait(ranger, "holding_defense_ring"))
     return intents
 

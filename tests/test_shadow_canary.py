@@ -27,3 +27,19 @@ def test_500_tick_offline_shadow_canary_is_deterministic_and_bounded():
     assert first.p95_decision_ms < 500
     assert first.max_decision_ms < 500
     assert first.action_signatures == second.action_signatures
+
+
+def test_offline_shadow_canary_clones_independently_loaded_turn_snapshots():
+    first_replay = _five_hundred_turns()[:3]
+    second_replay = _five_hundred_turns()[:3]
+    config = AgentConfig(planner_canary=True)
+
+    assert all(first is not second for first, second in zip(first_replay, second_replay))
+    assert all(first.state is not second.state for first, second in zip(first_replay, second_replay))
+
+    first = run_shadow_canary(first_replay, config=config)
+    second = run_shadow_canary(second_replay, config=config)
+
+    assert first.action_signatures == second.action_signatures
+    assert all(not replay_turn.plan.unit_actions and replay_turn.plan.core_action is None
+               for replay_turn in (*first_replay, *second_replay))

@@ -34,18 +34,63 @@ def test_event_processing_is_deduplicated_and_resource_depletion_invalidates_mem
     assert (5, 5) not in next_memory.resource_observations
 
 
+def test_remembered_resource_is_cooled_after_two_consecutive_empty_rechecks():
+    remembered = (2, 0)
+    worker = unit(1, UnitType.WORKER, (0, 0))
+    memory = AgentMemory(last_tick=1, resource_observations={remembered: 1})
+    config = AgentConfig(
+        resource_recheck_failure_threshold=2,
+        resource_recheck_cooldown_ticks=8,
+    )
+
+    first = memory.advance(
+        DecisionContext.from_turn(turn(tick=2, owned_core=core(position=(-5, 0)), units=(worker,))),
+        config,
+    )
+    assert first.resource_observations == {remembered: 1}
+    assert first.resource_recheck_failures == {remembered: 1}
+
+    second = first.advance(
+        DecisionContext.from_turn(turn(tick=3, owned_core=core(position=(-5, 0)), units=(worker,))),
+        config,
+    )
+    assert remembered not in second.resource_observations
+    assert second.resource_recheck_failures == {}
+    assert second.resource_recheck_cooldowns[remembered] == 11
+
+
+def test_rejected_tick_does_not_persist_resource_recheck_failure():
+    remembered = (2, 0)
+    runtime = AgentRuntime(
+        memory=AgentMemory(last_tick=1, resource_observations={remembered: 1}),
+        config=AgentConfig(resource_recheck_failure_threshold=2),
+    )
+    worker = unit(1, UnitType.WORKER, (0, 0))
+
+    result = runtime.decide(
+        turn(tick=2, owned_core=core(position=(-5, 0)), units=(worker,))
+    )
+
+    assert result.next_memory.resource_recheck_failures == {remembered: 1}
+    assert runtime.memory.resource_recheck_failures == {}
+
+
 def test_memory_store_round_trip_is_versioned_and_controller_free(tmp_path):
     store = MemoryStore(tmp_path / "runtime" / "agent-state.json")
     memory = AgentMemory(
         last_tick=4,
         obstacles={(1, 2)},
         explored={(0, 0)},
+        resource_recheck_failures={(3, 4): 1},
+        resource_recheck_cooldowns={(5, 6): 12},
         unit_tasks={str(uuid(1)): {"kind": "explore", "target": [3, 4]}},
     )
     store.save(memory)
     loaded = store.load()
     assert loaded.last_tick == 4
     assert loaded.obstacles == {(1, 2)}
+    assert loaded.resource_recheck_failures == {(3, 4): 1}
+    assert loaded.resource_recheck_cooldowns == {(5, 6): 12}
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     assert payload["version"] == 3
     assert "controller" not in store.path.read_text(encoding="utf-8").lower()

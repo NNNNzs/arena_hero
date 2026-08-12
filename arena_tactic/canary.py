@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,15 @@ class ReplayCanaryGate:
         }
 
 
+def _clone_replay_turn(turn: Turn) -> Turn:
+    """Create an isolated offline Turn from one authoritative state snapshot."""
+    return Turn(
+        tick=turn.tick,
+        state=deepcopy(turn.state),
+        submitter=lambda _plan, _key: None,
+    )
+
+
 def run_shadow_canary(turns: Iterable[Turn], *, config: AgentConfig | None = None) -> ShadowCanaryReport:
     """Exercise enabled planners against supplied authoritative replay Turns.
 
@@ -79,7 +89,11 @@ def run_shadow_canary(turns: Iterable[Turn], *, config: AgentConfig | None = Non
     durations: list[float] = []
     signatures: list[tuple[tuple[str, str], ...]] = []
     for turn in turns:
-        result = runtime.decide(turn)
+        # Controller calls mutate a Turn's in-memory plan.  Rehydrate the
+        # controller facade around the same immutable authoritative state so a
+        # caller can safely replay one frozen input snapshot more than once.
+        replay_turn = _clone_replay_turn(turn)
+        result = runtime.decide(replay_turn)
         ticks += 1
         timed_out += int(result.timed_out)
         rejected += len(result.rejected_intents)
@@ -96,7 +110,7 @@ def verify_redacted_replay(path: Path, *, required_ticks: int = 500) -> ReplayCa
     """Run the complete opt-in pipeline twice and return a redacted gate result."""
     if required_ticks <= 0:
         raise ValueError("required_ticks must be positive")
-    from .replay_loader import load_redacted_replay_history
+    from .replay_loader import freeze_redacted_replay_history, load_frozen_redacted_replay
 
     config = AgentConfig(
         scheduler_shadow=True, scheduler_canary=True, worker_bt_canary=True,
@@ -104,10 +118,14 @@ def verify_redacted_replay(path: Path, *, required_ticks: int = 500) -> ReplayCa
         beacon_campaign_v1=True, core_migration_v1=True,
         core_attack_campaign_v1=True, planner_canary=True,
     )
-    all_turns = load_redacted_replay_history(path)
+    # Freeze JSON records before either run.  A live ReplayWriter may append
+    # while this gate executes, but it cannot change either deterministic input.
+    snapshot = freeze_redacted_replay_history(path)
+    all_turns = load_frozen_redacted_replay(snapshot)
     turns = _latest_longest_contiguous_run(all_turns)
+    second_turns = _latest_longest_contiguous_run(load_frozen_redacted_replay(snapshot))
     first = run_shadow_canary(turns, config=config)
-    second = run_shadow_canary(_latest_longest_contiguous_run(load_redacted_replay_history(path)), config=config)
+    second = run_shadow_canary(second_turns, config=config)
     return ReplayCanaryGate(
         available_ticks=len(all_turns),
         longest_contiguous_ticks=first.ticks,
