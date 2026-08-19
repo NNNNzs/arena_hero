@@ -39,6 +39,25 @@ def test_timeout_fallback_is_deterministic_for_uuid():
     assert first is not None
 
 
+def test_plan_step_waits_when_no_proven_route_exists():
+    context = DecisionContext.from_turn(
+        turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),), obstacle_cells=((1, 0), (0, 1), (-1, 0), (0, -1)))
+    )
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.navigation import plan_step
+
+    assert plan_step(
+        actor_id=uuid(1),
+        start=(0, 0),
+        goal=(3, 0),
+        context=context,
+        persistent_obstacles=set(context.obstacle_cells),
+        reservations=ReservationTable({}),
+        deadline=perf_counter() + 1,
+        config=AgentConfig(),
+    ) is None
+
+
 def test_validator_limits_two_entities_per_destination():
     workers = (
         unit(1, UnitType.WORKER, (-1, 0)),

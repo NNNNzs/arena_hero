@@ -125,6 +125,18 @@ def _pressure_distance(context: DecisionContext) -> int | None:
     return min(distance(enemy.position, context.core.position) for enemy in context.enemies)
 
 
+def _core_emergency_defense(context: DecisionContext) -> bool:
+    """Return True when normal patrol/economy behavior is too risky."""
+    core = context.core
+    if core is None:
+        return False
+    recent_damage = sum(
+        event.event_type == "CORE_DAMAGED"
+        for event in context.events
+    )
+    return core.hp <= 3 or core.shield == 0 or recent_damage >= 2
+
+
 def _beacon_owned(context: DecisionContext) -> bool:
     return context.beacon.carrier_id in context.current_objects
 
@@ -142,10 +154,13 @@ def choose_mode(
         return StrategicMode.RECOVER
 
     pressure = _pressure_distance(context)
+    emergency_defense = _core_emergency_defense(context)
     immediate_threat = any(
         _enemy_can_attack_core(enemy, core, memory.obstacles)
         for enemy in context.enemies
     )
+    if emergency_defense and context.enemies:
+        return StrategicMode.DEFEND
     if immediate_threat or (
         pressure is not None and pressure <= config.defense_enter_distance
     ):
@@ -306,16 +321,16 @@ def _assign_unique_targets(
     candidates: list[tuple[int, str, Position, UnitView]] = []
     for unit in units:
         for target in targets:
-            cost = bounded_path_cost(
+            path_cost = bounded_path_cost(
                 unit.position,
                 target,
                 blocked=blocked,
                 deadline=deadline,
                 node_limit=config.astar_node_limit,
             )
-            if cost is None:
-                cost = distance(unit.position, target) + 10_000
-            candidates.append((cost, str(unit.id), target, unit))
+            if path_cost is None:
+                continue
+            candidates.append((path_cost, str(unit.id), target, unit))
     assigned_units: set[str] = set()
     assigned_targets: set[Position] = set()
     result: dict[str, Position] = {}
@@ -441,7 +456,7 @@ def _frontier_assignments(
                         node_limit=config.astar_node_limit,
                     )
                     if path_cost is None:
-                        path_cost = distance(unit.position, cell) + 10_000
+                        continue
                     candidates.append(
                         (path_cost + lateral, lateral, negative_projection, cell)
                     )
@@ -598,6 +613,23 @@ def _plan_workers(
     heal_allowances: dict[UUID, int],
 ) -> list[ActionIntent]:
     intents: list[ActionIntent] = []
+    core = context.core
+    if core is None:
+        return intents
+    if _core_emergency_defense(context) and context.enemies:
+        # During a live breach, abandon economy/recon immediately.  Workers
+        # carrying cargo return to the Core; empty Workers also rally there.
+        for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
+            if worker.position == core.position and worker.cargo and context.resource_space > 0:
+                intents.append(ActionIntent(worker.id, False, ActionKind.DEPOSIT, 980, "emergency_deposit_at_core"))
+                continue
+            intent = _return_to_core(
+                worker, context, memory, reservations, deadline, config,
+                "emergency_worker_rally_to_core",
+            )
+            intents.append(intent or _wait(worker, "emergency_worker_rally_blocked"))
+        return intents
+
     empty_workers = tuple(worker for worker in context.workers if not (worker.cargo or 0))
     worker_blocks = (
         memory.obstacles

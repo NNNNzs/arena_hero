@@ -398,7 +398,7 @@ class AgentMemory:
                         next_memory.temporary_blocks[attempted_cell] = (
                             context.tick + config.movement_failure_cooldown_ticks
                         )
-                if task is not None and task.get("kind") in {"explore", "scout"}:
+                if task is not None and task.get("kind") in {"explore", "scout", "resource", "recon"}:
                     rotated = dict(task)
                     rotated["sector"] = (int(rotated.get("sector", 0)) + 1) % 4
                     rotated["sector_since"] = context.tick
@@ -406,6 +406,9 @@ class AgentMemory:
                     rotated.pop("target", None)
                     rotated.pop("step", None)
                     rotated.pop("attempt_tick", None)
+                    # The failed target is dropped and the sector rotates so
+                    # the next decision cannot immediately retry the same
+                    # local route.
                     next_memory.unit_tasks[unit_id] = rotated
                 else:
                     next_memory.unit_tasks.pop(unit_id, None)
@@ -418,8 +421,14 @@ class AgentMemory:
             elif event.actor_id is not None and event.event_type == "DEPOSIT_FAILED":
                 next_memory.unit_tasks.pop(str(event.actor_id), None)
             if event.event_type == "CORE_RESPAWNED":
+                # A respawn starts a new map/session generation.  Previous
+                # resource coordinates belong to the destroyed Core's world
+                # and must not send the new Worker on a long stale recheck.
                 next_memory.unit_tasks.clear()
                 next_memory.enemy_tracks.clear()
+                next_memory.resource_observations.clear()
+                next_memory.resource_recheck_failures.clear()
+                next_memory.resource_recheck_cooldowns.clear()
                 next_memory.no_resource_ticks = 0
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"

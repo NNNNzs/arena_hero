@@ -214,6 +214,7 @@ def plan_step(
     if start == goal:
         return None
     blocked = set(persistent_obstacles) | set(context.enemy_occupancy)
+    blocked.discard(goal)
     if avoid_threats:
         blocked.update(enemy_threat_cells(context))
     direction = bounded_astar(
@@ -223,27 +224,14 @@ def plan_step(
         deadline=deadline,
         node_limit=config.astar_node_limit,
     )
-    if direction is None:
-        direction = deterministic_fallback(actor_id, start, goal, blocked)
+    # A bounded search that cannot prove a route must not fall back to a
+    # locally greedy step.  That step can move toward the same unreachable
+    # target from alternating sides and create a left/right oscillation.
     if direction is None:
         return None
     cell = destination(start, direction)
     if cell in blocked or not reservations.reserve(cell):
-        # An adjacent goal is already occupied at capacity. Stepping sideways
-        # cannot make progress and causes a two-cell oscillation when the goal
-        # alternates between visible and remembered resource assignment.
-        if distance(start, goal) == 1:
-            return None
-        alternatives = sorted(
-            DIRECTIONS,
-            key=lambda candidate: (
-                distance(destination(start, candidate), goal),
-                candidate.value,
-            ),
-        )
-        for candidate in alternatives:
-            cell = destination(start, candidate)
-            if cell not in blocked and reservations.reserve(cell):
-                return candidate
+        # Do not sidestep an occupied/contested first step.  The next
+        # authoritative Turn will replan with fresh occupancy and memory.
         return None
     return direction

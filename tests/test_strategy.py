@@ -246,7 +246,30 @@ def test_enemy_departure_or_lost_visibility_does_not_leave_stale_intercept():
     assert lost.mode is not StrategicMode.ATTACK
 
 
-def test_missing_or_respawned_core_clears_enemy_tracks_and_old_combat_tasks():
+def test_respawn_discards_stale_resource_recheck_targets():
+    worker = unit(1, UnitType.WORKER, (-412, 165))
+    memory = AgentMemory(
+        last_tick=100,
+        resource_observations={(41, 2): 99},
+        resource_recheck_failures={(41, 2): 1},
+        resource_recheck_cooldowns={(80, 3): 120},
+    )
+    result = choose_actions(
+        turn(
+            tick=101,
+            owned_core=core(value=101, position=(-412, 165)),
+            units=(worker,),
+            events=(event(900, "CORE_RESPAWNED", tick=100),),
+        ),
+        memory=memory,
+    )
+    intent = next(item for item in result.intents if item.actor_id == worker.id)
+    assert result.next_memory.resource_observations == {}
+    assert result.next_memory.resource_recheck_failures == {}
+    assert result.next_memory.resource_recheck_cooldowns == {}
+    assert intent.reason != "reobserve_remembered_resource"
+
+
     fighter = unit(1, UnitType.VANGUARD, (1, 0))
     enemy = unit(200, UnitType.WORKER, (6, 0), controlled=False)
     observed = choose_actions(turn(tick=10, owned_core=core(), units=(fighter,), enemies=(enemy,)))
