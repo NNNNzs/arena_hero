@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Summarize recent Arena Hero logs for a tactical watchdog/LLM agent.
+
+The inspector is deliberately dependency-free and reads only bounded tails of
+JSONL files.  It tolerates partial lines, rotations, older schemas, and missing
+runtime files; findings are evidence with confidence, not invented game state.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+DEFAULT_RUNTIME = Path(__file__).resolve().parents[1] / "runtime"
+LIVEZ_URL = "http://127.0.0.1:8787/livez"
+MODES = {"DEFEND", "ATTACK", "BEACON", "RECOVER", "ECONOMY"}
+
+
+def _tail_lines(path: Path, limit: int, max_bytes: int) -> list[bytes]:
+    """Read at most max_bytes from a file's end and return its last lines."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            start = max(0, size - max_bytes)
+            handle.seek(start)
+            data = handle.read(max_bytes)
+        lines = data.splitlines()
+        if start and lines:
+            lines = lines[1:]  # first line can be a truncated JSON object
+        return lines[-limit:]
+    except OSError:
+        return []
+
+
+def read_rotated_jsonl(runtime: Path, name: str, limit: int, max_bytes: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Load newest records across ``name``, ``name.1`` ... without full scans."""
+    paths = [runtime / name]
+    paths.extend(sorted(runtime.glob(name + ".*"), key=lambda p: int(p.suffix[1:]) if p.suffix[1:].isdigit() else 10_000))
+    records: list[dict[str, Any]] = []
+    malformed = 0
+    # Current file is newest, then .1, .2. Collect backwards and sort/dedupe.
+    for path in paths:
+        if len(records) >= limit * 2:
+            break
+        for raw in _tail_lines(path, limit, max_bytes):
+            try:
+                value = json.loads(raw)
+                if isinstance(value, dict):
+                    records.append(value)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                malformed += 1
+    by_tick: dict[int, dict[str, Any]] = {}
+    unticked: list[dict[str, Any]] = []
+    for record in records:
+        tick = record.get("tick")
+        if isinstance(tick, int):
+            by_tick.setdefault(tick, record)  # current file wins because it was read first
+        else:
+            unticked.append(record)
+    ordered = sorted(by_tick.values(), key=lambda item: item["tick"])[-limit:]
+    return (unticked[-limit:] + ordered)[-limit:], {"files_seen": sum(p.exists() for p in paths), "malformed_lines": malformed}
+
+
+def _load_json(path: Path) -> tuple[dict[str, Any], str | None]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return (value if isinstance(value, dict) else {}), None
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"{type(exc).__name__}: {exc}"
+
+
+def _health(url: str, timeout: float) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(4096).decode("utf-8", "replace")
+            try:
+                payload: Any = json.loads(body)
+            except json.JSONDecodeError:
+                payload = body.strip()
+            return {"reachable": True, "http_status": response.status, "payload": payload}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"reachable": False, "http_status": None, "error": str(exc)}
+
+
+def _pos(value: Any) -> tuple[int, int] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(v, int) for v in value):
+        return value[0], value[1]
+    return None
+
+
+def _distance(a: Any, b: Any) -> int | None:
+    pa, pb = _pos(a), _pos(b)
+    return abs(pa[0] - pb[0]) + abs(pa[1] - pb[1]) if pa and pb else None
+
+
+def _event_type(event: dict[str, Any]) -> str:
+    return str(event.get("type") or event.get("event_type") or "UNKNOWN")
+
+
+def _event_reason(event: dict[str, Any]) -> str | None:
+    value = event.get("reason") if "reason" in event else event.get("reason_code")
+    return str(value) if value is not None else None
+
+
+def _finding(code: str, severity: str, summary: str, *, ticks: Iterable[int] = (), entities: Iterable[str] = (), evidence: Any = None, confidence: str = "high") -> dict[str, Any]:
+    result = {"code": code, "severity": severity, "summary": summary, "confidence": confidence}
+    tick_list, entity_list = list(ticks), list(entities)
+    if tick_list:
+        result["ticks"] = tick_list[-12:]
+    if entity_list:
+        result["entities"] = entity_list[:12]
+    if evidence is not None:
+        result["evidence"] = evidence
+    return result
+
+
+def _oscillation(positions: list[tuple[int, tuple[int, int]]]) -> dict[str, Any] | None:
+    if len(positions) < 6:
+        return None
+    coords = [p for _, p in positions]
+    reversals = sum(coords[i] == coords[i - 2] and coords[i] != coords[i - 1] for i in range(2, len(coords)))
+    # ABAB is exact; ABCABC and short patrol loops are reported with less confidence.
+    period = next((p for p in (2, 3, 4) if len(coords) >= p * 2 and sum(coords[i] == coords[i-p] for i in range(p, len(coords))) >= max(3, len(coords) - p - 1)), None)
+    if reversals < 3 and period is None:
+        return None
+    return {"period": period or 2, "reversals": reversals, "samples": len(coords), "cells": [list(p) for p in dict.fromkeys(coords[-12:])], "tick_range": [positions[0][0], positions[-1][0]]}
+
+
+def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_timeout: float) -> dict[str, Any]:
+    replay, replay_quality = read_rotated_jsonl(runtime, "replay.jsonl", window, max_bytes)
+    traces, trace_quality = read_rotated_jsonl(runtime, "decision-trace.jsonl", window, max_bytes)
+    agent_state, state_error = _load_json(runtime / "agent-state.json")
+    traces_by_tick = {r.get("tick"): r for r in traces if isinstance(r.get("tick"), int)}
+    findings: list[dict[str, Any]] = []
+    event_counts: Counter[str] = Counter()
+    event_ticks: defaultdict[str, list[int]] = defaultdict(list)
+    event_reasons: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    positions: defaultdict[str, list[tuple[int, tuple[int, int]]]] = defaultdict(list)
+    kinds: dict[str, str] = {}
+    actions: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    reasons: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    failed_moves: Counter[str] = Counter()
+    modes: list[tuple[int, str]] = []
+    visible_resources: list[int] = []
+    core_hp: list[tuple[int, int]] = []
+    hidden_damage_ticks: list[int] = []
+    disengaged: list[dict[str, Any]] = []
+
+    for row in replay:
+        tick = row.get("tick")
+        if not isinstance(tick, int):
+            continue
+        mode = str(row.get("mode", "UNKNOWN")).upper()
+        if mode in MODES:
+            modes.append((tick, mode))
+        state = row.get("state") if isinstance(row.get("state"), dict) else {}
+        visible_resources.append(len(state.get("resource_cells") or []))
+        core = state.get("core") if isinstance(state.get("core"), dict) else None
+        if core:
+            cid, cpos = str(core.get("id", "core")), _pos(core.get("position"))
+            kinds[cid] = "CORE"
+            if cpos:
+                positions[cid].append((tick, cpos))
+            if isinstance(core.get("hp"), int):
+                core_hp.append((tick, core["hp"]))
+        for unit in state.get("units") or []:
+            if not isinstance(unit, dict):
+                continue
+            uid, upos = str(unit.get("id", "unknown")), _pos(unit.get("position"))
+            kinds[uid] = str(unit.get("unit_type") or unit.get("kind") or "UNIT")
+            if upos:
+                positions[uid].append((tick, upos))
+        tick_events = [e for e in row.get("events") or [] if isinstance(e, dict)]
+        for event in tick_events:
+            etype = _event_type(event)
+            event_counts[etype] += 1
+            event_ticks[etype].append(tick)
+            if _event_reason(event):
+                event_reasons[etype][_event_reason(event) or ""] += 1
+            if etype == "UNIT_MOVE_FAILED":
+                failed_moves[str(event.get("actor") or event.get("actor_id") or "unknown")] += 1
+        intents = [i for i in row.get("intents") or [] if isinstance(i, dict)]
+        for intent in intents:
+            actor = str(intent.get("actor") or intent.get("actor_alias") or "unknown")
+            actions[actor][str(intent.get("action") or "UNKNOWN")] += 1
+            reasons[actor][str(intent.get("reason") or "unknown")] += 1
+        enemies = [e for e in state.get("visible_enemies") or [] if isinstance(e, dict)]
+        damaged = any(_event_type(e) == "CORE_DAMAGED" for e in tick_events)
+        if damaged and not enemies:
+            held = [i for i in intents if i.get("reason") == "holding_defense_ring" and i.get("action") == "WAIT"]
+            if held:
+                hidden_damage_ticks.append(tick)
+        if enemies and core:
+            enemy_cells = [e.get("position") for e in enemies if _pos(e.get("position"))]
+            combat = [u for u in state.get("units") or [] if isinstance(u, dict) and u.get("unit_type") in {"VANGUARD", "RANGER"}]
+            far_waiting = []
+            for unit in combat:
+                nearest = min((_distance(unit.get("position"), p) for p in enemy_cells), default=None)
+                intent = next((i for i in intents if str(i.get("actor")) == str(unit.get("id"))), {})
+                if nearest is not None and nearest > 6 and intent.get("action") == "WAIT":
+                    far_waiting.append({"id": unit.get("id"), "type": unit.get("unit_type"), "enemy_distance": nearest, "reason": intent.get("reason")})
+            if far_waiting:
+                disengaged.append({"tick": tick, "units": far_waiting})
+
+    # Trace positions are useful if replay is absent, and expose Core decisions too.
+    if not replay:
+        for trace in traces:
+            tick = trace.get("tick")
+            if not isinstance(tick, int):
+                continue
+            for entity in trace.get("entity_traces") or []:
+                if not isinstance(entity, dict):
+                    continue
+                actor, cell = str(entity.get("actor_alias", "unknown")), _pos(entity.get("current_cell"))
+                kinds[actor] = str(entity.get("entity_kind") or "UNKNOWN")
+                if cell:
+                    positions[actor].append((tick, cell))
+                actions[actor][str(entity.get("action") or "UNKNOWN")] += 1
+                for reason in entity.get("reason_codes") or []:
+                    reasons[actor][str(reason)] += 1
+
+    oscillators, stuck = [], []
+    for actor, samples in positions.items():
+        samples = sorted(dict(samples).items())
+        osc = _oscillation(samples)
+        if osc:
+            oscillators.append({"entity": actor, "kind": kinds.get(actor, "UNKNOWN"), **osc})
+        if len(samples) >= 6:
+            last = samples[-1][1]
+            run = 1
+            for _, cell in reversed(samples[:-1]):
+                if cell != last:
+                    break
+                run += 1
+            blocked_waits = sum(
+                count for reason, count in reasons[actor].items()
+                if any(token in reason.lower() for token in ("blocked", "stuck", "invalid", "failed", "deadlock"))
+            )
+            ineffective = failed_moves[actor] + blocked_waits
+            if run >= 6 and ineffective >= 3:
+                stuck.append({"entity": actor, "kind": kinds.get(actor, "UNKNOWN"), "cell": list(last), "stationary_ticks": run, "blocked_waits": blocked_waits, "failed_moves": failed_moves[actor]})
+    if oscillators:
+        findings.append(_finding("UNIT_OSCILLATION", "warning", f"{len(oscillators)} 个对象出现 2~4 格周期性往复", entities=(o["entity"] for o in oscillators), evidence=oscillators))
+    if stuck:
+        findings.append(_finding("INEFFECTIVE_STATIONARY", "warning", f"{len(stuck)} 个对象长期原地等待或移动失败", entities=(s["entity"] for s in stuck), evidence=stuck))
+
+    deposit_failed = event_counts["DEPOSIT_FAILED"]
+    deposit_success = event_counts["DEPOSIT_SUCCEEDED"]
+    carrying_now = 0
+    workers: list[dict[str, Any]] = []
+    latest = replay[-1].get("state", {}) if replay else {}
+    latest_tick = replay[-1].get("tick") if replay else None
+    latest_trace = traces_by_tick.get(latest_tick, {})
+    trace_entities = {str(e.get("actor_alias")): e for e in latest_trace.get("entity_traces") or [] if isinstance(e, dict)}
+    for unit in latest.get("units") or []:
+        if not isinstance(unit, dict) or unit.get("unit_type") != "WORKER":
+            continue
+        uid, cargo = str(unit.get("id")), int(unit.get("cargo") or 0)
+        intent = next((i for i in replay[-1].get("intents", []) if str(i.get("actor")) == uid), {}) if replay else {}
+        trace = trace_entities.get("entity_" + uid, trace_entities.get(uid, {}))
+        action, reason = intent.get("action") or trace.get("action"), intent.get("reason") or next(iter(trace.get("reason_codes") or []), None)
+        if cargo > 0:
+            status = "carrying"
+            carrying_now += 1
+        elif action == "HARVEST": status = "harvesting"
+        elif "migration" in str(reason).lower() or reason in {"CORE_MOVING", "waiting_core_migration"}: status = "waiting_core_migration"
+        elif uid in {s["entity"] for s in stuck}: status = "stuck"
+        elif action == "WAIT": status = "idle"
+        else: status = "moving_or_exploring"
+        workers.append({"id": uid, "status": status, "cargo": cargo, "action": action, "reason": reason})
+    status_counts = Counter(w["status"] for w in workers)
+    if deposit_failed:
+        failure_ratio = deposit_failed / max(1, deposit_failed + deposit_success)
+        severity = "critical" if failure_ratio >= .5 and deposit_failed >= 3 else "warning"
+        findings.append(_finding("DEPOSIT_FAILURES", severity, f"窗口内存款失败 {deposit_failed} 次（失败率 {failure_ratio:.0%}）", ticks=event_ticks["DEPOSIT_FAILED"], evidence={"reasons": dict(event_reasons["DEPOSIT_FAILED"]), "successes": deposit_success}))
+    no_resource_ticks = int(agent_state.get("no_resource_ticks") or 0)
+    empty_ratio = sum(v == 0 for v in visible_resources) / max(1, len(visible_resources))
+    if no_resource_ticks >= 12 or (len(visible_resources) >= 10 and empty_ratio >= .8):
+        findings.append(_finding("RESOURCE_DROUGHT", "warning", f"资源视野枯竭：no_resource_ticks={no_resource_ticks}，窗口空视野占比 {empty_ratio:.0%}", evidence={"latest_visible": visible_resources[-1] if visible_resources else None, "mean_visible": round(sum(visible_resources) / max(1, len(visible_resources)), 2)}))
+    if hidden_damage_ticks:
+        findings.append(_finding("HIDDEN_CORE_ATTACK", "critical", "核心在无可见敌人时受击，且环防单位仍 WAIT", ticks=hidden_damage_ticks, evidence={"occurrences": len(hidden_damage_ticks), "interpretation": "可能为视野外 Ranger 火力或防线朝向错误"}))
+    if disengaged:
+        findings.append(_finding("DEFENSE_DISENGAGED", "critical", "可见威胁出现时有战斗单位远离敌人并等待", ticks=(d["tick"] for d in disengaged), evidence=disengaged[-8:]))
+
+    switches = []
+    for (tick0, old), (tick1, new) in zip(modes, modes[1:]):
+        if old != new:
+            switches.append({"tick": tick1, "from": old, "to": new, "duration": tick1 - tick0})
+    if len(switches) >= max(4, len(modes) // 8):
+        findings.append(_finding("MODE_THRASHING", "warning", f"战略模式在 {len(modes)} Tick 内切换 {len(switches)} 次", ticks=(s["tick"] for s in switches), evidence=switches[-12:]))
+
+    migration_events = sum(event_counts[e] for e in ("CORE_MOVE_STARTED", "CORE_MOVE_PROGRESS", "CORE_MOVE_SUCCEEDED", "CORE_MOVE_FAILED", "CORE_MOVE_CANCELLED", "CORE_MOVE_START_FAILED"))
+    migration_failures = event_counts["CORE_MOVE_FAILED"] + event_counts["CORE_MOVE_START_FAILED"] + event_counts["CORE_MOVE_CANCELLED"]
+    migration_state = (latest.get("core") or {}).get("state") if isinstance(latest.get("core"), dict) else None
+    if migration_failures >= 3 or (event_counts["CORE_MOVE_STARTED"] >= 3 and not event_counts["CORE_MOVE_SUCCEEDED"]):
+        findings.append(_finding("CORE_MIGRATION_LOOP", "critical", "核心迁移多次失败/取消或反复启动而未成功", evidence={"started": event_counts["CORE_MOVE_STARTED"], "succeeded": event_counts["CORE_MOVE_SUCCEEDED"], "failed": event_counts["CORE_MOVE_FAILED"], "start_failed": event_counts["CORE_MOVE_START_FAILED"], "cancelled": event_counts["CORE_MOVE_CANCELLED"]}))
+
+    lifecycle_types = ["CORE_DAMAGED", "CORE_DESTROYED", "CORE_RESPAWNED", "UNIT_DAMAGED", "UNIT_DESTROYED"]
+    lifecycle = {name: {"count": event_counts[name], "ticks": event_ticks[name][-12:]} for name in lifecycle_types}
+    lifecycle["UNIT_DESTROYED_INFERRED"] = {"count": sum(1 for r in replay for e in r.get("events", []) if isinstance(e, dict) and _event_type(e) == "UNIT_DAMAGED" and isinstance(e.get("values"), dict) and e["values"].get("hp") == 0), "note": "协议无独立 UNIT_DESTROYED；由 UNIT_DAMAGED hp=0 推断"}
+
+    findings.sort(key=lambda f: {"critical": 0, "warning": 1, "info": 2}.get(f["severity"], 3))
+    report = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "window": {"requested_ticks": window, "replay_records": len(replay), "trace_records": len(traces), "tick_start": replay[0].get("tick") if replay else None, "tick_end": replay[-1].get("tick") if replay else None},
+        "service": _health(health_url, health_timeout),
+        "economy": {"core_resources": latest.get("resources"), "capacity": latest.get("resource_capacity"), "population": latest.get("population"), "workers": workers, "worker_status_counts": dict(status_counts), "carrying_workers": carrying_now, "deposit": {"succeeded": deposit_success, "failed": deposit_failed, "failure_reasons": dict(event_reasons["DEPOSIT_FAILED"])}, "resources": {"no_resource_ticks": no_resource_ticks, "latest_visible_cells": visible_resources[-1] if visible_resources else None, "empty_visibility_ratio": round(empty_ratio, 3)}},
+        "movement": {"oscillating_entities": oscillators, "stationary_ineffective_entities": stuck, "move_failures": event_counts["UNIT_MOVE_FAILED"], "move_failure_reasons": dict(event_reasons["UNIT_MOVE_FAILED"])},
+        "battlefield": {"core": latest.get("core"), "visible_enemy_count": len(latest.get("visible_enemies") or []), "recent_lifecycle_events": lifecycle, "hidden_attack_ticks": hidden_damage_ticks, "defense_disengagement": disengaged[-8:]},
+        "strategy": {"current_mode": modes[-1][1] if modes else agent_state.get("last_mode"), "mode_history": [{"tick": t, "mode": m} for t, m in modes[-20:]], "switch_count": len(switches), "switches": switches[-20:], "migration": {"current_state": migration_state, "destination": (latest.get("core") or {}).get("destination") if isinstance(latest.get("core"), dict) else None, "events": migration_events, "failures_or_cancels": migration_failures, "cooldown_until_tick": agent_state.get("migration_cooldown_until_tick")}},
+        "findings": findings,
+        "tactical_clues": [f["summary"] for f in findings[:8]] or ["窗口内未发现达到阈值的战术异常；仍应结合更长时间窗复核。"],
+        "data_quality": {"replay": replay_quality, "decision_trace": trace_quality, "agent_state_error": state_error, "notes": ["只分析当前可见敌人；无敌不等于无威胁。", "轮转文件按 Tick 去重，单文件读取受 --max-bytes 限制。"]},
+    }
+    return report
+
+
+def render_text(report: dict[str, Any]) -> str:
+    w, e, b, s = report["window"], report["economy"], report["battlefield"], report["strategy"]
+    health = report["service"]
+    lines = [
+        "Arena Hero 深度战术态势摘要",
+        f"时间窗: Tick {w['tick_start']}..{w['tick_end']}（replay={w['replay_records']}, trace={w['trace_records']}） | 服务: {'UP' if health['reachable'] else 'DOWN'}",
+        "",
+        "[经济与资源]",
+        f"核心资源 {e['core_resources']}/{e['capacity']}，人口 {e['population']}；工人状态 {json.dumps(e['worker_status_counts'], ensure_ascii=False)}",
+        f"存款成功/失败 {e['deposit']['succeeded']}/{e['deposit']['failed']}；no_resource_ticks={e['resources']['no_resource_ticks']}；当前可见资源格={e['resources']['latest_visible_cells']}",
+        "",
+        "[战场与战略]",
+        f"当前模式 {s['current_mode']}，窗口切换 {s['switch_count']} 次；核心迁移={s['migration']['current_state']}，失败/取消={s['migration']['failures_or_cancels']}",
+        f"当前可见敌人 {b['visible_enemy_count']}；核心受击 {b['recent_lifecycle_events']['CORE_DAMAGED']['count']} 次；核心重生 {b['recent_lifecycle_events']['CORE_RESPAWNED']['count']} 次；隐蔽受击 {len(b['hidden_attack_ticks'])} 次",
+        "",
+        f"[异常发现：{len(report['findings'])} 项]",
+    ]
+    for i, finding in enumerate(report["findings"], 1):
+        ticks = f" ticks={finding.get('ticks')}" if finding.get("ticks") else ""
+        lines.append(f"{i}. [{finding['severity'].upper()}] {finding['code']}: {finding['summary']}{ticks}")
+    if not report["findings"]:
+        lines.append("未发现达到阈值的异常。")
+    lines.extend(("", "[战术研判线索]"))
+    lines.extend(f"- {clue}" for clue in report["tactical_clues"])
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Extract recent Arena Hero tactical state and anomalies")
+    parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME, help="runtime directory")
+    parser.add_argument("--ticks", type=int, default=100, help="recent Tick records (50-100 recommended)")
+    parser.add_argument("--max-bytes", type=int, default=16 * 1024 * 1024, help="maximum bytes read from each JSONL file")
+    parser.add_argument("--health-url", default=LIVEZ_URL)
+    parser.add_argument("--health-timeout", type=float, default=0.75)
+    parser.add_argument("--json", action="store_true", help="emit pure JSON")
+    args = parser.parse_args(argv)
+    if not 1 <= args.ticks <= 10_000 or args.max_bytes < 4096 or args.health_timeout <= 0:
+        parser.error("invalid --ticks, --max-bytes, or --health-timeout")
+    report = inspect(args.runtime, args.ticks, args.max_bytes, args.health_url, args.health_timeout)
+    if args.json:
+        json.dump(report, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+        sys.stdout.write("\n")
+    else:
+        print(render_text(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
