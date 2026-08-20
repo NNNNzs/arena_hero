@@ -616,6 +616,15 @@ class AgentRuntime:
                                                   "core_migration_recall_cargo", avoid_threats=True):
                     replacements.append(intent)
             return self._replace_objective_proposals(proposals, replacements)
+        if (
+            not state.get("manual")
+            and context.tick <= memory.migration_cooldown_until_tick
+        ):
+            return proposals
+        if any((worker.cargo or 0) > 0 for worker in context.workers):
+            # The lifecycle evaluator will enter RECALL from this fresh Turn.
+            # Never allow an ordinary leg to race a cargo deposit meanwhile.
+            return proposals
         if state.get("stage") != MigrationStage.START.value or context.core.state is not CoreState.NORMAL:
             return proposals
         raw_destination = state.get("destination")
@@ -623,7 +632,9 @@ class AgentRuntime:
             return proposals
         target = raw_destination[0], raw_destination[1]
         choices = sorted(DIRECTIONS, key=lambda direction: (distance(destination(context.core.position, direction), target), direction.value))
-        direction = next((item for item in choices if destination(context.core.position, item) not in context.obstacle_cells | context.resource_cells | set(context.enemy_occupancy) | set(context.friendly_occupancy)), None)
+        safe_choices = [item for item in choices if destination(context.core.position, item) not in context.obstacle_cells | context.resource_cells | set(context.enemy_occupancy) | set(context.friendly_occupancy)]
+        forward_choices = [item for item in safe_choices if destination(context.core.position, item) != memory.previous_migration_position]
+        direction = next(iter(forward_choices or safe_choices), None)
         if direction is None:
             state["start_attempted"] = False
             return proposals

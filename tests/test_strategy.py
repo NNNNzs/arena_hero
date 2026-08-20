@@ -575,6 +575,73 @@ def test_core_migrates_only_after_eight_safe_resource_empty_ticks():
     assert core_intent.action is ActionKind.START_MOVE
 
 
+def test_successful_core_migration_resets_exploration_and_starts_cooldown():
+    memory = AgentMemory(
+        last_tick=8,
+        no_resource_ticks=40,
+        last_core_position=(0, 0),
+        explored={(0, 0), (1, 0), (2, 0), (1, 1), (1, -1)},
+    )
+    game_turn = turn(
+        tick=9,
+        owned_core=core(position=(1, 0)),
+        events=(event(901, "CORE_MOVE_SUCCEEDED", tick=8, position=(1, 0)),),
+    )
+
+    result = choose_actions(game_turn, memory=memory)
+
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is not ActionKind.START_MOVE
+    assert result.next_memory.no_resource_ticks == 0
+    assert result.next_memory.migration_cooldown_until_tick == 17
+    assert result.next_memory.previous_migration_position == (0, 0)
+
+
+def test_exploration_migration_avoids_immediate_reverse_when_other_safe_leg_exists():
+    memory = AgentMemory(
+        last_tick=20,
+        no_resource_ticks=8,
+        previous_migration_position=(0, 0),
+        explored={(0, 0), (1, 0), (2, 0), (1, 1), (1, -1), (3, 0)},
+    )
+    result = choose_actions(
+        turn(tick=21, owned_core=core(position=(1, 0))), memory=memory
+    )
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.START_MOVE
+    assert core_intent.reserved_cell != (0, 0)
+
+
+def test_worker_cargo_defers_ordinary_exploration_migration():
+    worker = unit(1, UnitType.WORKER, (2, 0), cargo=1)
+    memory = AgentMemory(
+        last_tick=8,
+        no_resource_ticks=8,
+        explored={(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)},
+    )
+    result = choose_actions(
+        turn(tick=9, owned_core=core(), units=(worker,)), memory=memory
+    )
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is not ActionKind.START_MOVE
+
+
+def test_deposit_core_moving_failure_waits_until_core_is_stationary():
+    worker = unit(1, UnitType.WORKER, (0, 0), cargo=1)
+    result = choose_actions(
+        turn(
+            tick=2,
+            owned_core=core(state=CoreState.MOVING),
+            units=(worker,),
+            events=(event(902, "DEPOSIT_FAILED", tick=1,
+                          reason_code="CORE_MOVING", actor_id=worker.id),),
+        )
+    )
+    worker_intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    assert worker_intent.action is ActionKind.WAIT
+    assert worker_intent.reason == "deposit_waits_for_core_migration"
+
+
 def test_missing_core_never_invents_an_action():
     unexpected_worker = unit(1, UnitType.WORKER, (0, 0))
     game_turn = turn(owned_core=None, units=(unexpected_worker,))

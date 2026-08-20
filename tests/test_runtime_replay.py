@@ -79,6 +79,9 @@ def test_memory_store_round_trip_is_versioned_and_controller_free(tmp_path):
     store = MemoryStore(tmp_path / "runtime" / "agent-state.json")
     memory = AgentMemory(
         last_tick=4,
+        migration_cooldown_until_tick=12,
+        last_core_position=(7, 8),
+        previous_migration_position=(7, 7),
         obstacles={(1, 2)},
         explored={(0, 0)},
         resource_recheck_failures={(3, 4): 1},
@@ -92,7 +95,10 @@ def test_memory_store_round_trip_is_versioned_and_controller_free(tmp_path):
     assert loaded.resource_recheck_failures == {(3, 4): 1}
     assert loaded.resource_recheck_cooldowns == {(5, 6): 12}
     payload = json.loads(store.path.read_text(encoding="utf-8"))
-    assert payload["version"] == 4
+    assert payload["version"] == 5
+    assert loaded.migration_cooldown_until_tick == 12
+    assert loaded.last_core_position == (7, 8)
+    assert loaded.previous_migration_position == (7, 7)
     assert "controller" not in store.path.read_text(encoding="utf-8").lower()
     assert str(uuid(1)) not in store.path.read_text(encoding="utf-8")
     assert not store.path.with_suffix(".json.tmp").exists()
@@ -115,7 +121,7 @@ def test_memory_store_migrates_version_one_without_losing_exploration(tmp_path):
         encoding="utf-8",
     )
     loaded = store.load()
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.last_tick == 7
     assert loaded.obstacles == {(1, 0)}
     assert loaded.explored == {(0, 0), (0, 1)}
@@ -142,7 +148,7 @@ def test_memory_store_loads_v2_and_preserves_operational_state(tmp_path):
 
     loaded = store.load()
 
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.obstacles == {(4, 5)}
     assert loaded.explored == {(1, 1)}
     assert loaded.resource_observations == {(3, 2): 8}
@@ -162,7 +168,7 @@ def test_memory_unknown_schema_falls_back_safely():
         }
     )
 
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.last_tick == 0
     assert loaded.obstacles == set()
     assert loaded.unit_tasks == {}
@@ -171,6 +177,15 @@ def test_memory_unknown_schema_falls_back_safely():
 def test_memory_partial_corruption_preserves_parseable_permanent_obstacles():
     loaded = AgentMemory.from_dict({"version": 3, "obstacles": [[1, 2], ["bad"], [3, 4]], "explored": "corrupt", "event_counts": []})
     assert loaded.obstacles == {(1, 2), (3, 4)}
+
+
+def test_v4_memory_defaults_new_migration_fields_safely():
+    loaded = AgentMemory.from_dict({"version": 4, "last_tick": 99,
+                                    "no_resource_ticks": 8})
+    assert loaded.version == 5
+    assert loaded.migration_cooldown_until_tick == 0
+    assert loaded.last_core_position is None
+    assert loaded.previous_migration_position is None
 
 
 def test_safe_task_rejects_nested_secrets_and_complete_uuids():

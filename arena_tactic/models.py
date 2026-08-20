@@ -56,6 +56,7 @@ class AgentConfig:
     # the strategic mode fall through to BEACON on the very next Turn.
     attack_exit_grace_ticks: int = 4
     migration_idle_ticks: int = 8
+    migration_cooldown_ticks: int = 8
     early_workers: int = 3
     early_vanguards: int = 2
     early_rangers: int = 1

@@ -25,6 +25,7 @@ from ..models import RejectedIntent
 
 
 _WAIT_REASONS = {
+    "deposit_waits_for_core_migration": ("LIFECYCLE", "CORE_MOVEMENT_COMPLETES", None),
     "no_safe_route_with_cargo": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
     "healing_waits_for_resources": ("RESOURCE_WAIT", "CORE_RESOURCES_AVAILABLE", None),
     "resource_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),

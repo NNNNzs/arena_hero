@@ -642,7 +642,15 @@ def _plan_workers(
         # During a live breach, abandon economy/recon immediately.  Workers
         # carrying cargo return to the Core; empty Workers also rally there.
         for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
-            if worker.position == core.position and worker.cargo and context.resource_space > 0:
+            if (
+                worker.cargo
+                and core.state is CoreState.MOVING
+                and memory.unit_tasks.get(str(worker.id), {}).get("kind")
+                == "await_core_stationary"
+            ):
+                intents.append(_wait(worker, "deposit_waits_for_core_migration"))
+                continue
+            if _at_normal_core(worker, context) and worker.cargo and context.resource_space > 0:
                 intents.append(ActionIntent(worker.id, False, ActionKind.DEPOSIT, 980, "emergency_deposit_at_core"))
                 continue
             intent = _return_to_core(
@@ -698,6 +706,14 @@ def _plan_workers(
 
     for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
         cargo = worker.cargo or 0
+        if (
+            cargo
+            and core.state is CoreState.MOVING
+            and memory.unit_tasks.get(str(worker.id), {}).get("kind")
+            == "await_core_stationary"
+        ):
+            intents.append(_wait(worker, "deposit_waits_for_core_migration"))
+            continue
         if cargo and _at_normal_core(worker, context):
             intents.append(
                 ActionIntent(
@@ -1346,6 +1362,13 @@ def _core_migration_direction(
         if destination(context.core.position, direction) not in memory.obstacles
         and destination(context.core.position, direction) not in occupied
     ]
+    forward_candidates = [
+        direction for direction in candidates
+        if destination(context.core.position, direction)
+        != memory.previous_migration_position
+    ]
+    if forward_candidates:
+        candidates = forward_candidates
     frontier = memory.frontier()
     if not candidates or not frontier:
         return None
@@ -1505,7 +1528,9 @@ def _plan_core(
     if (
         mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE)
         and memory.no_resource_ticks >= config.migration_idle_ticks
+        and context.tick > memory.migration_cooldown_until_tick
         and not context.resource_cells
+        and not any((worker.cargo or 0) > 0 for worker in context.workers)
         and not context.enemies
         and not immediate_threat
         and core.hp == CORE_MAX_HP

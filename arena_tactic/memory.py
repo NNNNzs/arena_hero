@@ -18,7 +18,7 @@ from .identity import entity_alias
 from .models import AgentConfig, Position, StrategicMode
 
 
-MEMORY_VERSION = 4
+MEMORY_VERSION = 5
 _CARDINAL = ((0, -1), (0, 1), (-1, 0), (1, 0))
 _SENSITIVE = ("credential", "controller", "authorization", "cookie", "token", "secret")
 _UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
@@ -225,6 +225,9 @@ class AgentMemory:
     last_mode: StrategicMode = StrategicMode.RESPAWN
     mode_since_tick: int = 0
     no_resource_ticks: int = 0
+    migration_cooldown_until_tick: int = 0
+    last_core_position: Position | None = None
+    previous_migration_position: Position | None = None
     core_damage_streak: int = 0
     last_core_damage_tick: int = 0
     obstacles: set[Position] = field(default_factory=set)
@@ -380,6 +383,7 @@ class AgentMemory:
         processed = set(next_memory.processed_event_ids)
         counts = Counter(next_memory.event_counts)
         core_damaged = False
+        core_move_succeeded = False
         for event in context.events:
             event_id = entity_alias(event.event_id) or ""
             if event_id in processed:
@@ -426,7 +430,28 @@ class AgentMemory:
                     task.pop("attempt_tick", None)
                     task["failures"] = 0
             elif event.actor_id is not None and event.event_type == "DEPOSIT_FAILED":
-                next_memory.unit_tasks.pop(str(event.actor_id), None)
+                if event.reason_code == "CORE_MOVING":
+                    next_memory.unit_tasks[str(event.actor_id)] = {
+                        "kind": "await_core_stationary",
+                        "since_tick": context.tick,
+                    }
+                else:
+                    next_memory.unit_tasks.pop(str(event.actor_id), None)
+            if event.event_type == "CORE_MOVE_SUCCEEDED":
+                core_move_succeeded = True
+                if (
+                    self.last_core_position is not None
+                    and context.core is not None
+                    and self.last_core_position != context.core.position
+                ):
+                    next_memory.previous_migration_position = self.last_core_position
+                next_memory.migration_cooldown_until_tick = (
+                    context.tick + config.migration_cooldown_ticks
+                )
+                # A successful relocation is fresh exploration progress; the
+                # old empty-resource streak must not immediately trigger the
+                # opposite leg.
+                next_memory.no_resource_ticks = 0
             if event.event_type == "CORE_RESPAWNED":
                 # A respawn starts a new map/session generation.  Previous
                 # resource coordinates belong to the destroyed Core's world
@@ -439,6 +464,9 @@ class AgentMemory:
                 next_memory.no_resource_ticks = 0
                 next_memory.core_damage_streak = 0
                 next_memory.last_core_damage_tick = 0
+                next_memory.migration_cooldown_until_tick = 0
+                next_memory.last_core_position = None
+                next_memory.previous_migration_position = None
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"
                 or event.reason_code == "RESOURCE_DEPLETED"
@@ -469,11 +497,17 @@ class AgentMemory:
             elif next_memory.last_core_damage_tick < context.tick - 1:
                 next_memory.core_damage_streak = 0
             next_memory.no_resource_ticks = (
-                next_memory.no_resource_ticks + 1
-                if not context.resource_cells
-                else 0
+                0
+                if core_move_succeeded
+                else (
+                    next_memory.no_resource_ticks + 1
+                    if not context.resource_cells
+                    else 0
+                )
             )
             next_memory.last_tick = context.tick
+        if context.core is not None:
+            next_memory.last_core_position = context.core.position
         return next_memory
 
     def record_mode(self, mode: StrategicMode, tick: int) -> None:
@@ -488,6 +522,12 @@ class AgentMemory:
             "last_mode": self.last_mode.value,
             "mode_since_tick": self.mode_since_tick,
             "no_resource_ticks": self.no_resource_ticks,
+            "migration_cooldown_until_tick": self.migration_cooldown_until_tick,
+            "last_core_position": list(self.last_core_position) if self.last_core_position else None,
+            "previous_migration_position": (
+                list(self.previous_migration_position)
+                if self.previous_migration_position else None
+            ),
             "core_damage_streak": self.core_damage_streak,
             "last_core_damage_tick": self.last_core_damage_tick,
             "obstacles": [list(cell) for cell in sorted(self.obstacles)],
@@ -532,7 +572,7 @@ class AgentMemory:
     def from_dict(cls, data: dict[str, Any]) -> "AgentMemory":
         if not isinstance(data, dict):
             return cls()
-        if data.get("version") not in (1, 2, 3, MEMORY_VERSION):
+        if data.get("version") not in (1, 2, 3, 4, MEMORY_VERSION):
             return cls()
         def integer(name: str, default: int = 0) -> int:
             try:
@@ -552,6 +592,11 @@ class AgentMemory:
                 last_mode=mode,
                 mode_since_tick=integer("mode_since_tick"),
                 no_resource_ticks=integer("no_resource_ticks"),
+                migration_cooldown_until_tick=integer("migration_cooldown_until_tick"),
+                last_core_position=next(iter(_safe_cells([data.get("last_core_position")])), None),
+                previous_migration_position=next(
+                    iter(_safe_cells([data.get("previous_migration_position")])), None
+                ),
                 core_damage_streak=integer("core_damage_streak"),
                 last_core_damage_tick=integer("last_core_damage_tick"),
                 obstacles=_safe_cells(data.get("obstacles", [])),

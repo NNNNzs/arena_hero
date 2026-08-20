@@ -1,7 +1,7 @@
 import pytest
 
 from arena_tactic.objectives.core_migration import CoreMigrationInput, CoreMigrationPlan, MigrationStage
-from arena_tactic import AgentRuntime
+from arena_tactic import AgentMemory, AgentRuntime
 from arena_tactic.models import AgentConfig
 from arena_hero import UnitType
 from .factories import core, turn, unit
@@ -88,3 +88,24 @@ def test_enabled_migration_deposits_colocated_cargo_before_starting_core_leg():
     assert worker_intent.action.value == "DEPOSIT"
     assert worker_intent.reason == "core_migration_deposit_cargo"
     assert core_intent.action.value != "START_MOVE"
+
+
+def test_enabled_migration_respects_cooldown_and_recent_origin():
+    state = {"migration": {"stage": "START", "destination": [0, 0],
+                           "start_attempted": False, "replan_count": 0}}
+    cooling = AgentRuntime(
+        memory=AgentMemory(last_tick=9, migration_cooldown_until_tick=12,
+                           objective_states=state),
+        config=AgentConfig(core_migration_v1=True),
+    ).decide(turn(tick=10, owned_core=core(position=(1, 0))))
+    cooling_core = next(item for item in cooling.intents if item.is_core)
+    assert cooling_core.action.value != "START_MOVE"
+
+    active = AgentRuntime(
+        memory=AgentMemory(last_tick=12, previous_migration_position=(0, 0),
+                           objective_states=state),
+        config=AgentConfig(core_migration_v1=True),
+    ).decide(turn(tick=13, owned_core=core(position=(1, 0))))
+    active_core = next(item for item in active.intents if item.is_core)
+    assert active_core.action.value == "START_MOVE"
+    assert active_core.reserved_cell != (0, 0)
