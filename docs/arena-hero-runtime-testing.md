@@ -33,7 +33,7 @@ sequenceDiagram
 
 ## 3. 记忆与事件
 
-默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。schema v3 状态包含版本号、最后 Tick、模式兼容标签、连续无资源 Tick、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、资源复查失败计数与冷却、legacy Unit 任务、人工任务、scheduler assignment、policy、objective lifecycle、已处理事件 ID 和脱敏计数。新增复查字段在 schema v3 中是可选字段，旧 v1/v2/v3 文件缺失时按空映射加载；所有跨 Tick 实体引用都是不可逆 alias，绝不保存 controller。
+默认记忆文件是 `runtime/agent-state.json`，目录被 `.gitignore` 忽略。schema v4 状态包含版本号、最后 Tick、模式兼容标签、连续无资源 Tick、连续 Core 受击压力、永久障碍、带到期 Tick 的临时失败格、已探索格、资源观察、资源复查失败计数与冷却、legacy Unit 任务、人工任务、scheduler assignment、policy、objective lifecycle、已处理事件 ID 和脱敏计数。新增字段均可选，旧 v1/v2/v3/v4 文件缺失时使用安全默认值；Core 缺失或重生会清除受击压力。所有跨 Tick 实体引用都是不可逆 alias，绝不保存 controller。
 
 事件按 `event_id` 去重。资源耗尽或成功采集会淘汰旧资源观察；没有事件但旧资源格连续 2 个权威 Turn 可见且为空时也会淘汰观察并冷却 8 Tick，重新可见的资源会立即恢复观察。移动失败会读取上一计划保存的实际下一格，普通失败将其冷却 4 Tick，地形阻挡将其记录为永久障碍，并让探索、资源、复查和侦察任务清除当前目标、轮换扇区；寻路若在预算内无法证明可达，直接等待并重新规划，不再使用可能导致左右振荡的贪心相邻格兜底；资源/探索目标分配也会直接排除不可达目标。存入失败会清理对应 Unit 任务；Core 重生会清空旧 Unit 任务和旧资源观察。生产、治疗、射击、移动和重生结果全部进入事件计数，下一 Turn 的完整状态仍是事实来源。
 

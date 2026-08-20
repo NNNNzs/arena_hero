@@ -62,6 +62,78 @@ def test_defense_mode_uses_exit_hysteresis():
     assert choose_mode(context, memory, AgentConfig()) is StrategicMode.DEFEND
 
 
+def test_hidden_repeated_core_damage_searches_instead_of_holding():
+    fighters = (
+        unit(10, UnitType.VANGUARD, (-1, 0)),
+        unit(11, UnitType.RANGER, (1, 0)),
+    )
+    memory = AgentMemory(
+        last_tick=9, core_damage_streak=1, last_core_damage_tick=9
+    )
+    result = choose_actions(
+        turn(
+            tick=10,
+            owned_core=core(),
+            units=fighters,
+            events=(event(500, "CORE_DAMAGED", tick=9),),
+        ),
+        memory=memory,
+    )
+    assert result.mode is StrategicMode.DEFEND
+    combat = [intent for intent in result.intents if intent.actor_id in {item.id for item in fighters}]
+    assert all(intent.reason == "search_hidden_core_attacker" for intent in combat)
+    assert all(intent.target_id is None for intent in combat)
+
+
+def test_sustained_hidden_damage_can_migrate_but_visible_threat_cannot():
+    pressure = AgentMemory(last_tick=19, core_damage_streak=2, last_core_damage_tick=19)
+    hidden = choose_actions(
+        turn(tick=20, owned_core=core(hp=3), events=(event(501, "CORE_DAMAGED", tick=19),)),
+        memory=pressure,
+    )
+    hidden_core = next(intent for intent in hidden.intents if intent.is_core)
+    assert hidden_core.action is ActionKind.START_MOVE
+    assert hidden_core.reason == "escape_sustained_hidden_fire"
+
+    attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    visible = choose_actions(
+        turn(tick=20, owned_core=core(hp=3), enemies=(attacker,), events=(event(502, "CORE_DAMAGED", tick=19),)),
+        memory=pressure,
+    )
+    assert next(intent for intent in visible.intents if intent.is_core).action is not ActionKind.START_MOVE
+
+
+def test_defend_rallies_workers_and_stops_production_even_when_funded():
+    worker = unit(1, UnitType.WORKER, (4, 0))
+    attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    result = choose_actions(
+        turn(owned_core=core(), units=(worker,), enemies=(attacker,), resources=200)
+    )
+    worker_intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert worker_intent.reason == "emergency_worker_rally_to_core"
+    assert core_intent.action is not ActionKind.SPAWN
+
+
+def test_insufficient_resources_and_respawn_clear_hidden_pressure():
+    pressure = AgentMemory(last_tick=29, core_damage_streak=2, last_core_damage_tick=29)
+    damaged = choose_actions(
+        turn(tick=30, owned_core=core(hp=2), resources=0, events=(event(503, "CORE_DAMAGED", tick=29),)),
+        memory=pressure,
+    )
+    core_intent = next(intent for intent in damaged.intents if intent.is_core)
+    assert core_intent.action is ActionKind.HEAL
+    assert core_intent.estimated_cost == 0
+
+    respawned = choose_actions(
+        turn(tick=31, owned_core=core(value=101), events=(event(504, "CORE_RESPAWNED", tick=30),)),
+        memory=damaged.next_memory,
+    )
+    assert respawned.next_memory.core_damage_streak == 0
+    assert respawned.next_memory.last_core_damage_tick == 0
+    assert all(intent.reason != "search_hidden_core_attacker" for intent in respawned.intents)
+
+
 def test_attack_mode_survives_one_tick_of_lost_enemy_core_visibility():
     enemy_core = core(value=300, position=(5, 0), controlled=False)
     combat = (
@@ -600,8 +672,8 @@ def test_peacetime_conserve_blocks_production_when_roster_filled_and_buffer_insu
     assert core_intent2.action is not ActionKind.SPAWN
 
 
-def test_wartime_production_prefers_combat_units_over_workers():
-    """In DEFEND/ATTACK mode, Workers above early target are skipped."""
+def test_defend_stops_production_during_visible_breach():
+    """DEFEND preserves resources instead of producing into active fire."""
     # 3 Workers (early met), 0 Vanguards (gap=12), 0 Rangers (gap=16)
     roster = tuple(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 4))
     nearby_enemy = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
@@ -614,13 +686,11 @@ def test_wartime_production_prefers_combat_units_over_workers():
     result = choose_actions(game_turn)
     assert result.mode is StrategicMode.DEFEND
     core_intent = next(intent for intent in result.intents if intent.is_core)
-    assert core_intent.action is ActionKind.SPAWN
-    # Wartime: should prefer VANGUARD over Worker
-    assert core_intent.unit_type is UnitType.VANGUARD
+    assert core_intent.action is ActionKind.WAIT
 
 
-def test_wartime_skips_worker_when_combat_gaps_exist():
-    """In DEFEND, combat-unit deficits take priority over Worker gaps."""
+def test_defend_stops_production_even_with_combat_gaps():
+    """Roster deficits do not override DEFEND resource preservation."""
     # 3 Workers (early met), 10 Vanguards (gap=2), 10 Rangers (gap=6)
     roster = (
         *(unit(i, UnitType.WORKER, (0, i)) for i in range(1, 4)),
@@ -637,10 +707,7 @@ def test_wartime_skips_worker_when_combat_gaps_exist():
     result = choose_actions(game_turn)
     assert result.mode is StrategicMode.DEFEND
     core_intent = next(intent for intent in result.intents if intent.is_core)
-    assert core_intent.action is ActionKind.SPAWN
-    # Wartime: early met, mature phase — combat deficits first
-    # Worker gap=9, Vanguard gap=2, Ranger gap=6 → Ranger wins
-    assert core_intent.unit_type is UnitType.RANGER
+    assert core_intent.action is ActionKind.WAIT
 
 
 def test_peacetime_respects_normal_deficit_order():

@@ -18,7 +18,7 @@ from .identity import entity_alias
 from .models import AgentConfig, Position, StrategicMode
 
 
-MEMORY_VERSION = 3
+MEMORY_VERSION = 4
 _CARDINAL = ((0, -1), (0, 1), (-1, 0), (1, 0))
 _SENSITIVE = ("credential", "controller", "authorization", "cookie", "token", "secret")
 _UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
@@ -225,6 +225,8 @@ class AgentMemory:
     last_mode: StrategicMode = StrategicMode.RESPAWN
     mode_since_tick: int = 0
     no_resource_ticks: int = 0
+    core_damage_streak: int = 0
+    last_core_damage_tick: int = 0
     obstacles: set[Position] = field(default_factory=set)
     explored: set[Position] = field(default_factory=set)
     resource_observations: dict[Position, int] = field(default_factory=dict)
@@ -294,6 +296,8 @@ class AgentMemory:
             # roles nor enemy approach history applies to the next generation.
             next_memory.unit_tasks.clear()
             next_memory.enemy_tracks.clear()
+            next_memory.core_damage_streak = 0
+            next_memory.last_core_damage_tick = 0
         else:
             next_memory.enemy_tracks = {
                 alias: track
@@ -375,6 +379,7 @@ class AgentMemory:
 
         processed = set(next_memory.processed_event_ids)
         counts = Counter(next_memory.event_counts)
+        core_damaged = False
         for event in context.events:
             event_id = entity_alias(event.event_id) or ""
             if event_id in processed:
@@ -382,6 +387,8 @@ class AgentMemory:
             processed.add(event_id)
             next_memory.processed_event_ids.append(event_id)
             counts[event.event_type] += 1
+            if event.event_type == "CORE_DAMAGED":
+                core_damaged = True
             if event.actor_id is not None and event.event_type == "UNIT_MOVE_FAILED":
                 unit_id = str(event.actor_id)
                 task = next_memory.unit_tasks.get(unit_id)
@@ -430,6 +437,8 @@ class AgentMemory:
                 next_memory.resource_recheck_failures.clear()
                 next_memory.resource_recheck_cooldowns.clear()
                 next_memory.no_resource_ticks = 0
+                next_memory.core_damage_streak = 0
+                next_memory.last_core_damage_tick = 0
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"
                 or event.reason_code == "RESOURCE_DEPLETED"
@@ -450,6 +459,15 @@ class AgentMemory:
         }
 
         if context.tick > next_memory.last_tick:
+            if core_damaged:
+                next_memory.core_damage_streak = (
+                    next_memory.core_damage_streak + 1
+                    if next_memory.last_core_damage_tick == context.tick - 1
+                    else 1
+                )
+                next_memory.last_core_damage_tick = context.tick
+            elif next_memory.last_core_damage_tick < context.tick - 1:
+                next_memory.core_damage_streak = 0
             next_memory.no_resource_ticks = (
                 next_memory.no_resource_ticks + 1
                 if not context.resource_cells
@@ -470,6 +488,8 @@ class AgentMemory:
             "last_mode": self.last_mode.value,
             "mode_since_tick": self.mode_since_tick,
             "no_resource_ticks": self.no_resource_ticks,
+            "core_damage_streak": self.core_damage_streak,
+            "last_core_damage_tick": self.last_core_damage_tick,
             "obstacles": [list(cell) for cell in sorted(self.obstacles)],
             "explored": [list(cell) for cell in sorted(self.explored)],
             "resource_observations": {
@@ -512,7 +532,7 @@ class AgentMemory:
     def from_dict(cls, data: dict[str, Any]) -> "AgentMemory":
         if not isinstance(data, dict):
             return cls()
-        if data.get("version") not in (1, 2, MEMORY_VERSION):
+        if data.get("version") not in (1, 2, 3, MEMORY_VERSION):
             return cls()
         def integer(name: str, default: int = 0) -> int:
             try:
@@ -532,6 +552,8 @@ class AgentMemory:
                 last_mode=mode,
                 mode_since_tick=integer("mode_since_tick"),
                 no_resource_ticks=integer("no_resource_ticks"),
+                core_damage_streak=integer("core_damage_streak"),
+                last_core_damage_tick=integer("last_core_damage_tick"),
                 obstacles=_safe_cells(data.get("obstacles", [])),
                 explored=_safe_cells(data.get("explored", [])),
                 resource_observations=_safe_cell_map(data.get("resource_observations", {})),

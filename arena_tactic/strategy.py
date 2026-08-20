@@ -137,6 +137,26 @@ def _core_emergency_defense(context: DecisionContext) -> bool:
     return core.hp <= 3 or core.shield == 0 or recent_damage >= 2
 
 
+def _hidden_attack_pressure(context: DecisionContext, memory: AgentMemory) -> bool:
+    """Use damage timing as pressure only; it never supplies an attacker cell."""
+    return (
+        context.core is not None
+        and not context.enemies
+        and memory.core_damage_streak >= 2
+        and memory.last_core_damage_tick == context.tick
+    )
+
+
+def _hidden_attack_search_cell(
+    core: CoreView, index: int, tick: int, config: AgentConfig
+) -> Position:
+    """Return a deterministic reconnaissance slot, not an inferred target."""
+    sector = (index + tick) % len(_EXPLORATION_SECTORS)
+    dx, dy = _EXPLORATION_SECTORS[sector]
+    radius = max(2, config.hidden_attack_search_radius)
+    return core.position[0] + dx * radius, core.position[1] + dy * radius
+
+
 def _beacon_owned(context: DecisionContext) -> bool:
     return context.beacon.carrier_id in context.current_objects
 
@@ -159,6 +179,8 @@ def choose_mode(
         _enemy_can_attack_core(enemy, core, memory.obstacles)
         for enemy in context.enemies
     )
+    if _hidden_attack_pressure(context, memory):
+        return StrategicMode.DEFEND
     if emergency_defense and context.enemies:
         return StrategicMode.DEFEND
     if immediate_threat or (
@@ -616,7 +638,7 @@ def _plan_workers(
     core = context.core
     if core is None:
         return intents
-    if _core_emergency_defense(context) and context.enemies:
+    if memory.last_mode is StrategicMode.DEFEND or _core_emergency_defense(context):
         # During a live breach, abandon economy/recon immediately.  Workers
         # carrying cargo return to the Core; empty Workers also rally there.
         for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
@@ -915,6 +937,17 @@ def _plan_vanguards(
             )
             continue
 
+        if _hidden_attack_pressure(context, memory) and context.core is not None:
+            search_cell = _hidden_attack_search_cell(context.core, index, context.tick, config)
+            intent = _move(
+                vanguard, search_cell, "search_hidden_core_attacker", 720,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
+            )
+            _record_unit_task(memory, context, vanguard, kind="defense_search", target=search_cell, intent=intent)
+            intents.append(intent or _wait(vanguard, "hidden_attacker_search_blocked"))
+            continue
+
         if vanguard.id in intercept_vanguards and intercept_enemy is not None:
             intent = _move(
                 vanguard, intercept_enemy.position, "intercept_approaching_core_threat", 680,
@@ -1120,6 +1153,17 @@ def _plan_rangers(
             )
             continue
 
+        if _hidden_attack_pressure(context, memory) and context.core is not None:
+            search_cell = _hidden_attack_search_cell(context.core, index, context.tick, config)
+            intent = _move(
+                ranger, search_cell, "search_hidden_core_attacker", 720,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
+            )
+            _record_unit_task(memory, context, ranger, kind="defense_search", target=search_cell, intent=intent)
+            intents.append(intent or _wait(ranger, "hidden_attacker_search_blocked"))
+            continue
+
         if ranger.id in intercept_rangers and intercept_enemy is not None:
             staging = _ranger_staging_cell(ranger, intercept_enemy, context, memory)
             intent = _move(
@@ -1322,6 +1366,31 @@ def _core_migration_direction(
     )
 
 
+def _hidden_attack_escape_direction(
+    context: DecisionContext,
+    memory: AgentMemory,
+    unit_intents: Iterable[ActionIntent],
+) -> Direction | None:
+    """Choose an observed empty neighbor without inferring the fire origin."""
+    if context.core is None:
+        return None
+    occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
+    occupied.update(
+        intent.reserved_cell
+        for intent in unit_intents
+        if intent.action is ActionKind.MOVE and intent.reserved_cell is not None
+    )
+    candidates = [
+        direction
+        for direction in DIRECTIONS
+        if (cell := destination(context.core.position, direction)) in context.observed_cells
+        and cell not in memory.obstacles
+        and cell not in context.resource_cells
+        and cell not in occupied
+    ]
+    return min(candidates, key=lambda item: item.value, default=None)
+
+
 def _plan_core(
     context: DecisionContext,
     memory: AgentMemory,
@@ -1336,6 +1405,19 @@ def _plan_core(
     if core.state is CoreState.MOVING:
         return _wait(core, "core_migration_progresses_naturally", is_core=True)
     available_resources = _anticipated_resources(context)
+    if (
+        _hidden_attack_pressure(context, memory)
+        and memory.core_damage_streak >= config.hidden_attack_migration_streak
+        and core.hp >= 3
+    ):
+        direction = _hidden_attack_escape_direction(context, memory, unit_intents)
+        if direction is not None:
+            return ActionIntent(
+                actor_id=core.id, is_core=True, action=ActionKind.START_MOVE,
+                score=1_050, reason="escape_sustained_hidden_fire",
+                direction=direction,
+                reserved_cell=destination(core.position, direction),
+            )
     if core.hp < CORE_MAX_HP:
         return ActionIntent(
             actor_id=core.id,
@@ -1387,6 +1469,7 @@ def _plan_core(
     spawn_type = _spawn_target(context, config, mode)
     if (
         spawn_type is not None
+        and mode is not StrategicMode.DEFEND
         and context.population < config.max_population
         and _spawn_cell_is_free(context, unit_intents)
     ):

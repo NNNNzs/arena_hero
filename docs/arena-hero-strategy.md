@@ -21,13 +21,15 @@ Agent 的长期目标是 Core 生存、稳定提交、资源增长和机会性�
 | --- | --- | --- | --- |
 | `RESPAWN` | 当前 Core 缺失 | 新 Turn 出现 Core | 不为任何历史对象生成动作 |
 | `RECOVER` | Core 迁移中、HP 不满、护盾低于 3，或受伤 Unit 在静止 Core 格 | 恢复条件消失 | 迁移中等待；按原始 UUID 顺序预算 Unit 治疗；Core 优先治疗或紧急修盾 |
-| `DEFEND` | 敌人本 Tick 可攻击 Core，或进入 Manhattan 距离 4 | 旧模式为防守时，距离超过 6 才解除 | Vanguard 拦截，Ranger 集火合法高威胁目标，Worker 避开威胁格保存货物 |
+| `DEFEND` | 敌人本 Tick 可攻击 Core、进入 Manhattan 距离 4，或连续受击但攻击者不可见 | 距离迟滞和连续受击压力均解除 | 战斗 Unit 拦截/搜索，Worker 回 Core，暂停普通探索、巡逻和生产 |
 | `ATTACK` | 敌 Core 可见、战斗 Unit 至少 3、己 Core 满 HP 且护盾至少 3 | 已在进攻时允许战斗 Unit 降至 2、护盾降至 2 | 优先摧毁敌 Core；无射线时进入射击阵位；Vanguard 向高价值目标推进 |
 | `BEACON` | Core 满 HP、护盾至少 3、人口至少 6、无防守压力，Beacon 未由己方携带 | 已在 Beacon 模式时允许护盾降至 2 | 最近 Vanguard 携带；无 Vanguard 时 Core 可兜底；持有后不主动丢弃 |
 | `ECONOMY` | 有可见资源、有 Worker 货物，或早期阵容未完成 | 条件消失 | 唯一资源分配、存入、恢复和生产 |
 | `EXPLORE` | 无更高优先模式且早期阵容稳定 | 出现资源、威胁或更高价值目标 | Worker 探边界；战斗编组按近卫、巡逻和猎人分工 |
 
 `DEFEND`、`ATTACK` 和 `BEACON` 使用不同的进入和保留阈值，避免边缘状态下每 Tick 来回切换。Core 迁移期间强制进入恢复语义，提交 `WAIT` 让四 Tick 迁移自然推进。
+
+`CORE_DAMAGED` 只累计连续受击压力，不推断攻击者坐标。连续两 Tick 受击且当前无可见敌人时，战斗 Unit 前往 Core 周边轮换搜索槽位；连续三 Tick 后，仅当 Core HP 至少 3 且权威视野内存在空的相邻非资源格时，Core 才启动一次迁移脱离火力。已有迁移只自然推进；当前可见敌人（尤其明确近战威胁）会禁止这类盲迁移。Core 缺失或 `CORE_RESPAWNED` 会清空压力和旧防守任务。
 
 ## 3. 经济和阵容
 

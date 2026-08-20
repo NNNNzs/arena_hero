@@ -94,6 +94,8 @@ class AgentConfig:
     core_bt_canary: bool = False
     beacon_campaign_v1: bool = False
     core_migration_v1: bool = False
+    hidden_attack_search_radius: int = 3
+    hidden_attack_migration_streak: int = 3
     core_attack_campaign_v1: bool = False
     planner_canary: bool = False
 
