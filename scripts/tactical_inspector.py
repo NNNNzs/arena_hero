@@ -126,6 +126,8 @@ def _oscillation(positions: list[tuple[int, tuple[int, int]]]) -> dict[str, Any]
     if len(positions) < 6:
         return None
     coords = [p for _, p in positions]
+    if len(set(coords)) < 2:
+        return None
     reversals = sum(coords[i] == coords[i - 2] and coords[i] != coords[i - 1] for i in range(2, len(coords)))
     # ABAB is exact; ABCABC and short patrol loops are reported with less confidence.
     period = next((p for p in (2, 3, 4) if len(coords) >= p * 2 and sum(coords[i] == coords[i-p] for i in range(p, len(coords))) >= max(3, len(coords) - p - 1)), None)
@@ -359,15 +361,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-url", default=LIVEZ_URL)
     parser.add_argument("--health-timeout", type=float, default=0.75)
     parser.add_argument("--json", action="store_true", help="emit pure JSON")
+    parser.add_argument("--record-nightly", action="store_true", help="record snapshot to nightly reports log during quiet hours (23:00-08:00)")
     args = parser.parse_args(argv)
     if not 1 <= args.ticks <= 10_000 or args.max_bytes < 4096 or args.health_timeout <= 0:
         parser.error("invalid --ticks, --max-bytes, or --health-timeout")
     report = inspect(args.runtime, args.ticks, args.max_bytes, args.health_url, args.health_timeout)
+
+    # If --record-nightly requested, record during night hours
+    current_hour = datetime.now().hour
+    is_quiet_hours = current_hour >= 23 or current_hour < 8
+    report["is_quiet_hours"] = is_quiet_hours
+
+    if args.record_nightly and is_quiet_hours:
+        try:
+            nightly_log = args.runtime / "nightly_tactical_reports.jsonl"
+            nightly_log.parent.mkdir(parents=True, exist_ok=True)
+            with nightly_log.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(report, ensure_ascii=False) + "\n")
+        except Exception as e:
+            sys.stderr.write(f"Warning: failed to record nightly log: {e}\n")
+
     if args.json:
         json.dump(report, sys.stdout, ensure_ascii=False, separators=(",", ":"))
         sys.stdout.write("\n")
     else:
-        print(render_text(report))
+        text = render_text(report)
+        if is_quiet_hours:
+            text += f"\n\n[夜间勿扰时段生效中 (23:00-08:00)，当前快照已自动归档至夜间日志]"
+        print(text)
     return 0
 
 
