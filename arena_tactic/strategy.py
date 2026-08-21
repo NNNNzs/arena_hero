@@ -1048,6 +1048,26 @@ def _plan_vanguards(
             continue
 
         if vanguard.id not in guard_vanguards:
+            # 伴随式护航优先：若有工兵在外探索，先锋伴随在前线前方 1~2 格开路
+            if context.core is not None:
+                core_pos = context.core.position
+                exploring_workers = [w for w in context.workers if (w.cargo or 0) == 0 and distance(w.position, core_pos) > 2]
+                if exploring_workers:
+                    assigned_worker = min(exploring_workers, key=lambda w: distance(w.position, vanguard.position))
+                    dx = 1 if assigned_worker.position[0] >= core_pos[0] else -1
+                    dy = 1 if assigned_worker.position[1] >= core_pos[1] else -1
+                    escort_slot = (assigned_worker.position[0] + dx, assigned_worker.position[1] + dy)
+                    if escort_slot not in memory.obstacles:
+                        intent = _move(
+                            vanguard, escort_slot, "recon_squad_vanguard_screen", 450,
+                            context=context, memory=memory, reservations=reservations,
+                            deadline=deadline, config=config,
+                        )
+                        if intent is not None:
+                            _record_unit_task(memory, context, vanguard, kind="recon_escort", target=escort_slot, intent=intent)
+                            intents.append(intent)
+                            continue
+
             patrol_target = _combat_target(
                 context.core, patrol_index, context.tick, config.patrol_radius_min,
                 config.patrol_radius_max, config.patrol_rotation_ticks,
@@ -1264,6 +1284,25 @@ def _plan_rangers(
             continue
 
         if ranger.id not in guard_rangers:
+            # 伴随式火力掩护优先：若有工兵在外探索，游侠伴随在工兵侧翼 2 格射程位
+            if context.core is not None:
+                core_pos = context.core.position
+                exploring_workers = [w for w in context.workers if (w.cargo or 0) == 0 and distance(w.position, core_pos) > 2]
+                if exploring_workers:
+                    assigned_worker = min(exploring_workers, key=lambda w: distance(w.position, ranger.position))
+                    # 站在工兵侧翼 2 格处提供火力掩护
+                    escort_slot = (assigned_worker.position[0] + 1, assigned_worker.position[1] - 1)
+                    if escort_slot not in memory.obstacles:
+                        intent = _move(
+                            ranger, escort_slot, "recon_squad_ranger_flank", 450,
+                            context=context, memory=memory, reservations=reservations,
+                            deadline=deadline, config=config,
+                        )
+                        if intent is not None:
+                            _record_unit_task(memory, context, ranger, kind="recon_escort", target=escort_slot, intent=intent)
+                            intents.append(intent)
+                            continue
+
             hunter_target = _combat_target(
                 context.core, hunter_index, context.tick, config.hunter_radius_min,
                 config.hunter_radius_max, config.patrol_rotation_ticks,
@@ -1407,16 +1446,25 @@ def _core_migration_direction(
     if forward_candidates:
         candidates = forward_candidates
     frontier = memory.frontier()
-    if not candidates or not frontier:
+    if not candidates:
         return None
-    target = max(
-        frontier,
-        key=lambda cell: (
-            min((distance(cell, resource) for resource in memory.resource_observations), default=0),
-            distance(context.core.position, cell),
-            cell,
-        ),
-    )
+
+    core_pos = context.core.position
+    returning_workers = [w for w in context.workers if (w.cargo or 0) > 0]
+    if returning_workers:
+        target = min(returning_workers, key=lambda w: distance(w.position, core_pos)).position
+    elif frontier:
+        target = max(
+            frontier,
+            key=lambda cell: (
+                min((distance(cell, resource) for resource in memory.resource_observations), default=0),
+                distance(core_pos, cell),
+                cell,
+            ),
+        )
+    else:
+        return None
+
     return min(
         candidates,
         key=lambda direction: (
