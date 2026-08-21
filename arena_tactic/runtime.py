@@ -564,7 +564,9 @@ class AgentRuntime:
             # Keep the escort roster stable and bounded.  A carrier may only
             # pick up after the lifecycle has observed its current-cell facts.
             for index, unit in enumerate(escort_units):
-                target = context.beacon.position if index == 0 else self._beacon_escort_slot(context, index)
+                target = context.beacon.position if index == 0 else self._beacon_escort_slot(
+                    context, index, actor_cell=unit.position
+                )
                 if unit.position == target:
                     continue
                 if intent := self._objective_move(context, memory, unit, target, 620,
@@ -585,7 +587,9 @@ class AgentRuntime:
             carrier = next((unit for unit in context.units if entity_alias(unit.id) == carrier_alias), None)
             hold_cell = carrier.position if carrier is not None else context.beacon.position
             for index, unit in enumerate(escort_units):
-                target = hold_cell if index == 0 else self._beacon_escort_slot(context, index, center=hold_cell)
+                target = hold_cell if index == 0 else self._beacon_escort_slot(
+                    context, index, center=hold_cell, actor_cell=unit.position
+                )
                 if carrier is not None and unit.id == carrier.id or unit.position == target:
                     continue
                 if intent := self._objective_move(context, memory, unit, target, 700,
@@ -677,12 +681,21 @@ class AgentRuntime:
         return self._replace_objective_proposals(proposals, replacements)
 
     @staticmethod
-    def _beacon_escort_slot(context: DecisionContext, index: int, *, center=None):
+    def _beacon_escort_slot(
+        context: DecisionContext, index: int, *, center=None, actor_cell=None
+    ):
         """Give non-carrier escorts distinct, currently non-hostile formation slots."""
         anchor = center or context.beacon.position
         candidates = tuple(destination(anchor, direction) for direction in DIRECTIONS)
         safe = tuple(cell for cell in candidates if cell not in context.obstacle_cells and cell not in context.enemy_occupancy)
-        return (safe or candidates)[(index - 1) % len(safe or candidates)]
+        available = safe or candidates
+        if actor_cell is not None:
+            available = tuple(sorted(available, key=lambda cell: (
+                0 if cell[0] == actor_cell[0] or cell[1] == actor_cell[1] else 1,
+                distance(actor_cell, cell),
+                cell,
+            )))
+        return available[(index - 1) % len(available)]
 
     def _objective_move(self, context: DecisionContext, memory: AgentMemory, unit, target, score: float, reason: str, *, avoid_threats: bool, reservations: ReservationTable | None = None) -> ActionIntent | None:
         if unit.position == target:

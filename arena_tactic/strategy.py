@@ -36,6 +36,12 @@ from .navigation import (
     plan_step,
     shot_range,
 )
+from .tactical_geometry import (
+    best_mineral_tank_cell,
+    migration_site_score,
+    rich_resource_center,
+    shadow_fire_advantage,
+)
 
 
 UNIT_MAX_HP = {
@@ -275,6 +281,7 @@ def ranger_target_score(
         enemy, context.core, memory.obstacles
     ):
         score += 30.0
+    score += shadow_fire_advantage(ranger.position, enemy, memory.obstacles)
     score -= distance(ranger.position, enemy.position) * 5.0
     return score
 
@@ -986,6 +993,30 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "hidden_attacker_search_blocked"))
             continue
 
+        if mode is StrategicMode.DEFEND and context.core is not None:
+            occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
+            occupied.discard(vanguard.position)
+            tank_cell = best_mineral_tank_cell(
+                resource_cells=context.resource_cells,
+                enemy_cells=(enemy.position for enemy in context.enemies),
+                core_cell=context.core.position,
+                obstacles=memory.obstacles,
+                occupied=occupied,
+            )
+            if tank_cell is not None:
+                if vanguard.position == tank_cell:
+                    _record_unit_task(memory, context, vanguard, kind="mineral_tank", target=tank_cell, intent=None)
+                    intents.append(_wait(vanguard, "hold_vanguard_mineral_tank"))
+                else:
+                    intent = _move(
+                        vanguard, tank_cell, "vanguard_mineral_tank", 710,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config,
+                    )
+                    _record_unit_task(memory, context, vanguard, kind="mineral_tank", target=tank_cell, intent=intent)
+                    intents.append(intent or _wait(vanguard, "mineral_tank_route_blocked"))
+                continue
+
         if vanguard.id in intercept_vanguards and intercept_enemy is not None:
             intent = _move(
                 vanguard, intercept_enemy.position, "intercept_approaching_core_threat", 680,
@@ -1142,7 +1173,11 @@ def _ranger_staging_cell(
     ]
     return min(
         candidates,
-        key=lambda cell: (distance(ranger.position, cell), cell),
+        key=lambda cell: (
+            -shadow_fire_advantage(cell, target, memory.obstacles),
+            distance(ranger.position, cell),
+            cell,
+        ),
         default=target.position,
     )
 
@@ -1436,6 +1471,7 @@ def _core_migration_direction(
         direction
         for direction in DIRECTIONS
         if destination(context.core.position, direction) not in memory.obstacles
+        and destination(context.core.position, direction) not in context.resource_cells
         and destination(context.core.position, direction) not in occupied
     ]
     forward_candidates = [
@@ -1453,6 +1489,10 @@ def _core_migration_direction(
     returning_workers = [w for w in context.workers if (w.cargo or 0) > 0]
     if returning_workers:
         target = min(returning_workers, key=lambda w: distance(w.position, core_pos)).position
+    elif memory.resource_observations:
+        target = rich_resource_center(
+            memory.resource_observations, current_tick=context.tick
+        ) or core_pos
     elif frontier:
         target = max(
             frontier,
@@ -1468,6 +1508,13 @@ def _core_migration_direction(
     return min(
         candidates,
         key=lambda direction: (
+            -migration_site_score(
+                destination(context.core.position, direction),
+                resource_observations=memory.resource_observations,
+                obstacles=memory.obstacles,
+                explored=memory.explored,
+                current_tick=context.tick,
+            ),
             distance(destination(context.core.position, direction), target),
             direction.value,
         ),

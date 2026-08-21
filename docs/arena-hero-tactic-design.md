@@ -78,6 +78,7 @@ sequenceDiagram
 | `arena_tactic/context.py` | 从当前 Turn 构建不可变 `DecisionContext`，还原受障碍遮挡的可见格 |
 | `arena_tactic/memory.py` | `AgentMemory`、事件去重、资源失效、探索记忆和原子 JSON 写入 |
 | `arena_tactic/navigation.py` | 有界 A*、路径成本、威胁格和确定性超时回退 |
+| `arena_tactic/tactical_geometry.py` | LOS/弹道差异、暗影火力、矿区坦位和迁移聚落地形评分纯函数 |
 | `arena_tactic/strategy.py` | 模式选择、评分、阵容、Unit 与 Core 候选意图 |
 | `arena_tactic/validation.py` | 当前对象、动作能力、攻击目标、资源条件和格子容量校验 |
 | `arena_tactic/allocator.py` | 将校验后的意图映射到当前 Turn 的 SDK Controller |
@@ -208,8 +209,11 @@ stateDiagram-v2
 ### 9.3 战斗 Unit 分配
 
 - Ranger：优先攻击可在当前射程和射线内验证的敌方 Core 或低生命值 Unit。
-- Vanguard：优先靠近高价值敌人，在相邻时使用横扫；没有安全接敌条件时等待或移动。
+- Ranger 暗影阵位：分别计算目标对象的 Manhattan/supercover LOS 与 Ranger 八方向弹道；仅当弹道合法且目标自身 LOS 被岩石侧面遮挡时增加单向火力分。其他敌人可能共享视野，因此这不是“绝对隐身”保证。
+- Vanguard：优先靠近高价值敌人，在相邻时使用横扫；防守且敌人接近当前可见矿区时，优先占住矿格或一格前哨实施采矿阻断和相邻横扫。
 - Worker：默认不参与战斗，除非撤退、Beacon 或资源回收目标改变了其任务。
+
+Core 普通迁移不再只追逐最远边界。资源观察按年龄衰减形成富矿热力，候选聚落叠加已探索地形的背岩与 chokepoint 分；未知地形不获得防守分，当前资源格硬排除，历史资源仍只是一项可丢弃的方向线索。
 
 ## 10. 失败处理与恢复
 
@@ -271,7 +275,10 @@ stateDiagram-v2
 - 四个相邻格都不可用时才等待。
 - 有货 Worker 优先回 Core。
 - Ranger 只对当前可见、合法射程目标生成攻击。
+- Ranger 暗影优势只在目标 LOS 被 supercover 障碍阻断而官方弹道仍合法时成立。
 - Vanguard 只在相邻敌人存在时横扫。
+- Vanguard 占矿防守只使用当前 `resource_cells`，不会把历史资源当作矿格。
+- Core 聚落评分不会选择当前资源格，也不会把未知地形虚构成岩石或咽喉。
 - Core 缺失时不生成伪造动作。
 - 每个对象最多一个动作，Core 最多一个动作。
 
@@ -339,6 +346,16 @@ git diff --check
 - 发展、防守、进攻、恢复、Beacon 争夺状态机。
 - 基于历史事件的有限记忆，但不把记忆当作当前权威状态。
 - 资源预算、人口上限和 Core 安全距离的多 Tick 规划。
+
+### Phase 4.1：高级地形战术（已完成首版）
+
+- Shadow Ranger 的 LOS/弹道分离评分与暗影射击阵位。
+- Vanguard Mineral Tanking 的当前矿格/前哨占位与横扫衔接。
+- Core Migration 的年龄衰减富矿热力、背岩和 chokepoint 聚落评分。
+
+### 第二阶段战术：Sacrifice to Core（协议能力待定，当前禁用）
+
+当前 v0.14 的 Unit `SELF_DESTRUCT` 不会为 Core 回血、返还资源或造成伤害，因此不得把它实现成献祭回血。未来只有在官方规则、SDK 动作和权威结果事件共同提供该语义后才进入实现：危机门槛与致命伤预测、远处落单候选过滤、回血/拖延收益模型、献祭后 `max(10, population * 5)` 容量及库存溢出审计、Beacon 与 Worker cargo 排除、同 Tick 战斗死亡顺序测试、脱敏回放和 canary 开关缺一不可。完整策略门槛见 `arena-hero-strategy.md` 第 7 节。
 
 ### Phase 5：评估与调参（基础设施已完成，等待真实数据）
 
