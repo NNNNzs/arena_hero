@@ -148,16 +148,18 @@ def _finding(code: str, severity: str, summary: str, *, ticks: Iterable[int] = (
 
 
 def _oscillation(positions: list[tuple[int, tuple[int, int]]]) -> dict[str, Any] | None:
-    if len(positions) < 6:
+    if len(positions) < 12:
         return None
     coords = [p for _, p in positions]
-    if len(set(coords)) < 2:
+    unique_cells = set(coords[-16:])
+    # If the unit is exploring across more than 3 distinct cells, it's normal navigation/turning, not a trapped oscillation.
+    if len(unique_cells) > 3 or len(unique_cells) < 2:
         return None
     reversals = sum(coords[i] == coords[i - 2] and coords[i] != coords[i - 1] for i in range(2, len(coords)))
-    # ABAB is exact; ABCABC and short patrol loops are reported with less confidence.
-    period = next((p for p in (2, 3, 4) if len(coords) >= p * 2 and sum(coords[i] == coords[i-p] for i in range(p, len(coords))) >= max(3, len(coords) - p - 1)), None)
-    if reversals < 3 and period is None:
+    # Require sustained high-frequency back-and-forth trapped in 2~3 cells
+    if reversals < max(8, len(coords) // 3):
         return None
+    period = next((p for p in (2, 3, 4) if len(coords) >= p * 3 and sum(coords[i] == coords[i-p] for i in range(p, len(coords))) >= len(coords) * 0.6), None)
     return {"period": period or 2, "reversals": reversals, "samples": len(coords), "cells": [list(p) for p in dict.fromkeys(coords[-12:])], "tick_range": [positions[0][0], positions[-1][0]]}
 
 
@@ -377,10 +379,15 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
         failure_ratio = deposit_failed / max(1, deposit_failed + deposit_success)
         severity = "critical" if failure_ratio >= .5 and deposit_failed >= 3 else "warning"
         findings.append(_finding("DEPOSIT_FAILURES", severity, f"窗口内存款失败 {deposit_failed} 次（失败率 {failure_ratio:.0%}）", ticks=event_ticks["DEPOSIT_FAILED"], evidence={"reasons": dict(event_reasons["DEPOSIT_FAILED"]), "successes": deposit_success}))
+    # Core attack / destruction findings (CRITICAL)
+    if event_counts["CORE_DAMAGED"] > 0:
+        findings.append(_finding("CORE_UNDER_ATTACK", "critical", f"核心在窗口内遭受敌方直接攻击 {event_counts['CORE_DAMAGED']} 次", ticks=event_ticks["CORE_DAMAGED"], evidence={"count": event_counts["CORE_DAMAGED"], "ticks": event_ticks["CORE_DAMAGED"][-12:]}))
+    if event_counts["CORE_DESTROYED"] > 0 or event_counts["CORE_RESPAWNED"] > 0:
+        findings.append(_finding("CORE_LOST_OR_RESPAWNED", "critical", f"核心发生战损或重生（摧毁={event_counts['CORE_DESTROYED']}, 重生={event_counts['CORE_RESPAWNED']}）", ticks=event_ticks["CORE_DESTROYED"] + event_ticks["CORE_RESPAWNED"], evidence={"destroyed": event_counts["CORE_DESTROYED"], "respawned": event_counts["CORE_RESPAWNED"]}))
+
     no_resource_ticks = int(agent_state.get("no_resource_ticks") or 0)
     empty_ratio = sum(v == 0 for v in visible_resources) / max(1, len(visible_resources))
-    if no_resource_ticks >= 12 or (len(visible_resources) >= 10 and empty_ratio >= .8):
-        findings.append(_finding("RESOURCE_DROUGHT", "warning", f"资源视野枯竭：no_resource_ticks={no_resource_ticks}，窗口空视野占比 {empty_ratio:.0%}", evidence={"latest_visible": visible_resources[-1] if visible_resources else None, "mean_visible": round(sum(visible_resources) / max(1, len(visible_resources)), 2)}))
+
     if hidden_damage_ticks:
         findings.append(_finding("HIDDEN_CORE_ATTACK", "critical", "核心在无可见敌人时受击，且环防单位仍 WAIT", ticks=hidden_damage_ticks, evidence={"occurrences": len(hidden_damage_ticks), "interpretation": "可能为视野外 Ranger 火力或防线朝向错误"}))
     if disengaged:
@@ -390,8 +397,6 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     for (tick0, old), (tick1, new) in zip(modes, modes[1:]):
         if old != new:
             switches.append({"tick": tick1, "from": old, "to": new, "duration": tick1 - tick0})
-    if len(switches) >= max(4, len(modes) // 8):
-        findings.append(_finding("MODE_THRASHING", "warning", f"战略模式在 {len(modes)} Tick 内切换 {len(switches)} 次", ticks=(s["tick"] for s in switches), evidence=switches[-12:]))
 
     migration_events = sum(event_counts[e] for e in ("CORE_MOVE_STARTED", "CORE_MOVE_PROGRESS", "CORE_MOVE_SUCCEEDED", "CORE_MOVE_FAILED", "CORE_MOVE_CANCELLED", "CORE_MOVE_START_FAILED"))
     migration_failures = event_counts["CORE_MOVE_FAILED"] + event_counts["CORE_MOVE_START_FAILED"] + event_counts["CORE_MOVE_CANCELLED"]
