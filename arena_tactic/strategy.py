@@ -33,6 +33,7 @@ from .navigation import (
     bounded_path_cost,
     destination,
     distance,
+    enemy_threat_cells,
     plan_step,
     shot_range,
 )
@@ -1462,6 +1463,7 @@ def _core_migration_direction(
     if context.core is None:
         return None
     occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
+    dangerous = enemy_threat_cells(context)
     occupied.update(
         intent.reserved_cell
         for intent in unit_intents
@@ -1473,6 +1475,7 @@ def _core_migration_direction(
         if destination(context.core.position, direction) not in memory.obstacles
         and destination(context.core.position, direction) not in context.resource_cells
         and destination(context.core.position, direction) not in occupied
+        and destination(context.core.position, direction) not in dangerous
     ]
     forward_candidates = [
         direction for direction in candidates
@@ -1606,21 +1609,15 @@ def _plan_core(
             reason="fallback_core_beacon_pickup",
         )
 
+    immediate_threat = any(
+        _enemy_can_attack_core(enemy, core, memory.obstacles)
+        for enemy in context.enemies
+    )
     reserve = max(
         config.minimum_resource_reserve,
         CORE_MAX_HP - core.hp + planned_unit_heals,
     )
     shield_cap = 10 if _beacon_owned(context) else 5
-    if core.shield < shield_cap and available_resources > reserve:
-        return ActionIntent(
-            actor_id=core.id,
-            is_core=True,
-            action=ActionKind.REPAIR_SHIELD,
-            score=700,
-            reason="restore_available_core_shield_capacity",
-            estimated_cost=1,
-        )
-
     spawn_type = _spawn_target(context, config, mode)
     if (
         spawn_type is not None
@@ -1642,6 +1639,19 @@ def _plan_core(
             if peacetime_conserve
             else reserve
         )
+        if (
+            spawn_type in (UnitType.VANGUARD, UnitType.RANGER)
+            and core.hp == CORE_MAX_HP
+            and core.shield >= 3
+            and not _beacon_owned(context)
+            and not _past_early_roster(context, config)
+        ):
+            # Do not let the general safety reserve freeze construction of the
+            # opening combat roster. Planned Unit heals remain funded because
+            # they resolve before this Core action.
+            effective_reserve = max(
+                0, CORE_MAX_HP - core.hp + planned_unit_heals
+            )
         if available_resources >= price + effective_reserve:
             return ActionIntent(
                 actor_id=core.id,
@@ -1653,17 +1663,22 @@ def _plan_core(
                 estimated_cost=price,
             )
 
-    immediate_threat = any(
-        _enemy_can_attack_core(enemy, core, memory.obstacles)
-        for enemy in context.enemies
-    )
+    if core.shield < shield_cap and available_resources > reserve:
+        return ActionIntent(
+            actor_id=core.id,
+            is_core=True,
+            action=ActionKind.REPAIR_SHIELD,
+            score=700,
+            reason="restore_available_core_shield_capacity",
+            estimated_cost=1,
+        )
+
     if (
         mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE)
         and memory.no_resource_ticks >= config.migration_idle_ticks
         and context.tick > memory.migration_cooldown_until_tick
         and not context.resource_cells
         and not any((worker.cargo or 0) > 0 for worker in context.workers)
-        and not context.enemies
         and not immediate_threat
         and core.hp == CORE_MAX_HP
         and core.shield >= 3

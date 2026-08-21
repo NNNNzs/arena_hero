@@ -505,6 +505,22 @@ def test_core_spawn_order_reserve_and_population_cap():
     assert capped_turn.plan.core_action.type != "SPAWN"
 
 
+def test_healthy_core_spends_exact_vanguard_cost_to_finish_early_roster():
+    early_workers = tuple(
+        unit(index, UnitType.WORKER, (index, 1)) for index in range(1, 4)
+    )
+    game_turn = turn(
+        owned_core=core(hp=5, shield=5),
+        units=early_workers,
+        resources=10,
+    )
+
+    choose_actions(game_turn)
+
+    assert game_turn.plan.core_action.type == "SPAWN"
+    assert game_turn.plan.core_action.unit_type is UnitType.VANGUARD
+
+
 def test_production_uses_dynamic_sdk_price_when_cap_is_explicitly_raised():
     twenty_vanguards = tuple(
         unit(index + 1, UnitType.VANGUARD, (index + 1, 3))
@@ -573,6 +589,23 @@ def test_core_migrates_only_after_eight_safe_resource_empty_ticks():
     result = choose_actions(game_turn, memory=memory)
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert core_intent.action is ActionKind.START_MOVE
+
+
+def test_distant_enemy_core_does_not_block_safe_resource_drought_migration():
+    memory = AgentMemory(
+        last_tick=8,
+        no_resource_ticks=8,
+        explored={(0, 0), (1, 0), (2, 0), (0, 1), (0, -1), (-1, 0)},
+    )
+    distant_enemy_core = core(value=300, position=(4, 0), controlled=False)
+    result = choose_actions(
+        turn(tick=9, owned_core=core(), enemies=(distant_enemy_core,)),
+        memory=memory,
+    )
+
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.START_MOVE
+    assert core_intent.reserved_cell != distant_enemy_core.position
 
 
 def test_successful_core_migration_resets_exploration_and_starts_cooldown():
