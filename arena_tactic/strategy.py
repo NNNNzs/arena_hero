@@ -1141,6 +1141,9 @@ def _plan_rangers(
     _, guard_rangers, _, intercept_rangers = _combat_rosters(context, memory, config)
     intercept_enemy = _intercept_target(context, memory, config)
     hunter_index = 0
+    
+    # 局部集火与过杀保护统计: 记录本回合敌人已分配受击伤害
+    targeted_damage: dict[UUID, int] = {}
 
     for index, ranger in enumerate(sorted(context.rangers, key=lambda unit: str(unit.id))):
         shootable = [
@@ -1148,8 +1151,18 @@ def _plan_rangers(
             for enemy in context.enemies
             if shot_range(ranger.position, enemy.position, memory.obstacles) is not None
         ]
+        
+        # 过滤掉已经受到足够致命伤害的目标（过杀保护）
+        effective_shootable = []
+        for enemy in shootable:
+            enemy_hp = enemy.hp + (enemy.shield if isinstance(enemy, CoreView) else 0)
+            if targeted_damage.get(enemy.id, 0) < enemy_hp:
+                effective_shootable.append(enemy)
+        if not effective_shootable and shootable:
+            effective_shootable = shootable  # 若全都被预定，则允许补刀
+
         target = min(
-            shootable,
+            effective_shootable,
             key=lambda enemy: (
                 -ranger_target_score(ranger, enemy, context, memory),
                 enemy.id.bytes,
@@ -1178,6 +1191,8 @@ def _plan_rangers(
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
             continue
         if target is not None:
+            # 记录集火伤害 (Ranger 单次伤害为 1)
+            targeted_damage[target.id] = targeted_damage.get(target.id, 0) + 1
             intents.append(
                 ActionIntent(
                     actor_id=ranger.id,
