@@ -35,6 +35,7 @@ _WAIT_REASONS = {
     "emergency_worker_rally_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
     "beacon_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "enemy_approach_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
+    "visible_threat_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "guard_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "patrol_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "hunter_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),

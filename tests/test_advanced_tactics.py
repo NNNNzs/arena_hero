@@ -38,7 +38,7 @@ def test_ranger_target_score_rewards_one_way_shadow_shot():
     )
 
 
-def test_vanguard_defense_moves_to_current_mineral_denial_cell():
+def test_vanguard_defense_prioritizes_visible_threat_over_mineral_denial():
     vanguard = unit(2, UnitType.VANGUARD, (0, 1))
     enemy = unit(90, UnitType.WORKER, (3, 0), controlled=False)
     result = choose_actions(
@@ -47,8 +47,7 @@ def test_vanguard_defense_moves_to_current_mineral_denial_cell():
     intent = next(item for item in result.intents if item.actor_id == vanguard.id)
 
     assert intent.action is ActionKind.MOVE
-    assert intent.reason == "vanguard_mineral_tank"
-    assert intent.target_cell == (2, 0)
+    assert intent.reason == "intercept_visible_threat"
     assert best_mineral_tank_cell(
         resource_cells={(2, 0)}, enemy_cells={(3, 0)}, core_cell=(0, 0), obstacles=set()
     ) == (2, 0)

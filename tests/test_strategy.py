@@ -115,6 +115,45 @@ def test_defend_rallies_workers_and_stops_production_even_when_funded():
     assert core_intent.action is not ActionKind.SPAWN
 
 
+def test_defend_vanguard_intercepts_ranger_threatening_core():
+    """A core guard must close with a Ranger instead of holding its ring."""
+    vanguard = unit(10, UnitType.VANGUARD, (0, 1))
+    attacker = unit(200, UnitType.RANGER, (3, 0), controlled=False)
+
+    result = choose_actions(
+        turn(owned_core=core(), units=(vanguard,), enemies=(attacker,))
+    )
+
+    assert result.mode is StrategicMode.DEFEND
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason == "intercept_visible_threat"
+    assert intent.reason != "holding_defense_ring"
+
+
+def test_defend_ranger_moves_into_firing_position_against_visible_threat():
+    """DEFEND must not prevent a Ranger from seeking a legal firing line."""
+    ranger = unit(11, UnitType.RANGER, (0, 1))
+    attacker = unit(201, UnitType.RANGER, (3, 0), controlled=False)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(ranger,),
+            enemies=(attacker,),
+        )
+    )
+
+    assert result.mode is StrategicMode.DEFEND
+    intent = next(item for item in result.intents if item.actor_id == ranger.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason in {
+        "intercept_ranger_firing_line",
+        "ranger_seek_legal_firing_line",
+    }
+    assert intent.reason != "holding_defense_ring"
+
+
 def test_insufficient_resources_and_respawn_clear_hidden_pressure():
     pressure = AgentMemory(last_tick=29, core_damage_streak=2, last_core_damage_tick=29)
     damaged = choose_actions(

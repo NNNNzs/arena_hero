@@ -994,6 +994,33 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "hidden_attacker_search_blocked"))
             continue
 
+        # Visible attackers take precedence over static DEFEND assignments.
+        # This includes core guards: a melee unit holding the defense ring is
+        # not useful against a Ranger that can keep firing from range.
+        target_enemy = _best_visible_enemy(vanguard, context, memory)
+        if target_enemy is not None and mode is StrategicMode.DEFEND:
+            intent = _move(
+                vanguard,
+                target_enemy.position,
+                "intercept_visible_threat",
+                740,
+                context=context,
+                memory=memory,
+                reservations=reservations,
+                deadline=deadline,
+                config=config,
+            )
+            _record_unit_task(
+                memory,
+                context,
+                vanguard,
+                kind="intercept",
+                target=target_enemy.position,
+                intent=intent,
+            )
+            intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
+            continue
+
         if mode is StrategicMode.DEFEND and context.core is not None:
             occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
             occupied.discard(vanguard.position)
@@ -1066,9 +1093,7 @@ def _plan_vanguards(
             intent = _move(
                 vanguard,
                 target_enemy.position,
-                "intercept_visible_threat"
-                if mode is StrategicMode.DEFEND
-                else "advance_on_high_value_enemy",
+                "advance_on_high_value_enemy",
                 600,
                 context=context,
                 memory=memory,
