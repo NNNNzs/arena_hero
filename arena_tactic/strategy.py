@@ -668,9 +668,11 @@ def _plan_workers(
     core = context.core
     if core is None:
         return intents
+    combat_ready = len(context.vanguards) >= 1 and len(context.rangers) >= 1
     if memory.last_mode is StrategicMode.DEFEND or _core_emergency_defense(context):
-        # During a live breach, abandon economy/recon immediately.  Workers
-        # carrying cargo return to the Core; empty Workers also rally there.
+        # When combat ready, workers rally to Core to shelter behind combat units.
+        # When NOT combat ready (0 combat units), empty workers MUST keep gathering resources,
+        # only cargo workers return to deposit so we can fund combat unit production.
         for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
             if (
                 worker.cargo
@@ -683,12 +685,15 @@ def _plan_workers(
             if _at_normal_core(worker, context) and worker.cargo and context.resource_space > 0:
                 intents.append(ActionIntent(worker.id, False, ActionKind.DEPOSIT, 980, "emergency_deposit_at_core"))
                 continue
-            intent = _return_to_core(
-                worker, context, memory, reservations, deadline, config,
-                "emergency_worker_rally_to_core",
-            )
-            intents.append(intent or _wait(worker, "emergency_worker_rally_blocked"))
-        return intents
+            if worker.cargo or combat_ready:
+                intent = _return_to_core(
+                    worker, context, memory, reservations, deadline, config,
+                    "emergency_worker_rally_to_core",
+                )
+                intents.append(intent or _wait(worker, "emergency_worker_rally_blocked"))
+                continue
+        if combat_ready:
+            return intents
 
     empty_workers = tuple(worker for worker in context.workers if not (worker.cargo or 0))
     worker_blocks = (

@@ -103,15 +103,31 @@ def test_sustained_hidden_damage_can_migrate_but_visible_threat_cannot():
     assert next(intent for intent in visible.intents if intent.is_core).action is not ActionKind.START_MOVE
 
 
-def test_defend_rallies_workers_and_spawns_combat_units_when_funded():
+def test_defend_rallies_workers_when_combat_ready():
+    combat_roster = (
+        unit(1, UnitType.WORKER, (4, 0)),
+        unit(2, UnitType.VANGUARD, (0, 1)),
+        unit(3, UnitType.RANGER, (0, 2)),
+    )
+    attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    result = choose_actions(
+        turn(owned_core=core(), units=combat_roster, enemies=(attacker,), resources=200)
+    )
+    worker_intent = next(intent for intent in result.intents if intent.actor_id == uuid(1))
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert worker_intent.reason == "emergency_worker_rally_to_core"
+    assert core_intent.action is not ActionKind.SPAWN
+
+
+def test_defend_empty_workers_keep_harvesting_and_core_spawns_vanguard_when_not_combat_ready():
     worker = unit(1, UnitType.WORKER, (4, 0))
     attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
     result = choose_actions(
         turn(owned_core=core(), units=(worker,), enemies=(attacker,), resources=200)
     )
-    worker_intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    worker_intent = next(intent for intent in result.intents if intent.actor_id == uuid(1))
     core_intent = next(intent for intent in result.intents if intent.is_core)
-    assert worker_intent.reason == "emergency_worker_rally_to_core"
+    assert worker_intent.reason == "explore_sector_frontier"
     assert core_intent.action is ActionKind.SPAWN
     assert core_intent.unit_type is UnitType.VANGUARD
 
@@ -825,10 +841,14 @@ def test_peacetime_conserve_blocks_production_when_roster_filled_and_buffer_insu
     assert core_intent2.action is not ActionKind.SPAWN
 
 
-def test_defend_stops_production_during_visible_breach():
-    """DEFEND preserves resources instead of producing into active fire."""
-    # 3 Workers (early met), 0 Vanguards (gap=12), 0 Rangers (gap=16)
-    roster = tuple(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 4))
+def test_defend_stops_production_during_visible_breach_when_combat_ready():
+    """DEFEND preserves resources when combat roster is established."""
+    # 3 Workers, 1 Vanguard, 1 Ranger (combat ready established)
+    roster = (
+        *(unit(i, UnitType.WORKER, (i, 0)) for i in range(1, 4)),
+        unit(4, UnitType.VANGUARD, (0, 1)),
+        unit(5, UnitType.RANGER, (0, 2)),
+    )
     nearby_enemy = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
     game_turn = turn(
         owned_core=core(),
