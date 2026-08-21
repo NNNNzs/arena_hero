@@ -353,6 +353,29 @@ def render_text(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_alert_text(report: dict[str, Any]) -> str:
+    w, e, b, s = report["window"], report["economy"], report["battlefield"], report["strategy"]
+    health = report["service"]
+    findings = report.get("findings", [])
+    
+    status_icon = "🚨" if any(f.get("severity") == "critical" for f in findings) else "⚠️"
+    lines = [
+        f"{status_icon} 【Arena Hero 战术异常告警】",
+        f"时间窗: Tick {w['tick_start']}..{w['tick_end']} | 服务: {'UP' if health['reachable'] else 'DOWN (无法连通)'}",
+        f"态势: 模式={s['current_mode']} | 核心资源={e['core_resources']}/{e['capacity']} | 可见敌军={b['visible_enemy_count']}",
+        "",
+        f"[检测到 {len(findings)} 项战术异常]:",
+    ]
+    for i, finding in enumerate(findings, 1):
+        ticks = f" (Ticks: {finding.get('ticks')})" if finding.get("ticks") else ""
+        lines.append(f"{i}. [{finding['severity'].upper()}] {finding['code']}: {finding['summary']}{ticks}")
+    
+    if report.get("tactical_clues"):
+        lines.extend(("", "[研判建议与破局线索]:"))
+        lines.extend(f"- {clue}" for clue in report["tactical_clues"])
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract recent Arena Hero tactical state and anomalies")
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME, help="runtime directory")
@@ -362,10 +385,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-timeout", type=float, default=0.75)
     parser.add_argument("--json", action="store_true", help="emit pure JSON")
     parser.add_argument("--record-nightly", action="store_true", help="record snapshot to nightly reports log during quiet hours (23:00-08:00)")
+    parser.add_argument("--alert-only", action="store_true", help="only emit output when warnings/critical findings are detected (silent on healthy/normal)")
+    parser.add_argument("--min-severity", choices=["info", "warning", "critical"], default="warning", help="minimum severity to trigger alert")
     args = parser.parse_args(argv)
     if not 1 <= args.ticks <= 10_000 or args.max_bytes < 4096 or args.health_timeout <= 0:
         parser.error("invalid --ticks, --max-bytes, or --health-timeout")
     report = inspect(args.runtime, args.ticks, args.max_bytes, args.health_url, args.health_timeout)
+
+    # Filter findings by severity if required
+    severity_rank = {"info": 1, "warning": 2, "critical": 3}
+    min_rank = severity_rank.get(args.min_severity, 2)
+    active_findings = [f for f in report.get("findings", []) if severity_rank.get(f.get("severity", "info"), 1) >= min_rank]
+    service_down = not report.get("service", {}).get("reachable", True)
+    has_alert = bool(active_findings) or service_down
 
     # If --record-nightly requested, record during night hours
     current_hour = datetime.now().hour
@@ -380,6 +412,20 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(json.dumps(report, ensure_ascii=False) + "\n")
         except Exception as e:
             sys.stderr.write(f"Warning: failed to record nightly log: {e}\n")
+
+    if args.alert_only:
+        # In quiet hours, stay silent unless it's a catastrophic service failure
+        if is_quiet_hours and not service_down:
+            return 0
+        # If no alerts found, exit silently with empty stdout (0 token watchdog mode)
+        if not has_alert:
+            return 0
+        if args.json:
+            json.dump(report, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+            sys.stdout.write("\n")
+        else:
+            print(render_alert_text(report))
+        return 0
 
     if args.json:
         json.dump(report, sys.stdout, ensure_ascii=False, separators=(",", ":"))
