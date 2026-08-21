@@ -44,6 +44,7 @@ _ACTION_LABELS = {
 _DIRECTION_LABELS = {"UP": "向上", "DOWN": "向下", "LEFT": "向左", "RIGHT": "向右"}
 _REASON_LABELS = {
     "move_to_unique_resource": "前往可见资源",
+    "continue_locked_resource_route": "锁定延续前往资源",
     "resources_reserved_or_no_legal_core_action": "资源需要保留，或当前没有合适的核心动作",
     "reobserve_remembered_resource": "复查记忆中的资源位置",
     "no_visible_resource": "当前没有可见资源",

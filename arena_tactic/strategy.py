@@ -379,6 +379,38 @@ def _assign_unique_targets(
     return result
 
 
+def _locked_resource_targets(
+    workers: Iterable[UnitView],
+    memory: AgentMemory,
+    context: DecisionContext,
+    config: AgentConfig,
+) -> dict[str, Position]:
+    """Keep an in-progress resource route stable through short fog gaps."""
+    locked: dict[str, Position] = {}
+    claimed: set[Position] = set()
+    for worker in sorted(workers, key=lambda unit: str(unit.id)):
+        task = memory.unit_tasks.get(str(worker.id), {})
+        raw_target = task.get("target")
+        if (
+            task.get("kind") != "resource"
+            or not isinstance(raw_target, list)
+            or len(raw_target) != 2
+            or not all(type(axis) is int for axis in raw_target)
+        ):
+            continue
+        target = raw_target[0], raw_target[1]
+        observed_tick = memory.resource_observations.get(target)
+        if (
+            observed_tick is None
+            or context.tick - observed_tick > config.resource_target_grace_ticks
+            or target in claimed
+        ):
+            continue
+        locked[str(worker.id)] = target
+        claimed.add(target)
+    return locked
+
+
 def _frontier_assignments(
     units: Iterable[UnitView],
     memory: AgentMemory,
@@ -701,13 +733,21 @@ def _plan_workers(
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
     )
+    locked_resource_assignments = _locked_resource_targets(
+        empty_workers, memory, context, config
+    )
     resource_assignments = _assign_unique_targets(
-        empty_workers,
-        context.resource_cells,
+        (
+            worker
+            for worker in empty_workers
+            if str(worker.id) not in locked_resource_assignments
+        ),
+        set(context.resource_cells) - set(locked_resource_assignments.values()),
         blocked=worker_blocks,
         deadline=deadline,
         config=config,
     )
+    resource_assignments = locked_resource_assignments | resource_assignments
 
     unassigned = [
         worker for worker in empty_workers if str(worker.id) not in resource_assignments
@@ -821,10 +861,15 @@ def _plan_workers(
             )
             continue
         if target is not None:
+            target_is_visible = target in context.resource_cells
             intent = _move(
                 worker,
                 target,
-                "move_to_unique_resource",
+                (
+                    "move_to_unique_resource"
+                    if target_is_visible
+                    else "continue_locked_resource_route"
+                ),
                 750,
                 context=context,
                 memory=memory,

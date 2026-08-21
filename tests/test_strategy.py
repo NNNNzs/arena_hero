@@ -245,6 +245,46 @@ def test_remembered_invisible_resource_is_only_a_reconnaissance_target():
     assert intent.reason == "reobserve_remembered_resource"
 
 
+def test_worker_keeps_active_resource_route_through_short_visibility_gap():
+    worker = unit(1, UnitType.WORKER, (0, 0))
+    target = (4, 0)
+    first = choose_actions(
+        turn(tick=10, owned_core=core(position=(-3, 0)), units=(worker,), resource_cells=(target,))
+    )
+    first_intent = next(intent for intent in first.intents if intent.actor_id == worker.id)
+    assert first_intent.target_cell == target
+    assert first.next_memory.unit_tasks[str(worker.id)]["kind"] == "resource"
+
+    # The target is temporarily outside the current Turn's visible-resource
+    # set while the worker is still walking toward it.  Continue its committed
+    # route instead of replacing it with recon/exploration.
+    second = choose_actions(
+        turn(tick=11, owned_core=core(position=(-3, 0)), units=(unit(1, UnitType.WORKER, (1, 0)),)),
+        memory=first.next_memory,
+    )
+    second_intent = next(intent for intent in second.intents if intent.actor_id == worker.id)
+    assert second_intent.action is ActionKind.MOVE
+    assert second_intent.target_cell == target
+    assert second_intent.reason == "continue_locked_resource_route"
+    assert second.next_memory.unit_tasks[str(worker.id)]["kind"] == "resource"
+
+
+def test_worker_releases_resource_route_after_grace_period():
+    worker = unit(1, UnitType.WORKER, (1, 0))
+    target = (4, 0)
+    memory = AgentMemory(
+        last_tick=10,
+        resource_observations={target: 10},
+        unit_tasks={str(worker.id): {"kind": "resource", "target": list(target)}},
+    )
+    result = choose_actions(
+        turn(tick=15, owned_core=core(position=(-3, 0)), units=(worker,)),
+        memory=memory,
+    )
+    intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
+    assert intent.reason != "continue_locked_resource_route"
+
+
 def test_workers_keep_exploring_when_frontier_is_exhausted_and_no_resource_is_visible():
     worker = unit(1, UnitType.WORKER, (0, 0))
     memory = AgentMemory(explored={(x, y) for x in range(-2, 3) for y in range(-2, 3)})

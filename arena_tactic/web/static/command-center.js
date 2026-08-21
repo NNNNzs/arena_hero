@@ -11,7 +11,7 @@ const goalLabels={LEGACY_LEGACY_ACTION:'传统动作',LEGACY_RETURN:'返回核�
 
 const taskLabels={HARVEST:'采集资源',HARVEST_RESOURCE:'采集资源',MOVE_TO_CELL:'移动到目标',RETREAT_TO_CORE:'撤回核心',HOLD_POSITION:'原地待命',BEACON_ESCORT:'护送信标',LEGACY_PLAN:'传统计划'};
 
-const reasonLabels={resources_reserved_or_no_legal_core_action:'资源已保留或核心暂无合法动作',return_cargo_to_core:'将货物运回核心',reobserve_remembered_resource:'重新观察已记忆资源',explore_sector_frontier:'探索分区前沿',holding_defense_ring:'维持防守环',preferred_vanguard_to_beacon:'优先派先锋前往信标',path_to_resource:'前往资源路径',preserve_worker_cargo:'保留工人货物',current_resource:'当前资源',stale:'决策已过期',ok:'正常',manual_task_move:'人工移动任务'};
+const reasonLabels={resources_reserved_or_no_legal_core_action:'资源已保留或核心暂无合法动作',return_cargo_to_core:'将货物运回核心',continue_locked_resource_route:'锁定延续前往资源',reobserve_remembered_resource:'重新观察已记忆资源',explore_sector_frontier:'探索分区前沿',holding_defense_ring:'维持防守环',preferred_vanguard_to_beacon:'优先派先锋前往信标',path_to_resource:'前往资源路径',preserve_worker_cargo:'保留工人货物',current_resource:'当前资源',stale:'决策已过期',ok:'正常',manual_task_move:'人工移动任务'};
 
 const wakeLabels={CORE_RESOURCES_OR_LEGAL_ACTION:'核心资源或出现合法动作',NEXT_AUTHORITATIVE_TURN:'等待下一份权威状态',arrive_at_resource:'抵达资源点'};
 

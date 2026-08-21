@@ -77,6 +77,11 @@ class AgentConfig:
     resource_recheck_failure_threshold: int = 2
     resource_recheck_cooldown_ticks: int = 8
     resource_recheck_worker_limit: int = 1
+    # Keep a Worker's already-selected resource destination briefly when it
+    # leaves the current visibility set between path steps.  The resource
+    # observation remains the authority: depletion or an authoritative empty
+    # recheck still removes the lock immediately.
+    resource_target_grace_ticks: int = 4
     core_guard_vanguards: int = 2
     core_guard_rangers: int = 1
     patrol_radius_min: int = 5
