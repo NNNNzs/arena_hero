@@ -22,6 +22,11 @@ from typing import Any, Iterable
 DEFAULT_RUNTIME = Path(__file__).resolve().parents[1] / "runtime"
 LIVEZ_URL = "http://127.0.0.1:8787/livez"
 MODES = {"DEFEND", "ATTACK", "BEACON", "RECOVER", "ECONOMY"}
+CARGO_STAGNATION_TICKS = 5
+PRODUCTION_FREEZE_TICKS = 5
+UNANSWERED_DAMAGE_TICKS = 2
+BEACON_ESCORT_DISTANCE = 4
+DECISION_SPIKE_MS = 2_000.0
 
 
 def _tail_lines(path: Path, limit: int, max_bytes: int) -> list[bytes]:
@@ -110,6 +115,26 @@ def _event_reason(event: dict[str, Any]) -> str | None:
     return str(value) if value is not None else None
 
 
+def _event_actor(event: dict[str, Any]) -> str:
+    """Return the best available actor/target id across replay schema versions."""
+    return str(event.get("actor") or event.get("actor_id") or event.get("target") or event.get("target_id") or "unknown")
+
+
+def _runs(samples: list[dict[str, Any]], minimum: int) -> list[list[dict[str, Any]]]:
+    """Split ordered samples into bounded, consecutive-Tick runs."""
+    result: list[list[dict[str, Any]]] = []
+    run: list[dict[str, Any]] = []
+    for sample in samples:
+        if run and sample["tick"] != run[-1]["tick"] + 1:
+            if len(run) >= minimum:
+                result.append(run)
+            run = []
+        run.append(sample)
+    if len(run) >= minimum:
+        result.append(run)
+    return result
+
+
 def _finding(code: str, severity: str, summary: str, *, ticks: Iterable[int] = (), entities: Iterable[str] = (), evidence: Any = None, confidence: str = "high") -> dict[str, Any]:
     result = {"code": code, "severity": severity, "summary": summary, "confidence": confidence}
     tick_list, entity_list = list(ticks), list(entities)
@@ -155,6 +180,10 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     core_hp: list[tuple[int, int]] = []
     hidden_damage_ticks: list[int] = []
     disengaged: list[dict[str, Any]] = []
+    worker_cargo_history: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    unit_combat_history: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    production_candidates: list[dict[str, Any]] = []
+    beacon_isolation: list[dict[str, Any]] = []
 
     for row in replay:
         tick = row.get("tick")
@@ -173,13 +202,25 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
                 positions[cid].append((tick, cpos))
             if isinstance(core.get("hp"), int):
                 core_hp.append((tick, core["hp"]))
-        for unit in state.get("units") or []:
+        units = [unit for unit in state.get("units") or [] if isinstance(unit, dict)]
+        intents = [i for i in row.get("intents") or [] if isinstance(i, dict)]
+        intents_by_actor = {str(i.get("actor") or i.get("actor_alias") or "unknown"): i for i in intents}
+        combat_units = [unit for unit in units if str(unit.get("unit_type") or unit.get("kind")) in {"VANGUARD", "RANGER"}]
+        enemy_positions = [enemy.get("position") for enemy in state.get("visible_enemies") or [] if isinstance(enemy, dict) and _pos(enemy.get("position"))]
+        for unit in units:
             if not isinstance(unit, dict):
                 continue
             uid, upos = str(unit.get("id", "unknown")), _pos(unit.get("position"))
-            kinds[uid] = str(unit.get("unit_type") or unit.get("kind") or "UNIT")
+            kind = str(unit.get("unit_type") or unit.get("kind") or "UNIT")
+            kinds[uid] = kind
             if upos:
                 positions[uid].append((tick, upos))
+            intent_action = str(intents_by_actor.get(uid, {}).get("action") or "UNKNOWN").upper()
+            if kind == "WORKER" and isinstance(unit.get("cargo"), (int, float)) and unit.get("cargo", 0) > 0 and core:
+                worker_cargo_history[uid].append({"tick": tick, "cargo": unit["cargo"], "core_distance": _distance(unit.get("position"), core.get("position")), "action": intent_action})
+            if isinstance(unit.get("hp"), int):
+                nearest_enemy = min((_distance(unit.get("position"), pos) for pos in enemy_positions), default=None)
+                unit_combat_history[uid].append({"tick": tick, "hp": unit["hp"], "action": intent_action, "nearest_enemy": nearest_enemy})
         tick_events = [e for e in row.get("events") or [] if isinstance(e, dict)]
         for event in tick_events:
             etype = _event_type(event)
@@ -189,11 +230,24 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
                 event_reasons[etype][_event_reason(event) or ""] += 1
             if etype == "UNIT_MOVE_FAILED":
                 failed_moves[str(event.get("actor") or event.get("actor_id") or "unknown")] += 1
-        intents = [i for i in row.get("intents") or [] if isinstance(i, dict)]
         for intent in intents:
             actor = str(intent.get("actor") or intent.get("actor_alias") or "unknown")
             actions[actor][str(intent.get("action") or "UNKNOWN")] += 1
             reasons[actor][str(intent.get("reason") or "unknown")] += 1
+        resources, population = state.get("resources"), state.get("population")
+        core_action = str(intents_by_actor.get(str(core.get("id")) if core else "", {}).get("action") or "UNKNOWN").upper()
+        peaceful = mode == "ECONOMY" or (not enemy_positions and mode not in {"ATTACK", "DEFEND", "BEACON"})
+        spawned = core_action == "SPAWN" or any(_event_type(event) == "CORE_SPAWN_SUCCEEDED" for event in tick_events)
+        if core and isinstance(resources, (int, float)) and resources >= 10 and isinstance(population, int) and population < 20 and peaceful and not spawned:
+            production_candidates.append({"tick": tick, "resources": resources, "population": population, "mode": mode, "core_action": core_action})
+        beacon = state.get("beacon") if isinstance(state.get("beacon"), dict) else {}
+        carrier_id = (beacon.get("carrier") or beacon.get("carrier_id")) if str(beacon.get("status", "")).upper() == "CARRIED" else None
+        carrier = next((unit for unit in units if str(unit.get("id")) == str(carrier_id)), None)
+        if carrier:
+            escorts = [unit for unit in combat_units if str(unit.get("id")) != str(carrier_id)]
+            nearest = min((_distance(carrier.get("position"), unit.get("position")) for unit in escorts), default=None)
+            if nearest is None or nearest > BEACON_ESCORT_DISTANCE:
+                beacon_isolation.append({"tick": tick, "carrier": str(carrier_id), "carrier_type": carrier.get("unit_type"), "nearest_combat_ally_distance": nearest, "combat_allies": len(escorts)})
         enemies = [e for e in state.get("visible_enemies") or [] if isinstance(e, dict)]
         damaged = any(_event_type(e) == "CORE_DAMAGED" for e in tick_events)
         if damaged and not enemies:
@@ -253,6 +307,46 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
         findings.append(_finding("UNIT_OSCILLATION", "warning", f"{len(oscillators)} 个对象出现 2~4 格周期性往复", entities=(o["entity"] for o in oscillators), evidence=oscillators))
     if stuck:
         findings.append(_finding("INEFFECTIVE_STATIONARY", "warning", f"{len(stuck)} 个对象长期原地等待或移动失败", entities=(s["entity"] for s in stuck), evidence=stuck))
+
+    cargo_stagnation = []
+    successful_deposits = {(_event_actor(event), row.get("tick")) for row in replay for event in row.get("events", []) if isinstance(event, dict) and _event_type(event) == "DEPOSIT_SUCCEEDED"}
+    for worker, samples in worker_cargo_history.items():
+        for run in _runs(samples, CARGO_STAGNATION_TICKS):
+            # Resolution events are published with the following authoritative
+            # Turn, so include the Tick immediately after the carrying run.
+            if any((worker, tick) in successful_deposits for tick in range(run[0]["tick"], run[-1]["tick"] + 2)):
+                continue
+            distances = [sample["core_distance"] for sample in run if sample["core_distance"] is not None]
+            progress = distances[0] - distances[-1] if len(distances) >= 2 else None
+            if distances and ((progress is not None and progress < 2) or distances[-1] <= 1):
+                cargo_stagnation.append({"worker": worker, "tick_range": [run[0]["tick"], run[-1]["tick"]], "ticks": len(run), "cargo": run[-1]["cargo"], "distance_start": distances[0], "distance_end": distances[-1], "distance_progress": progress, "near_core": distances[-1] <= 1})
+                break
+    if cargo_stagnation:
+        findings.append(_finding("CARGO_DELIVERY_STAGNATION", "critical", f"{len(cargo_stagnation)} 名载货工人连续无法完成回矿", ticks=(item["tick_range"][-1] for item in cargo_stagnation), entities=(item["worker"] for item in cargo_stagnation), evidence=cargo_stagnation))
+
+    production_freezes = _runs(production_candidates, PRODUCTION_FREEZE_TICKS)
+    if production_freezes:
+        evidence = [{"tick_range": [run[0]["tick"], run[-1]["tick"]], "ticks": len(run), "resource_range": [min(s["resources"] for s in run), max(s["resources"] for s in run)], "population_range": [min(s["population"] for s in run), max(s["population"] for s in run)]} for run in production_freezes]
+        findings.append(_finding("PRODUCTION_FREEZE", "warning", "和平/经济模式下资源与人口空间充足，但连续未生产", ticks=(run[-1]["tick"] for run in production_freezes), evidence=evidence))
+
+    unanswered_damage = []
+    for unit, samples in unit_combat_history.items():
+        damage_samples = [{**current, "previous_hp": previous["hp"]} for previous, current in zip(samples, samples[1:]) if current["tick"] == previous["tick"] + 1 and current["hp"] < previous["hp"]]
+        for run in _runs(damage_samples, UNANSWERED_DAMAGE_TICKS):
+            attacked = any(sample["action"] in {"ATTACK", "SHOOT"} for sample in run)
+            escaped = run[-1]["nearest_enemy"] is not None and run[-1]["nearest_enemy"] > 3
+            if not attacked and not escaped:
+                unanswered_damage.append({"unit": unit, "kind": kinds.get(unit), "tick_range": [run[0]["tick"], run[-1]["tick"]], "hp_start": run[0]["previous_hp"], "hp_end": run[-1]["hp"], "nearest_enemy_end": run[-1]["nearest_enemy"], "enemy_visibility": "visible" if run[-1]["nearest_enemy"] is not None else "unknown_or_blind_spot"})
+                break
+    if unanswered_damage:
+        findings.append(_finding("UNANSWERED_DAMAGE", "critical", f"{len(unanswered_damage)} 个单位连续受损且未反击或确认脱离射程", ticks=(item["tick_range"][-1] for item in unanswered_damage), entities=(item["unit"] for item in unanswered_damage), evidence=unanswered_damage))
+
+    if beacon_isolation:
+        findings.append(_finding("BEACON_CARRIER_ISOLATED", "critical", "信标持有者距最近战斗友军超过 4 格或无护卫", ticks=(item["tick"] for item in beacon_isolation), entities=(item["carrier"] for item in beacon_isolation), evidence=beacon_isolation[-12:]))
+
+    latency_spikes = [{"tick": trace.get("tick"), "decision_ms": trace.get("timings", {}).get("decision_ms")} for trace in traces if isinstance(trace.get("timings"), dict) and isinstance(trace["timings"].get("decision_ms"), (int, float)) and trace["timings"]["decision_ms"] > DECISION_SPIKE_MS]
+    if latency_spikes:
+        findings.append(_finding("DECISION_LATENCY_SPIKE", "critical", f"决策耗时出现 {len(latency_spikes)} 次超过 {DECISION_SPIKE_MS:.0f}ms 的毛刺", ticks=(item["tick"] for item in latency_spikes if isinstance(item["tick"], int)), evidence={"threshold_ms": DECISION_SPIKE_MS, "spikes": latency_spikes[-12:]}))
 
     deposit_failed = event_counts["DEPOSIT_FAILED"]
     deposit_success = event_counts["DEPOSIT_SUCCEEDED"]
