@@ -103,7 +103,7 @@ def test_sustained_hidden_damage_can_migrate_but_visible_threat_cannot():
     assert next(intent for intent in visible.intents if intent.is_core).action is not ActionKind.START_MOVE
 
 
-def test_defend_rallies_workers_and_stops_production_even_when_funded():
+def test_defend_rallies_workers_and_spawns_combat_units_when_funded():
     worker = unit(1, UnitType.WORKER, (4, 0))
     attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
     result = choose_actions(
@@ -112,7 +112,8 @@ def test_defend_rallies_workers_and_stops_production_even_when_funded():
     worker_intent = next(intent for intent in result.intents if intent.actor_id == worker.id)
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert worker_intent.reason == "emergency_worker_rally_to_core"
-    assert core_intent.action is not ActionKind.SPAWN
+    assert core_intent.action is ActionKind.SPAWN
+    assert core_intent.unit_type is UnitType.VANGUARD
 
 
 def test_defend_vanguard_intercepts_ranger_threatening_core():
@@ -526,14 +527,27 @@ def test_beacon_ownership_enables_repair_toward_ten_shield_cap():
 
 
 def test_core_spawn_order_reserve_and_population_cap():
-    spawn_turn = turn(owned_core=core(), resources=10)
+    # Before combat units (1 Vanguard + 1 Ranger), 0 reserve: 5 resources can spawn worker
+    spawn_turn = turn(owned_core=core(), resources=5)
     choose_actions(spawn_turn)
     assert spawn_turn.plan.core_action.type == "SPAWN"
     assert spawn_turn.plan.core_action.unit_type is UnitType.WORKER
 
-    reserved_turn = turn(owned_core=core(), resources=9)
-    choose_actions(reserved_turn)
-    assert reserved_turn.plan.core_action.type == "WAIT"
+    # 4 resources cannot afford 5-resource worker
+    underfunded_turn = turn(owned_core=core(), resources=4)
+    choose_actions(underfunded_turn)
+    assert underfunded_turn.plan.core_action.type == "WAIT"
+
+    # After 1 Vanguard + 1 Ranger are present, 5-resource reserve kicks in
+    combat_units = (
+        unit(1, UnitType.WORKER, (1, 0)),
+        unit(2, UnitType.VANGUARD, (0, 1)),
+        unit(3, UnitType.RANGER, (0, 2)),
+    )
+    # Worker cost is 5, reserve is 5 -> total 10 needed. 9 resources will WAIT
+    combat_ready_reserved_turn = turn(owned_core=core(), units=combat_units, resources=9)
+    choose_actions(combat_ready_reserved_turn)
+    assert combat_ready_reserved_turn.plan.core_action.type == "WAIT"
 
     forty = tuple(
         unit(index + 1, (UnitType.WORKER, UnitType.VANGUARD, UnitType.RANGER)[index % 3], (index + 1, 2))
@@ -876,3 +890,24 @@ def test_peacetime_respects_normal_deficit_order():
     # mature phase: Worker=2(-0), Vanguard=2(-1), Ranger=6(-2)
     # max by (deficit, -index) → (6, -2) → RANGER
     assert core_intent.unit_type is UnitType.RANGER
+
+
+def test_early_respawn_zero_reserve_spawns_worker_with_five_resources():
+    """Respawn with 1 worker and 5 resources immediately spawns 2nd worker."""
+    worker = unit(1, UnitType.WORKER, (1, 0))
+    result = choose_actions(turn(owned_core=core(), units=(worker,), resources=5))
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.SPAWN
+    assert core_intent.unit_type is UnitType.WORKER
+
+
+def test_zero_combat_units_evades_threat_when_resources_insufficient():
+    """With 0 combat units and near enemy threat, Core evades when resources < 10."""
+    worker = unit(1, UnitType.WORKER, (0, 1))
+    enemy = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    result = choose_actions(
+        turn(owned_core=core(position=(0, 0)), units=(worker,), enemies=(enemy,), resources=6)
+    )
+    core_intent = next(intent for intent in result.intents if intent.is_core)
+    assert core_intent.action is ActionKind.START_MOVE
+    assert core_intent.reason == "evade_threat_without_combat_roster"

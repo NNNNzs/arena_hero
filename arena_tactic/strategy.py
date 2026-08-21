@@ -1419,19 +1419,28 @@ def _spawn_target(
 ) -> UnitType | None:
     """Return the best unit type to spawn next, or *None* when satisfied.
 
-    In **wartime** (``DEFEND`` / ``ATTACK``) the production bias shifts
-    toward combat units: Workers above the early-wave target are skipped
-    unless the Worker deficit is the *only* remaining gap.
+    In **wartime** (DEFEND / ATTACK) the production bias shifts
+    toward combat units: combat units are prioritized first even in early wave.
     """
     counts = Counter(unit.unit_type for unit in context.units)
-    early = (
-        (UnitType.WORKER, config.early_workers),
-        (UnitType.VANGUARD, config.early_vanguards),
-        (UnitType.RANGER, config.early_rangers),
-    )
-    for unit_type, target in early:
-        if counts[unit_type] < target:
-            return unit_type
+    wartime = mode in (StrategicMode.DEFEND, StrategicMode.ATTACK)
+    if wartime:
+        early_combat = (
+            (UnitType.VANGUARD, config.early_vanguards),
+            (UnitType.RANGER, config.early_rangers),
+        )
+        for unit_type, target in early_combat:
+            if counts[unit_type] < target:
+                return unit_type
+    else:
+        early = (
+            (UnitType.WORKER, config.early_workers),
+            (UnitType.VANGUARD, config.early_vanguards),
+            (UnitType.RANGER, config.early_rangers),
+        )
+        for unit_type, target in early:
+            if counts[unit_type] < target:
+                return unit_type
     mature = (
         (UnitType.WORKER, config.mature_workers),
         (UnitType.VANGUARD, config.mature_vanguards),
@@ -1638,15 +1647,42 @@ def _plan_core(
         _enemy_can_attack_core(enemy, core, memory.obstacles)
         for enemy in context.enemies
     )
+    combat_ready = len(context.vanguards) >= 1 and len(context.rangers) >= 1
+    no_combat_units = len(context.vanguards) == 0 and len(context.rangers) == 0
+
+    pressure = _pressure_distance(context)
+    if (
+        no_combat_units
+        and (immediate_threat or (pressure is not None and pressure <= config.defense_enter_distance))
+        and available_resources < unit_cost(UnitType.VANGUARD, context.population)
+    ):
+        direction = _hidden_attack_escape_direction(context, memory, unit_intents)
+        if direction is not None:
+            return ActionIntent(
+                actor_id=core.id,
+                is_core=True,
+                action=ActionKind.START_MOVE,
+                score=1_020,
+                reason="evade_threat_without_combat_roster",
+                direction=direction,
+                reserved_cell=destination(core.position, direction),
+            )
+
+    base_reserve = config.minimum_resource_reserve if combat_ready else 0
     reserve = max(
-        config.minimum_resource_reserve,
+        base_reserve,
         CORE_MAX_HP - core.hp + planned_unit_heals,
     )
     shield_cap = 10 if _beacon_owned(context) else 5
     spawn_type = _spawn_target(context, config, mode)
+    allow_spawn_mode = (
+        mode is not StrategicMode.DEFEND
+        or not combat_ready
+        or spawn_type in (UnitType.VANGUARD, UnitType.RANGER)
+    )
     if (
         spawn_type is not None
-        and mode is not StrategicMode.DEFEND
+        and allow_spawn_mode
         and context.population < config.max_population
         and _spawn_cell_is_free(context, unit_intents)
     ):
@@ -1657,6 +1693,7 @@ def _plan_core(
         peacetime_conserve = (
             config.peacetime_resource_buffer > 0
             and mode not in (StrategicMode.DEFEND, StrategicMode.ATTACK)
+            and combat_ready
             and _past_early_roster(context, config)
         )
         effective_reserve = (
@@ -1665,6 +1702,14 @@ def _plan_core(
             else reserve
         )
         if (
+            not combat_ready
+            and core.hp == CORE_MAX_HP
+            and core.shield >= 3
+        ):
+            effective_reserve = max(
+                0, CORE_MAX_HP - core.hp + planned_unit_heals
+            )
+        elif (
             spawn_type in (UnitType.VANGUARD, UnitType.RANGER)
             and core.hp == CORE_MAX_HP
             and core.shield >= 3
