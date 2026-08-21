@@ -35,6 +35,37 @@ ACTION_LABELS = {
 }
 
 
+def _replay_markers(record: dict[str, Any]) -> list[dict[str, str]]:
+    """Return small, presentation-safe event markers for one replay frame."""
+    markers: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, label: str) -> None:
+        if kind not in seen:
+            markers.append({"kind": kind, "label": label})
+            seen.add(kind)
+
+    for event in record.get("events", ()):
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").upper()
+        if "DAMAGE" in event_type or "DESTROY" in event_type or "SHOT" in event_type:
+            add("DAMAGE", "受损/交火")
+        if "SPAWN" in event_type:
+            add("SPAWN", "生产")
+        if "MOVE" in event_type or "MIGRAT" in event_type:
+            add("MOVE", "迁移/移动")
+    for action in record.get("actions", ()):
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type") or "").upper()
+        if action_type == "SPAWN":
+            add("SPAWN", "生产")
+        elif action_type in {"MOVE", "START_MOVE"}:
+            add("MOVE", "迁移/移动")
+    return markers
+
+
 def _bounded_jsonl_tail(path: Path, *, max_bytes: int, limit: int) -> list[dict[str, Any]]:
     """Read only a bounded file tail and ignore partial or malformed lines."""
     if max_bytes <= 0 or limit <= 0:
@@ -347,13 +378,22 @@ class DashboardDataStore:
             traces = [item for record in self._traces() if (item := _project_trace_record(record))]
         except Exception:
             traces = []
+        trace_by_tick = {item["tick"]: item for item in traces}
         command_center = traces[-1] if traces else None
+        timeline = [
+            {"tick": item["tick"], **task}
+            for item in traces[-self.recent_limit:]
+            for task in item["tasks"]
+        ][-100:]
+        frames = []
+        for snapshot in recent:
+            trace = trace_by_tick.get(snapshot.get("tick"))
+            center = _merge_entity_state({**trace, "timeline": timeline}, snapshot) if trace else None
+            frames.append({
+                "tick": snapshot.get("tick"), "snapshot": snapshot,
+                "command_center": center, "markers": _replay_markers(snapshot),
+            })
         if command_center is not None:
-            timeline = [
-                {"tick": item["tick"], **task}
-                for item in traces[-self.recent_limit:]
-                for task in item["tasks"]
-            ][-100:]
             command_center = _merge_entity_state({**command_center, "timeline": timeline}, latest)
         return {
             "schema_version": 1,
@@ -365,6 +405,7 @@ class DashboardDataStore:
                 "available": bool(recent),
                 "records": len(recent),
                 "window_bytes": self.max_bytes,
+                "frames": frames,
             },
             "command_center": command_center,
         }
@@ -415,6 +456,7 @@ DASHBOARD_HTML = """<!doctype html>
 <header><div><h1>ARENA HERO 作战指挥中心</h1><div class="muted">仅展示当前脱敏事实；写命令在下一次成功提交后生效</div></div><div id="status" class="status">正在获取状态</div></header>
 <section class="grid"><div class="card metric"><div class="muted">最近 Tick</div><div id="tick" class="value">—</div></div><div class="card metric"><div class="muted">资源 / 容量</div><div id="resources" class="value">—</div></div><div class="card metric"><div class="muted">策略模式</div><div id="mode" class="value">—</div></div><div class="card metric"><div class="muted">单位在线</div><div id="unitCount" class="value">—</div></div>
 <div class="card map-card"><div class="section-head"><div><h2>战术地图</h2><p class="muted">当前可见态势与单位目标</p></div><span id="mapSummary" class="tag">—</span></div><svg id="map" class="map" viewBox="0 0 400 260" role="img" aria-label="当前可见战术地图"></svg></div>
+<section class="card replay-panel"><div class="section-head"><div><h2>时间轴回放</h2><p id="replayState" class="muted">等待回放快照</p></div><span id="replayTick" class="tick">—</span></div><div class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div></div><div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button></div></section>
 <aside class="card unit-panel"><div class="section-head"><div><h2>单位列表</h2><p class="muted">选择一个单位查看状态与计划</p></div><span id="unitFilterCount" class="tick">—</span></div><input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位"><div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div><div id="unitList" class="unit-list muted">尚无单位</div></aside>
 <section class="card detail-panel"><h2>单位状态与决策链</h2><div id="unitDetail" class="unit-detail"><div class="empty-detail">从左侧选择单位</div></div><div class="detail-actions"><h3>人工任务</h3><p class="muted">只对当前选中单位生效，仍会在下一权威 Tick 重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button><span id="loginState" class="muted"></span></div><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="neutral">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></section>
 <div class="card wide"><h2>目标与任务概览</h2><div id="goals" class="muted">尚无决策记录</div><div id="tasks" class="muted"></div></div><div class="card side"><h2>命令审计</h2><div id="commands" class="muted">尚无命令</div></div>

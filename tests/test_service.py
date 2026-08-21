@@ -106,6 +106,29 @@ def test_dashboard_map_projection_is_bounded_and_allowlisted(tmp_path: Path):
     assert "do-not-expose" not in body.decode()
 
 
+def test_dashboard_replay_frames_align_decisions_and_classify_event_markers(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    trace = tmp_path / "decision-trace.jsonl"
+    replay.write_text("\n".join(json.dumps(record) for record in (
+        {"tick": 20, "state": {"units": []}, "intents": [{"action": "MOVE"}],
+         "events": [{"type": "UNIT_DAMAGED"}]},
+        {"tick": 21, "state": {"units": []}, "intents": [{"action": "SPAWN"}],
+         "events": [{"type": "CORE_SPAWN_SUCCEEDED"}]},
+    )) + "\n", encoding="utf-8")
+    trace.write_text(json.dumps({"record_type": "decision_trace", "tick": 20,
+        "entity_traces": [], "goal_summaries": [], "task_transitions": [], "command_results": []}) + "\n", encoding="utf-8")
+
+    result = _http_response("/api/dashboard", ServiceStatus(), DashboardDataStore(replay, trace_path=trace, cache_seconds=0))
+    assert result is not None
+    _, body, _ = result
+    frames = json.loads(body)["replay"]["frames"]
+    assert [frame["tick"] for frame in frames] == [20, 21]
+    assert {marker["kind"] for marker in frames[0]["markers"]} == {"DAMAGE", "MOVE"}
+    assert {marker["kind"] for marker in frames[1]["markers"]} == {"SPAWN"}
+    assert frames[0]["command_center"]["state_synced"] is True
+    assert frames[1]["command_center"] is None
+
+
 def test_dashboard_projects_only_redacted_command_center_trace_fields(tmp_path: Path):
     replay = tmp_path / "replay.jsonl"
     trace = tmp_path / "decision-trace.jsonl"
