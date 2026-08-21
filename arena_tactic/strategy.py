@@ -187,7 +187,13 @@ def choose_mode(
         pressure is not None and pressure <= config.defense_enter_distance
     ):
         return StrategicMode.DEFEND
-    if (
+    # C: 防守超时退出——处于 DEFEND 且超过 defense_stale_ticks 回合没有实际伤害，
+    # 跳过所有滞后 DEFEND 返回，强制解除防守
+    defend_stale = (
+        memory.last_mode is StrategicMode.DEFEND
+        and context.tick - memory.last_core_damage_tick > config.defense_stale_ticks
+    )
+    if not defend_stale and (
         memory.last_mode is StrategicMode.DEFEND
         and pressure is not None
         and pressure <= config.defense_exit_distance
@@ -612,7 +618,8 @@ def _return_to_core(
         if context.core.state is CoreState.MOVING and context.core.destination
         else context.core.position
     )
-    return _move(
+    # B: 优先走安全路径；若被威胁格封死则降级为普通路径强行回核心
+    intent = _move(
         unit,
         target,
         reason,
@@ -623,6 +630,21 @@ def _return_to_core(
         deadline=deadline,
         config=config,
         avoid_threats=True,
+    )
+    if intent is not None:
+        return intent
+    # 安全路径不通，降级为忽略威胁的普通路径
+    return _move(
+        unit,
+        target,
+        reason + "_unsafe_fallback",
+        650,
+        context=context,
+        memory=memory,
+        reservations=reservations,
+        deadline=deadline,
+        config=config,
+        avoid_threats=False,
     )
 
 

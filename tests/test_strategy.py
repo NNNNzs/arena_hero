@@ -30,7 +30,7 @@ def test_modes_cover_respawn_recover_defend_attack_beacon_economy_and_explore():
     assert choose_actions(turn(owned_core=None)).mode is StrategicMode.RESPAWN
     assert choose_actions(turn(owned_core=core(hp=4), resources=2)).mode is StrategicMode.RECOVER
 
-    nearby_enemy = unit(200, UnitType.WORKER, (4, 0), controlled=False)
+    nearby_enemy = unit(200, UnitType.WORKER, (3, 0), controlled=False)
     assert choose_actions(turn(owned_core=core(), enemies=(nearby_enemy,))).mode is StrategicMode.DEFEND
 
     enemy_core = core(value=300, position=(5, 0), controlled=False)

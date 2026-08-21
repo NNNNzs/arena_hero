@@ -49,8 +49,10 @@ class AgentConfig:
     planning_budget_ms: float = 500.0
     max_population: int = 40
     minimum_resource_reserve: int = 5
-    defense_enter_distance: int = 4
-    defense_exit_distance: int = 6
+    defense_enter_distance: int = 3
+    defense_exit_distance: int = 5
+    # C: DEFEND 超时：连续 N 回合没有实际伤害事件则强制退出防守
+    defense_stale_ticks: int = 30
     # Enemy cores can disappear from one authoritative Turn when they leave
     # vision. Keep an already-started attack alive briefly instead of letting
     # the strategic mode fall through to BEACON on the very next Turn.
