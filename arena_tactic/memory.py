@@ -226,6 +226,7 @@ class AgentMemory:
     mode_since_tick: int = 0
     no_resource_ticks: int = 0
     migration_cooldown_until_tick: int = 0
+    last_core_id: str | None = None
     last_core_position: Position | None = None
     previous_migration_position: Position | None = None
     core_damage_streak: int = 0
@@ -452,7 +453,20 @@ class AgentMemory:
                 # old empty-resource streak must not immediately trigger the
                 # opposite leg.
                 next_memory.no_resource_ticks = 0
-            if event.event_type == "CORE_RESPAWNED":
+            if (
+                event.event_type == "CORE_RESPAWNED"
+                or (
+                    context.core is not None
+                    and self.last_core_id is not None
+                    and str(context.core.id) != self.last_core_id
+                )
+                or (
+                    context.core is not None
+                    and self.last_core_position is not None
+                    and not core_move_succeeded
+                    and (abs(context.core.position[0] - self.last_core_position[0]) > 1 or abs(context.core.position[1] - self.last_core_position[1]) > 1)
+                )
+            ):
                 # A respawn starts a new map/session generation.  Previous
                 # resource coordinates belong to the destroyed Core's world
                 # and must not send the new Worker on a long stale recheck.
@@ -461,11 +475,11 @@ class AgentMemory:
                 next_memory.resource_observations.clear()
                 next_memory.resource_recheck_failures.clear()
                 next_memory.resource_recheck_cooldowns.clear()
+                next_memory.temporary_blocks.clear()
                 next_memory.no_resource_ticks = 0
                 next_memory.core_damage_streak = 0
                 next_memory.last_core_damage_tick = 0
                 next_memory.migration_cooldown_until_tick = 0
-                next_memory.last_core_position = None
                 next_memory.previous_migration_position = None
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"
@@ -507,6 +521,7 @@ class AgentMemory:
             )
             next_memory.last_tick = context.tick
         if context.core is not None:
+            next_memory.last_core_id = str(context.core.id)
             next_memory.last_core_position = context.core.position
         return next_memory
 
@@ -523,6 +538,7 @@ class AgentMemory:
             "mode_since_tick": self.mode_since_tick,
             "no_resource_ticks": self.no_resource_ticks,
             "migration_cooldown_until_tick": self.migration_cooldown_until_tick,
+            "last_core_id": self.last_core_id,
             "last_core_position": list(self.last_core_position) if self.last_core_position else None,
             "previous_migration_position": (
                 list(self.previous_migration_position)
@@ -593,6 +609,7 @@ class AgentMemory:
                 mode_since_tick=integer("mode_since_tick"),
                 no_resource_ticks=integer("no_resource_ticks"),
                 migration_cooldown_until_tick=integer("migration_cooldown_until_tick"),
+                last_core_id=str(data["last_core_id"]) if data.get("last_core_id") else None,
                 last_core_position=next(iter(_safe_cells([data.get("last_core_position")])), None),
                 previous_migration_position=next(
                     iter(_safe_cells([data.get("previous_migration_position")])), None

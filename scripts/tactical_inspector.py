@@ -380,10 +380,18 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
         severity = "critical" if failure_ratio >= .5 and deposit_failed >= 3 else "warning"
         findings.append(_finding("DEPOSIT_FAILURES", severity, f"窗口内存款失败 {deposit_failed} 次（失败率 {failure_ratio:.0%}）", ticks=event_ticks["DEPOSIT_FAILED"], evidence={"reasons": dict(event_reasons["DEPOSIT_FAILED"]), "successes": deposit_success}))
     # Core attack / destruction findings (CRITICAL)
-    if event_counts["CORE_DAMAGED"] > 0:
-        findings.append(_finding("CORE_UNDER_ATTACK", "critical", f"核心在窗口内遭受敌方直接攻击 {event_counts['CORE_DAMAGED']} 次", ticks=event_ticks["CORE_DAMAGED"], evidence={"count": event_counts["CORE_DAMAGED"], "ticks": event_ticks["CORE_DAMAGED"][-12:]}))
-    if event_counts["CORE_DESTROYED"] > 0 or event_counts["CORE_RESPAWNED"] > 0:
-        findings.append(_finding("CORE_LOST_OR_RESPAWNED", "critical", f"核心发生战损或重生（摧毁={event_counts['CORE_DESTROYED']}, 重生={event_counts['CORE_RESPAWNED']}）", ticks=event_ticks["CORE_DESTROYED"] + event_ticks["CORE_RESPAWNED"], evidence={"destroyed": event_counts["CORE_DESTROYED"], "respawned": event_counts["CORE_RESPAWNED"]}))
+    last_respawn_tick = max(event_ticks["CORE_RESPAWNED"]) if event_ticks["CORE_RESPAWNED"] else None
+    latest_window_tick = replay[-1].get("tick", 0) if replay else 0
+    # Damage that happened before the most recent respawn belongs to the previous life cycle; ignore it.
+    live_damage_ticks = [t for t in event_ticks["CORE_DAMAGED"] if last_respawn_tick is None or t > last_respawn_tick]
+    if live_damage_ticks:
+        findings.append(_finding("CORE_UNDER_ATTACK", "critical", f"核心在当前生命周期内遭受直接攻击 {len(live_damage_ticks)} 次", ticks=live_damage_ticks, evidence={"count": len(live_damage_ticks), "ticks": live_damage_ticks[-12:]}))
+    
+    # Only alert on destruction/respawn if it occurred recently (within last 12 ticks), preventing repeated stale alarms across the whole sliding window.
+    recent_respawns = [t for t in event_ticks["CORE_RESPAWNED"] if latest_window_tick - t <= 12]
+    recent_destructions = [t for t in event_ticks["CORE_DESTROYED"] if latest_window_tick - t <= 12]
+    if recent_destructions or recent_respawns:
+        findings.append(_finding("CORE_LOST_OR_RESPAWNED", "critical", f"核心发生战损或重生（摧毁={len(recent_destructions)}, 重生={len(recent_respawns)}）", ticks=recent_destructions + recent_respawns, evidence={"destroyed": len(recent_destructions), "respawned": len(recent_respawns)}))
 
     no_resource_ticks = int(agent_state.get("no_resource_ticks") or 0)
     empty_ratio = sum(v == 0 for v in visible_resources) / max(1, len(visible_resources))
