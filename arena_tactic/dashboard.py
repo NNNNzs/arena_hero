@@ -10,6 +10,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
+from .context import _visible_cells
+
 
 MODE_LABELS = {
     "RESPAWN": "等待重生",
@@ -33,6 +35,7 @@ ACTION_LABELS = {
     "START_MOVE": "核心迁移",
     "PICKUP_BEACON": "拾取信标",
 }
+VISION_RADIUS = {"CORE": 5, "WORKER": 3, "VANGUARD": 4, "RANGER": 5}
 
 
 def _replay_markers(record: dict[str, Any]) -> list[dict[str, str]]:
@@ -161,6 +164,7 @@ def _project_record(record: dict[str, Any]) -> dict[str, Any]:
         return {"alias": identity, "kind": kind, "position": position,
                 "hp": _integer(value.get("hp")), "shield": _integer(value.get("shield")),
                 "cargo": _integer(value.get("cargo")), "state": _safe_text(value.get("state"), maximum=24),
+                "vision_radius": _integer(value.get("vision_radius")) or VISION_RADIUS.get(kind),
                 "destination": list(value.get("destination")) if isinstance(value.get("destination"), list)
                 and len(value["destination"]) == 2 and all(type(axis) is int for axis in value["destination"]) else None,
                 "enemy": enemy}
@@ -169,6 +173,22 @@ def _project_record(record: dict[str, Any]) -> dict[str, Any]:
     raw_enemies = state.get("visible_enemies") if isinstance(state.get("visible_enemies"), list) else []
     raw_resources = state.get("resource_cells") if isinstance(state.get("resource_cells"), list) else []
     raw_obstacles = state.get("obstacle_cells") if isinstance(state.get("obstacle_cells"), list) else []
+    raw_observed = state.get("observed_cells") if isinstance(state.get("observed_cells"), list) else []
+    def _cell(value: Any) -> list[int] | None:
+        return list(value) if isinstance(value, list) and len(value) == 2 and all(type(axis) is int for axis in value) else None
+    observed = [item for cell in raw_observed[:2000] if (item := _cell(cell))]
+    if not observed:
+        origins = []
+        for value in [state.get("core")] + raw_units[:100]:
+            if not isinstance(value, dict):
+                continue
+            position = value.get("position")
+            kind = str(value.get("unit_type") or value.get("kind") or "")
+            radius = _integer(value.get("vision_radius")) or VISION_RADIUS.get(kind)
+            if isinstance(position, list) and len(position) == 2 and all(type(axis) is int for axis in position) and radius is not None:
+                origins.append((tuple(position), radius))
+        obstacles = {tuple(item) for cell in raw_obstacles[:200] if (item := _cell(cell))}
+        observed = [list(cell) for cell in sorted(_visible_cells(tuple(origins), obstacles))[:2000]]
     return {
         "tick": _integer(record.get("tick")),
         "mode": mode,
@@ -187,8 +207,9 @@ def _project_record(record: dict[str, Any]) -> dict[str, Any]:
         "map": {
             "friendly": [item for value in ([state.get("core")] + raw_units[:100]) if (item := _map_object(value))],
             "enemies": [item for value in raw_enemies[:100] if (item := _map_object(value, enemy=True))],
-            "resources": [list(cell) for cell in raw_resources[:200] if isinstance(cell, list) and len(cell) == 2 and all(type(axis) is int for axis in cell)],
-            "obstacles": [list(cell) for cell in raw_obstacles[:200] if isinstance(cell, list) and len(cell) == 2 and all(type(axis) is int for axis in cell)],
+            "resources": [item for cell in raw_resources[:200] if (item := _cell(cell))],
+            "obstacles": [item for cell in raw_obstacles[:200] if (item := _cell(cell))],
+            "observed": observed,
             "beacon": {"position": list(beacon.get("position")) if isinstance(beacon.get("position"), list) and len(beacon["position"]) == 2 else None,
                        "status": _safe_text(beacon.get("status"), maximum=24)},
         },
@@ -323,7 +344,7 @@ class DashboardDataStore:
         *,
         trace_path: Path | None = None,
         max_bytes: int = 256 * 1024,
-        recent_limit: int = 12,
+        recent_limit: int = 32,
         cache_seconds: float = 1.0,
     ) -> None:
         self.replay_path = replay_path
@@ -440,7 +461,7 @@ _STATIC_TYPES = {
 
 
 def dashboard_static_asset(path: str) -> tuple[bytes, str] | None:
-    """Return only the two packaged dashboard assets; no directory traversal."""
+    """Return only allowlisted packaged dashboard assets; no directory traversal."""
     name = path.removeprefix("/static/")
     content_type = _STATIC_TYPES.get(name)
     if content_type is None:
@@ -453,14 +474,60 @@ def dashboard_static_asset(path: str) -> tuple[bytes, str] | None:
 
 DASHBOARD_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Arena Hero · 作战指挥中心</title><link rel="stylesheet" href="/static/command-center.css"><script src="/static/pixi.min.js"></script></head><body><main>
-<header><div><h1>ARENA HERO 作战指挥中心</h1><div class="muted">仅展示当前脱敏事实；写命令在下一次成功提交后生效</div></div><div id="status" class="status">正在获取状态</div></header>
-<section class="grid"><div class="card metric"><div class="muted">最近 Tick</div><div id="tick" class="value">—</div></div><div class="card metric"><div class="muted">资源 / 容量</div><div id="resources" class="value">—</div></div><div class="card metric"><div class="muted">策略模式</div><div id="mode" class="value">—</div></div><div class="card metric"><div class="muted">单位在线</div><div id="unitCount" class="value">—</div></div>
-<div class="card map-card"><div class="section-head"><div><h2>战术地图</h2><p class="muted">当前可见态势与单位目标 · 左键拖拽平移 · 滚轮缩放 · 双击核心/游侠聚焦</p></div><span id="mapSummary" class="tag">—</span></div><div id="map-viewport" class="map" role="img" aria-label="当前可见战术地图"><div class="map-loading">正在初始化 Pixi.js 态势渲染器…</div></div></div>
-<section class="card replay-panel"><div class="section-head"><div><h2>时间轴回放</h2><p id="replayState" class="muted">等待回放快照</p></div><span id="replayTick" class="tick">—</span></div><div class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div></div><div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button></div></section>
-<aside class="card unit-panel"><div class="section-head"><div><h2>单位列表</h2><p class="muted">选择一个单位查看状态与计划</p></div><span id="unitFilterCount" class="tick">—</span></div><input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位"><div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div><div id="unitList" class="unit-list muted">尚无单位</div></aside>
-<section class="card detail-panel"><h2>单位状态与决策链</h2><div id="unitDetail" class="unit-detail"><div class="empty-detail">从左侧选择单位</div></div><div class="detail-actions"><h3>人工任务</h3><p class="muted">只对当前选中单位生效，仍会在下一权威 Tick 重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button><span id="loginState" class="muted"></span></div><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="neutral">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></section>
-<div class="card wide"><h2>目标与任务概览</h2><div id="goals" class="muted">尚无决策记录</div><div id="tasks" class="muted"></div></div><div class="card side"><h2>命令审计</h2><div id="commands" class="muted">尚无命令</div></div>
-<div class="card wide"><h2>任务切换时间线</h2><div id="timeline" class="muted">尚无任务切换记录</div></div>
-<div class="card wide"><h2>核心迁移</h2><p class="muted">只会在下一权威 Tick 对当前正常核心选择一条安全相邻腿。</p><input id="migrationTarget" placeholder="目标 x,y"><button id="migrate" class="neutral">排队迁移</button> <button id="cancelMigration" class="neutral">取消迁移</button></div><div class="card side"><h2>策略姿态</h2><p class="muted">当前生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可读取和更新。</p></div></section>
+<title>Arena Hero · 作战指挥中心</title><link rel="stylesheet" href="/static/command-center.css"><script src="/static/pixi.min.js"></script></head>
+<body><main class="command-center">
+<header class="command-bar">
+  <div class="brand"><span class="eyebrow">ARENA HERO / TACTICAL OPERATIONS</span><h1>作战指挥中心</h1><p>权威回合态势 · 地图下令 · 脱敏数据</p></div>
+  <div class="top-metrics" aria-label="实时作战状态">
+    <div class="metric"><span>TICK</span><strong id="tick">—</strong></div>
+    <div class="metric"><span>资源 / 容量</span><strong id="resources">—</strong></div>
+    <div class="metric"><span>策略模式</span><strong id="mode">—</strong></div>
+    <div class="metric"><span>单位在线</span><strong id="unitCount">—</strong></div>
+  </div>
+  <div id="status" class="status">正在获取状态</div>
+</header>
+
+<section class="operations-shell">
+  <aside class="panel unit-panel">
+    <div class="section-head"><div><span class="eyebrow">ORDER OF BATTLE</span><h2>单位编组</h2></div><span id="unitFilterCount" class="tick">—</span></div>
+    <input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位">
+    <div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div>
+    <div id="unitList" class="unit-list muted">尚无单位</div>
+  </aside>
+
+  <section class="map-panel" aria-label="战术地图工作区">
+    <div class="map-heading"><div><span class="eyebrow">LIVE BATTLESPACE / GRID CONTROL</span><h2>战术地图</h2></div><div class="map-status"><span id="mapModeBadge" class="tag">实时态势</span><span id="mapSummary">—</span><span id="rendererStatus">渲染器待命</span></div></div>
+    <div class="map-toolbar" aria-label="地图控件">
+      <div class="tool-group"><button id="mapZoomIn" class="map-tool" title="放大">＋</button><button id="mapZoomOut" class="map-tool" title="缩小">－</button><button id="mapReset" class="map-tool" title="重置视口">归中</button></div>
+      <label class="layer-toggle"><input id="layerFog" type="checkbox" checked> 迷雾</label>
+      <label class="layer-toggle">视野 <select id="visionMode" aria-label="视野显示模式"><option value="selected">选中 + 核心</option><option value="all">全部单位</option><option value="off">关闭</option></select></label>
+      <label class="layer-toggle"><input id="layerCoordinates" type="checkbox" checked> 边尺</label>
+      <label class="layer-toggle"><input id="layerLabels" type="checkbox" checked> 标注</label>
+      <span class="map-legend"><i class="legend-unit worker"></i>工人 <i class="legend-unit vanguard"></i>先锋 <i class="legend-unit ranger"></i>游侠 <i class="legend-resource"></i>资源</span>
+      <button id="mapPickTarget" class="neutral map-order">地图选点下令</button>
+    </div>
+    <div id="map-viewport" class="map" role="application" tabindex="0" aria-label="战术地图；拖拽平移，滚轮缩放，方向键移动视口">
+      <div id="map-stage" class="map-stage"><div class="map-loading">正在初始化战术态势渲染器…</div></div>
+      <div id="map-axis-x" class="map-axis map-axis-x" aria-hidden="true"></div><div id="map-axis-y" class="map-axis map-axis-y" aria-hidden="true"></div>
+      <div class="map-reticle" aria-hidden="true"></div>
+      <div class="map-coordinate-strip"><span id="mapCenterCoordinate">中心 —</span><span id="mapCursor">光标 —</span><span id="mapSelectionCoordinate">选中 —</span><span id="mapTargetCoordinate">目标 —</span></div>
+      <div id="mapTargetMode" class="map-target-mode" hidden>选点下单 · 移动光标预览路径 · 单击锁定目标</div>
+      <div id="mapRendererState" class="map-renderer-state" hidden></div><pre id="mapDebugHud" class="map-debug-hud" hidden></pre>
+    </div>
+  </section>
+
+  <aside class="panel situation-panel">
+    <section class="situation-section"><div class="section-head"><div><span class="eyebrow">SELECTED ELEMENT</span><h2>单位状态与决策链</h2></div></div><div id="unitDetail" class="unit-detail"><div class="empty-detail">从左侧选择单位</div></div></section>
+    <section class="situation-section"><div class="section-head"><h3>附近资源点</h3><span class="resource-note">余量由协议隐藏</span></div><div id="resourceInfo" class="resource-list muted">当前无可见资源点</div></section>
+    <section class="situation-section"><h3>目标与任务概览</h3><div id="goals" class="compact-list muted">尚无决策记录</div><div id="tasks" class="compact-list muted"></div></section>
+    <details class="order-drawer" open><summary>人工任务 · 地图下令</summary><div class="detail-actions"><p class="muted">只对选中对象生效，下一权威 Tick 会重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button></div><span id="loginState" class="muted" aria-live="polite"></span><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="primary-action">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></details>
+    <details class="advanced-drawer"><summary>策略与指挥设置</summary><div class="advanced-grid"><section><h3>核心迁移</h3><input id="migrationTarget" placeholder="目标 x,y"><div class="button-row"><button id="migrate" class="neutral">排队迁移</button><button id="cancelMigration" class="neutral">取消</button></div></section><section><h3>策略姿态</h3><p class="muted">生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可更新。</p></section></div><h3>命令审计</h3><div id="commands" class="compact-list muted">尚无命令</div><h3>任务切换</h3><div id="timeline" class="compact-list muted">尚无任务切换记录</div></details>
+  </aside>
+</section>
+
+<section class="replay-panel" aria-label="32 Tick 作战时间轴">
+  <div class="replay-heading"><div><span class="eyebrow">REPLAY WINDOW / 32 TICKS</span><h2>作战时间轴</h2></div><div><span id="replayState" class="muted">等待回放快照</span><strong id="replayTick" class="tick">—</strong></div></div>
+  <div class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div></div>
+  <div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮ 首帧</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶ 播放</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button></div>
+</section>
 </main><script src="/static/command-center.js"></script><script src="/static/tactical-map.js"></script></body></html>"""

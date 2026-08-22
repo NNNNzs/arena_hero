@@ -1,162 +1,611 @@
-const $=id=>document.getElementById(id),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let csrf='',version=0,entitiesState=[],selectedAlias='',activeKind='ALL',replayFrames=[],replayIndex=0,replayLive=true,replayTimer=0,lastPayload=null;
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[character]));
 
-const labels={CORE:'核心',WORKER:'工人',VANGUARD:'先锋',RANGER:'游侠'};
+let csrf = '';
+let version = 0;
+let entitiesState = [];
+let selectedAlias = '';
+let activeKind = 'ALL';
+let replayFrames = [];
+let replayIndex = 0;
+let replayLive = true;
+let replayTimer = 0;
+let resumeReplayAfterVisibility = false;
+let lastPayload = null;
+let currentRenderedView = null;
+let lastMapKey = '';
+let refreshInFlight = false;
+let refreshTimer = 0;
+let policyInFlight = false;
+let lastPolicyRefresh = 0;
 
-const actionLabels={WAIT:'等待',MOVE:'移动',HARVEST:'采集',DEPOSIT:'存入',SWEEP:'横扫',SHOOT:'射击',HEAL:'治疗',SPAWN:'生产',REPAIR_SHIELD:'修复护盾',START_MOVE:'开始迁移',PICKUP_BEACON:'拾取信标'};
+const renderCache = {
+  metrics: '',
+  entities: '',
+  overview: '',
+  resources: '',
+  markers: '',
+};
 
-const statusLabels={RUNNING:'执行中',SUCCESS:'已完成',IDLE:'空闲',BLOCKED:'已阻塞',NO_INTENT:'无动作',SCHEDULED:'已排程',LEGACY:'传统策略',SHADOW:'观察中',STAGED:'已暂存',QUEUED:'排队中',APPLIED:'已生效',CANCELLED:'已取消',FAILED:'失败'};
+const labels = { CORE: '核心', WORKER: '工人', VANGUARD: '先锋', RANGER: '游侠' };
+const actionLabels = {
+  WAIT: '等待', MOVE: '移动', HARVEST: '采集', DEPOSIT: '存入', SWEEP: '横扫', SHOOT: '射击',
+  HEAL: '治疗', SPAWN: '生产', REPAIR_SHIELD: '修复护盾', START_MOVE: '开始迁移', PICKUP_BEACON: '拾取信标',
+};
+const statusLabels = {
+  RUNNING: '执行中', SUCCESS: '已完成', IDLE: '空闲', BLOCKED: '已阻塞', NO_INTENT: '无动作',
+  SCHEDULED: '已排程', LEGACY: '传统策略', SHADOW: '观察中', STAGED: '已暂存', QUEUED: '排队中',
+  APPLIED: '已生效', CANCELLED: '已取消', FAILED: '失败', UNKNOWN: '待同步',
+};
+const goalLabels = {
+  LEGACY_LEGACY_ACTION: '传统动作', LEGACY_RETURN: '返回核心', LEGACY_RECON: '侦察资源',
+  LEGACY_EXPLORE: '探索前沿', LEGACY_BEACON: '信标任务', HARVEST_RESOURCE: '采集资源', ECONOMY: '经济运营',
+  DEFEND: '防守', ATTACK: '进攻', BEACON: '信标', LEGACY_PLAN: '传统计划', CONTROL_BEACON: '控制信标',
+};
+const taskLabels = {
+  HARVEST: '采集资源', HARVEST_RESOURCE: '采集资源', HARVEST_VISIBLE: '采集可见资源',
+  MOVE_TO_CELL: '移动到目标', RETREAT_TO_CORE: '撤回核心', HOLD_POSITION: '原地待命',
+  BEACON_ESCORT: '护送信标', LEGACY_PLAN: '传统计划',
+};
+const reasonLabels = {
+  resources_reserved_or_no_legal_core_action: '资源已保留或核心暂无合法动作',
+  return_cargo_to_core: '将货物运回核心', continue_locked_resource_route: '锁定延续前往资源',
+  reobserve_remembered_resource: '重新观察已记忆资源', explore_sector_frontier: '探索分区前沿',
+  holding_defense_ring: '维持防守环', preferred_vanguard_to_beacon: '优先派先锋前往信标',
+  path_to_resource: '前往资源路径', preserve_worker_cargo: '保留工人货物', current_resource: '当前资源',
+  stale: '决策已过期', ok: '正常', manual_task_move: '人工移动任务',
+};
+const wakeLabels = {
+  CORE_RESOURCES_OR_LEGAL_ACTION: '核心资源或出现合法动作',
+  NEXT_AUTHORITATIVE_TURN: '等待下一份权威状态',
+  arrive_at_resource: '抵达资源点',
+};
+const directionLabels = { UP: '上', DOWN: '下', LEFT: '左', RIGHT: '右' };
+const commandLabels = {
+  ASSIGN_TASK: '分配任务', CANCEL: '取消任务', EMERGENCY_STOP: '紧急停机', RESUME_AUTO: '恢复自动',
+  START_CORE_MIGRATION: '开始核心迁移', CANCEL_CORE_MIGRATION: '取消核心迁移', UPDATE_POLICY: '更新策略',
+};
+const postureLabels = { BALANCED: '均衡', DEFENSIVE: '防御', ECONOMY: '经济', AGGRESSIVE: '进攻' };
 
-const goalLabels={LEGACY_LEGACY_ACTION:'传统动作',LEGACY_RETURN:'返回核心',LEGACY_RECON:'侦察资源',LEGACY_EXPLORE:'探索前沿',LEGACY_BEACON:'信标任务',HARVEST_RESOURCE:'采集资源',ECONOMY:'经济运营',DEFEND:'防守',ATTACK:'进攻',BEACON:'信标',LEGACY_PLAN:'传统计划',CONTROL_BEACON:'控制信标'};
+function humanize(value, mapping, fallback = '其他') {
+  if (value == null || value === '') return '';
+  return mapping[String(value)] || fallback;
+}
+const action = value => humanize(value, actionLabels);
+const status = value => humanize(value, statusLabels);
+const goal = value => humanize(value, goalLabels);
+const task = value => humanize(value, taskLabels);
+const reason = value => humanize(value, reasonLabels);
+const wake = value => humanize(value, wakeLabels);
+const direction = value => humanize(value, directionLabels);
+const signature = value => JSON.stringify(value ?? null);
 
-const taskLabels={HARVEST:'采集资源',HARVEST_RESOURCE:'采集资源',MOVE_TO_CELL:'移动到目标',RETREAT_TO_CORE:'撤回核心',HOLD_POSITION:'原地待命',BEACON_ESCORT:'护送信标',LEGACY_PLAN:'传统计划'};
+function setText(id, value) {
+  const node = $(id);
+  if (node && node.textContent !== String(value)) node.textContent = String(value);
+}
 
-const reasonLabels={resources_reserved_or_no_legal_core_action:'资源已保留或核心暂无合法动作',return_cargo_to_core:'将货物运回核心',continue_locked_resource_route:'锁定延续前往资源',reobserve_remembered_resource:'重新观察已记忆资源',explore_sector_frontier:'探索分区前沿',holding_defense_ring:'维持防守环',preferred_vanguard_to_beacon:'优先派先锋前往信标',path_to_resource:'前往资源路径',preserve_worker_cargo:'保留工人货物',current_resource:'当前资源',stale:'决策已过期',ok:'正常',manual_task_move:'人工移动任务'};
+function setHtml(id, value) {
+  const node = $(id);
+  if (node && node.innerHTML !== value) node.innerHTML = value;
+}
 
-const wakeLabels={CORE_RESOURCES_OR_LEGAL_ACTION:'核心资源或出现合法动作',NEXT_AUTHORITATIVE_TURN:'等待下一份权威状态',arrive_at_resource:'抵达资源点'};
+function rows(items, renderer, empty = '暂无数据') {
+  return items?.length ? items.map(renderer).join('') : `<div class="muted">${empty}</div>`;
+}
 
-const directionLabels={UP:'上',DOWN:'下',LEFT:'左',RIGHT:'右'};
+function unitRow(entity) {
+  const selected = entity.alias === selectedAlias;
+  const blocked = Boolean(entity.blocker);
+  const idle = entity.status === 'IDLE' || entity.action === 'WAIT';
+  const glyphClasses = [`kind-${String(entity.kind || 'worker').toLowerCase()}`];
+  if (blocked) glyphClasses.push('is-blocked');
+  else if (idle) glyphClasses.push('is-idle');
+  return `<button class="unit-row ${selected ? 'is-selected' : ''}" data-alias="${esc(entity.alias)}">
+    <span class="unit-glyph ${glyphClasses.join(' ')}" aria-hidden="true"></span>
+    <span class="unit-row-main"><span class="unit-row-title">${esc(labels[entity.kind] || '单位')} · ${esc(entity.alias)}</span>
+    <span class="unit-row-sub">${esc(task(entity.task) || '空闲')} · ${esc(action(entity.action) || '无动作')} · ${entity.position ? esc(entity.position.join(',')) : '状态待同步'}</span></span>
+    <span class="state-pill">${esc(status(entity.status || 'UNKNOWN'))}</span>
+  </button>`;
+}
 
-const commandLabels={ASSIGN_TASK:'分配任务',CANCEL:'取消任务',EMERGENCY_STOP:'紧急停机',RESUME_AUTO:'恢复自动',START_CORE_MIGRATION:'开始核心迁移',CANCEL_CORE_MIGRATION:'取消核心迁移',UPDATE_POLICY:'更新策略'};
+function renderUnitList() {
+  const query = String($('unitSearch')?.value || '').trim().toLowerCase();
+  const filtered = entitiesState.filter(entity => (
+    (activeKind === 'ALL' || entity.kind === activeKind)
+    && (!query || String(entity.alias).toLowerCase().includes(query))
+  ));
+  setHtml('unitList', rows(filtered, unitRow, '没有符合筛选条件的单位'));
+  setText('unitFilterCount', `${filtered.length}/${entitiesState.length}`);
+}
 
-const postureLabels={BALANCED:'均衡',DEFENSIVE:'防御',ECONOMY:'经济',AGGRESSIVE:'进攻'};
+function stateLine(entity) {
+  if (!entity.state_synced) return '<span class="sync-wait">等待下一份权威状态</span>';
+  const position = entity.position ? `位置 ${esc(entity.position.join(','))}` : '位置 —';
+  const hp = entity.hp == null ? 'HP —' : `HP ${esc(entity.hp)}`;
+  const cargo = entity.cargo == null ? '' : ` · 货物 ${esc(entity.cargo)}`;
+  const shield = entity.shield == null ? '' : ` · 护盾 ${esc(entity.shield)}`;
+  return `${position} · ${hp}${shield}${cargo}`;
+}
 
-function humanize(value,map,fallback='其他'){if(value==null||value==='')return '';
-const key=String(value);
-return map[key]||fallback}
-const action=v=>humanize(v,actionLabels),status=v=>humanize(v,statusLabels),goal=v=>humanize(v,goalLabels),task=v=>humanize(v,taskLabels),reason=v=>humanize(v,reasonLabels),wake=v=>humanize(v,wakeLabels),direction=v=>humanize(v,directionLabels);
+function card(entity) {
+  const target = entity.target_cell ? ` → 目标 ${esc(entity.target_cell.join(','))}` : '';
+  const eta = entity.eta_ticks == null ? '' : ` · 预计 ${esc(entity.eta_ticks)} Tick`;
+  const assignment = entity.assignment || {};
+  const candidates = rows(entity.candidate_intents, candidate => (
+    `<li>${esc(action(candidate.action) || '—')} ${esc(direction(candidate.direction) || '')} ${candidate.target_cell ? `→ ${esc(candidate.target_cell.join(','))}` : ''} ${esc(reason(candidate.reason) || '')}</li>`
+  ), '无备选动作');
+  const nodes = rows(entity.node_path, node => (
+    `<li><b>${esc(node.node_id)}</b> · ${esc(status(node.status))} · ${esc(reason(node.reason))}</li>`
+  ), '无行为树节点');
+  return `<article class="unit-card ${entity.status === 'RUNNING' ? 'is-running' : ''} ${entity.blocker ? 'is-blocked' : ''}">
+    <header class="unit-head"><div><b>${esc(labels[entity.kind] || entity.kind || '单位')}</b><span class="alias">${esc(entity.alias)}</span></div><span class="state-pill">${esc(status(entity.status || 'UNKNOWN'))}</span></header>
+    <div class="unit-state"><span>${stateLine(entity)}</span><span class="tick">#${esc(entity.trace_tick ?? '—')}</span></div>
+    <div class="decision-grid">
+      <div><small>当前任务</small><strong>${esc(task(entity.task) || '空闲')}</strong><span>${esc(goal(entity.goal) || '无目标')} ${assignment.role ? `· ${esc(labels[assignment.role] || humanize(assignment.role, {}))}` : ''}</span></div>
+      <div><small>当前动作</small><strong>${esc(action(entity.action) || '—')}${target}</strong><span>${esc(reason(entity.reason) || '无原因')}</span></div>
+      <div class="next-step"><small>下一步</small><strong>${esc(action(entity.next_step) || task(entity.next_step) || '等待新决策')}</strong><span>${esc(wake(entity.wake_condition) || reason(entity.blocker) || '无触发条件')}${eta}</span></div>
+    </div>
+    <div class="unit-meta">${assignment.lock ? `目标锁 ${esc(assignment.lock)} · ` : ''}${assignment.lease_until_tick != null ? `租约至 #${esc(assignment.lease_until_tick)} · ` : ''}${entity.waited_ticks ? `已等待 ${esc(entity.waited_ticks)} Tick` : ''}</div>
+    <details><summary>查看决策链</summary><div class="trace-columns"><div><b>备选动作</b><ul>${candidates}</ul></div><div><b>行为树路径</b><ul>${nodes}</ul></div></div></details>
+    <button class="neutral select-entity" data-alias="${esc(entity.alias)}">用于任务</button>
+  </article>`;
+}
 
-function rows(items,render,empty='暂无数据'){return items?.length?items.map(render).join(''):`<div class="muted">${empty}</div>`}
-function unitRow(e){const selected=e.alias===selectedAlias,blocked=Boolean(e.blocker),idle=e.status==='IDLE'||e.action==='WAIT';
-return `<button class="unit-row ${selected?'is-selected':''}" data-alias="${esc(e.alias)}"><span class="unit-dot ${blocked?'is-blocked':idle?'is-idle':''}"></span><span class="unit-row-main"><span class="unit-row-title">${esc(labels[e.kind]||'单位')} · ${esc(e.alias)}</span><span class="unit-row-sub">${esc(task(e.task)||'空闲')} · ${esc(action(e.action)||'无动作')} · ${e.position?esc(e.position.join(',')):'状态待同步'}</span></span><span class="state-pill">${esc(status(e.status||'UNKNOWN'))}</span></button>`}
-function renderUnitList(){const q=String($('unitSearch')?.value||'').trim().toLowerCase(),filtered=entitiesState.filter(e=>(activeKind==='ALL'||e.kind===activeKind)&&(!q||String(e.alias).toLowerCase().includes(q)));
-$('unitList').innerHTML=rows(filtered,unitRow,'没有符合筛选条件的单位');
-$('unitFilterCount').textContent=`${filtered.length}/${entitiesState.length}`}
-function renderUnitDetail(){const e=entitiesState.find(item=>item.alias===selectedAlias)||entitiesState[0];
-if(!e){$('unitDetail').innerHTML='<div class="empty-detail">等待单位状态</div>';
-return}selectedAlias=e.alias;
-$('unitDetail').innerHTML=card(e);
-$('taskAlias').value=e.alias}
-function chooseUnit(alias){if(!entitiesState.some(e=>e.alias===alias))return;
-selectedAlias=alias;
-renderUnitList();
-renderUnitDetail()}
-function cell(v){const m=String(v).trim().match(/^(-?\d+)\s*,\s*(-?\d+)$/);
-return m?[Number(m[1]),Number(m[2])]:null}
-function syncEntityChoices(entities){const select=$('taskAlias'),chosen=select.value,items=(entities||[]).filter(e=>/^entity_[0-9a-f]{12}$/.test(String(e.alias||'')));
-select.innerHTML=`<option value="">选择当前实体…</option>${items.map(e=>`<option value="${esc(e.alias)}">${esc(e.alias)} · ${esc(labels[e.kind]||e.kind||'未知')}</option>`).join('')}`;
-if(items.some(e=>e.alias===chosen))select.value=chosen}
-function stateLine(e){if(!e.state_synced)return '<span class="sync-wait">等待下一份权威状态</span>';
-const pos=e.position?`位置 ${esc(e.position.join(','))}`:'位置 —',hp=e.hp==null?'HP —':`HP ${esc(e.hp)}`,cargo=e.cargo==null?'':`货物 ${esc(e.cargo)}`,shield=e.shield==null?'':`护盾 ${esc(e.shield)}`;
-return `${pos} · ${hp}${shield?' · '+shield:''}${cargo?' · '+cargo:''}`}
-function card(e){const target=e.target_cell?` → 目标 ${esc(e.target_cell.join(','))}`:'',eta=e.eta_ticks==null?'':` · 预计 ${esc(e.eta_ticks)} Tick`,assignment=e.assignment||{};
-const candidates=rows(e.candidate_intents,c=>`<li>${esc(action(c.action)||'—')} ${esc(direction(c.direction)||'')} ${c.target_cell?`→ ${esc(c.target_cell.join(','))}`:''} ${esc(reason(c.reason)||'')}</li>`,'无备选动作');
-const nodes=rows(e.node_path,n=>`<li><b>${esc(n.node_id)}</b> · ${esc(status(n.status))} · ${esc(reason(n.reason))}</li>`,'无行为树节点');
-return `<article class="unit-card ${e.status==='RUNNING'?'is-running':''} ${e.blocker?'is-blocked':''}
-  <header class="unit-head"><div><b>${esc(labels[e.kind]||e.kind||'单位')}</b> <span class="alias">${esc(e.alias)}</span></div><span class="state-pill">${esc(status(e.status||'UNKNOWN'))}</span></header>
-  <div class="unit-state"><span>${stateLine(e)}</span><span class="tick">决策 #${esc(e.trace_tick??'—')}</span></div>
-  <div class="decision-grid"><div><small>当前任务</small><strong>${esc(task(e.task)||'空闲')}</strong><span>${esc(goal(e.goal)||'无目标')} ${assignment.role?`· ${esc(labels[assignment.role]||humanize(assignment.role,{}))}`:''}</span></div><div><small>当前动作</small><strong>${esc(action(e.action)||'—')}${target}</strong><span>${esc(reason(e.reason)||'无原因')}</span></div><div class="next-step"><small>下一步</small><strong>${esc(action(e.next_step)||task(e.next_step)||'等待新决策')}</strong><span>${esc(wake(e.wake_condition)||reason(e.blocker)||'无触发条件')}${eta}</span></div></div>
-  <div class="unit-meta">${assignment.lock?`目标锁 ${esc(assignment.lock)} · `:''}${assignment.lease_until_tick!=null?`租约至 #${esc(assignment.lease_until_tick)} · `:''}${e.waited_ticks?`已等待 ${esc(e.waited_ticks)} Tick`:''}</div>
-  <details><summary>查看决策链</summary><div class="trace-columns"><div><b>备选动作</b><ul>${candidates}</ul></div><div><b>行为树路径</b><ul>${nodes}</ul></div></div></details>
-  <button class="neutral select-entity" data-alias="${esc(e.alias)}">用于任务</button></article>`}
-function render(d){const s=d.service||{},c=d.current||{},cc=d.command_center||{};
-version=Number(cc.command_version??version);
-$('status').className='status '+(s.connected?'ok':'');
-$('status').textContent=s.connected?'已连接 · 对战中':'服务在线 · 等待连接';
-$('tick').textContent=c.tick??s.last_tick??'—';
-$('resources').textContent=c.resources==null?'—':`${c.resources}/${c.resource_capacity??'—'}`;
-$('mode').textContent=c.mode_label||'等待数据';
-entitiesState=(cc.entities||[]).slice().sort((a,b)=>({CORE:0,WORKER:1,VANGUARD:2,RANGER:3}[a.kind]??9)-({CORE:0,WORKER:1,VANGUARD:2,RANGER:3}[b.kind]??9)||String(a.alias).localeCompare(String(b.alias)));
-$('unitCount').textContent=entitiesState.length;
-const taskCounts=entitiesState.reduce((out,e)=>(out[e.task||'IDLE']=(out[e.task||'IDLE']||0)+1,out),{});
-const taskSummary=Object.entries(taskCounts).map(([k,n])=>`${esc(task(k)||'空闲')} ${n} 个`).join(' · ');
-$('goals').innerHTML=rows(cc.goals,g=>`<div class="row"><b>${esc(goal(g.goal))}</b> <span class="tag">${esc(status(g.status))}</span> ${esc(task(g.stage)||g.stage||'')}</div>`)+(cc.tasks?.length?'':`<div class="row"><b>当前主线</b> <span class="tag">${esc(c.mode_label||'待命')}</span> ${taskSummary||'暂无单位决策'}</div>`);
-renderUnitList();
-renderUnitDetail();
-syncEntityChoices(entitiesState);
-$('tasks').innerHTML=rows(cc.tasks,t=>taskLine(t),'当前没有人工或租约任务；请从单位详情分配任务');
-const mapSummary=$('mapSummary');
-if(mapSummary)mapSummary.textContent=`己方 ${c.map?.friendly?.length||0} · 敌方 ${c.map?.enemies?.length||0}`;
-const timeline=$('timeline');
-if(timeline)timeline.innerHTML=rows(cc.timeline,t=>taskLine(t,true),'当前没有任务切换记录');
-$('commands').innerHTML=rows(cc.commands,x=>`<div class="row">${esc(commandLabels[x.type]||humanize(x.type,{}))} · ${esc(status(x.status))}</div>`)}
-function taskLine(t,showTick=false){const target=Array.isArray(t.target)?` · 目标 ${esc(t.target.join(','))}`:'',lease=t.lease_until_tick==null?'':` · 租约至 #${esc(t.lease_until_tick)}`;
-return `<div class="row">${showTick?`<span class="tick">#${esc(t.tick)}</span> `:''}<b>${esc(t.task_id)}</b> <span class="tag">${esc(status(t.status))}</span> ${esc(goal(t.goal)||task(t.kind)||'')} ${esc(t.actor_alias||'')}${target}${lease} ${esc(reason(t.reason)||'')}</div>`}
-async function api(path,method='GET',data){const h={};
-if(csrf){h['X-CSRF-Token']=csrf;
-h['If-Match']=`"command-version-${version}"`;
-h['Idempotency-Key']='ui-'+crypto.randomUUID()}const r=await fetch(path,{method,headers:{...h,'Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});
-const d=await r.json();
-if(d.command_version!=null)version=d.command_version;
-if(!r.ok)throw Error(d.error||'请求失败');
-return d}
-async function login(){try{const d=await api('/api/v1/session','POST',{password:$('password').value});
-csrf=d.csrf_token;
-version=Number(d.command_version??0);
-$('loginState').textContent='已认证；写操作将在下一 Tick 生效。';
-await refreshTasks()}catch(e){$('loginState').textContent='认证失败或写功能未配置。'}}
-async function emergency(type){if(!csrf){$('loginState').textContent='请先认证。';
-return}if(type==='EMERGENCY_STOP'&&!confirm('确认下一 Tick 让所有当前对象安全等待？'))return;
-try{await api(type==='EMERGENCY_STOP'?'/api/v1/control/emergency-stop':'/api/v1/control/resume-auto','POST',{});
-$('loginState').textContent='命令已排队，等待下一次成功提交。'}catch(e){$('loginState').textContent='命令未接受：'+e.message}}
-async function assign(){if(!csrf){$('taskState').textContent='请先认证。';
-return}const alias=$('taskAlias').value.trim(),task_kind=$('taskKind').value,target=cell($('taskTarget').value),priority=Number($('taskPriority').value);
-if(!/^entity_[0-9a-f]{12}$/.test(alias))return $('taskState').textContent='请选择当前实体。';
-if(task_kind==='MOVE_TO_CELL'&&!target)return $('taskState').textContent='移动任务需要 x,y 目标。';
-try{await api(`/api/v1/entities/${alias}/tasks`,'POST',{task_kind,priority,...(target?{target}:{})});
-$('taskState').textContent='任务已排队，下一次成功提交后生效。';
-await refreshTasks()}catch(e){$('taskState').textContent='任务未接受：'+e.message}}
-function renderTasks(tasks){$('taskCommands').innerHTML=rows(tasks,t=>`<div class="row"><b>${esc(commandLabels[t.type]||humanize(t.type,{}))}</b> <span class="tag">${esc(status(t.status))}</span>${t.status==='QUEUED'?` <button class="neutral cancel-command" data-command="${esc(t.command_id)}">撤回</button>`:''}${t.status==='APPLIED'&&t.type==='ASSIGN_TASK'?` <button class="neutral cancel-entity" data-alias="${esc(t.entity_alias)}">取消任务</button>`:''}</div>`,'暂无人工任务。')}
-async function refreshTasks(){if(!csrf)return;
-try{renderTasks((await api('/api/v1/tasks')).tasks||[])}catch(e){$('taskCommands').textContent='任务状态读取失败：'+e.message}}
-async function cancelCommand(id){try{await api(`/api/v1/commands/${encodeURIComponent(id)}`,'DELETE');
-$('taskState').textContent='排队命令已撤回。';
-await refreshTasks()}catch(e){$('taskState').textContent='撤回失败：'+e.message}}
-async function cancelEntity(alias){try{await api(`/api/v1/entities/${encodeURIComponent(alias)}/cancel`,'POST',{});
-$('taskState').textContent='取消任务已排队，下一次成功提交后生效。';
-await refreshTasks()}catch(e){$('taskState').textContent='取消未接受：'+e.message}}
-async function migrate(){if(!csrf)return $('taskState').textContent='请先认证。';
-const target=cell($('migrationTarget').value);
-if(!target)return $('taskState').textContent='迁移目标必须是 x,y。';
-if(!confirm('确认排队 Core 迁移？执行时仍会重新校验安全性。'))return;
-try{await api('/api/v1/core/migrations','POST',{target});
-$('taskState').textContent='迁移已排队，下一次成功提交后生效。'}catch(e){$('taskState').textContent='迁移未接受：'+e.message}}
-async function cancelMigration(){if(!csrf)return $('taskState').textContent='请先认证。';
-try{await api('/api/v1/core/migrations','DELETE');
-$('taskState').textContent='取消已排队，下一次成功提交后生效。'}catch(e){$('taskState').textContent='取消未接受：'+e.message}}
-function renderPolicy(p){$('policyCurrent').textContent=postureLabels[p.posture]||'其他';
-$('policyPosture').value=p.posture||'BALANCED'}async function refreshPolicy(){if(csrf)try{renderPolicy(await api('/api/v1/policy'))}catch(e){$('policyState').textContent='策略读取失败：'+e.message}}async function setPolicy(){if(!csrf)return $('policyState').textContent='请先认证。';
-try{await api('/api/v1/policy','PATCH',{posture:$('policyPosture').value});
-$('policyState').textContent='策略已排队，下一次成功提交后生效。'}catch(e){$('policyState').textContent='策略未接受：'+e.message}}
-function selectedFrame(){return replayFrames[replayIndex]||null}
-function renderReplay(){const frame=selectedFrame(),slider=$('replaySlider');if(!frame){$('replayState').textContent='等待回放快照';$('replayTick').textContent='—';return}const view={...lastPayload,current:frame.snapshot,command_center:frame.command_center||{timeline:lastPayload?.command_center?.timeline||[]}};slider.value=String(replayIndex);$('replayTick').textContent=`#${frame.tick??'—'}`;$('replayState').textContent=replayLive?'实时跟随最新 Tick':'回放已暂停';$('replayPlay').textContent=replayTimer?'⏸':'▶';window.DashboardReplay={selected:view};render(view);try{window.renderTacticalMap?.(view)}catch(err){console.error('Tactical map render error:',err)}const max=Math.max(1,replayFrames.length-1);$('replayMarkers').innerHTML=replayFrames.flatMap((item,index)=>(item.markers||[]).map(marker=>`<button class="replay-marker ${esc(marker.kind.toLowerCase())}" style="left:${index/max*100}%" data-index="${index}" title="#${esc(item.tick)} · ${esc(marker.label)}"></button>`)).join('')}
-function selectReplay(index,{live=false}={}){if(!replayFrames.length)return;replayIndex=Math.max(0,Math.min(replayFrames.length-1,index));replayLive=live;renderReplay()}
-function setFrames(payload){lastPayload=payload;replayFrames=(payload.replay?.frames||[]).slice().sort((a,b)=>Number(a.tick)-Number(b.tick));const latest=Math.max(0,replayFrames.length-1);if(replayLive||replayIndex>=replayFrames.length)replayIndex=latest;const slider=$('replaySlider');slider.max=String(latest);slider.value=String(replayIndex);renderReplay()}
-function playReplay(){if(replayTimer){clearInterval(replayTimer);replayTimer=0;renderReplay();return}replayLive=false;replayTimer=setInterval(()=>{if(replayIndex>=replayFrames.length-1){clearInterval(replayTimer);replayTimer=0;renderReplay();return}selectReplay(replayIndex+1)},700);renderReplay()}
-async function refresh(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw Error('dashboard');setFrames(await r.json())}catch{$('status').textContent='状态获取失败'}await refreshPolicy()}$('login').onclick=login;
-$('assign').onclick=assign;
-$('migrate').onclick=migrate;
-$('cancelMigration').onclick=cancelMigration;
-$('setPolicy').onclick=setPolicy;
-$('unitSearch').oninput=renderUnitList;
-$('unitFilters').onclick=e=>{const b=e.target.closest('.filter-btn');
-if(!b)return;
-activeKind=b.dataset.kind;
-document.querySelectorAll('.filter-btn').forEach(x=>x.classList.toggle('is-active',x===b));
-renderUnitList()};
-$('unitList').onclick=e=>{const b=e.target.closest('.unit-row');
-if(b)chooseUnit(b.dataset.alias)};
-$('unitDetail').onclick=e=>{const b=e.target.closest('.select-entity');
-if(b)chooseUnit(b.dataset.alias)};
-$('taskCommands').onclick=e=>{const b=e.target.closest('button');
-if(b?.dataset.command)cancelCommand(b.dataset.command);
-if(b?.dataset.alias)cancelEntity(b.dataset.alias)};
-$('replaySlider').oninput=e=>selectReplay(Number(e.target.value));
-$('replayStart').onclick=()=>selectReplay(0);
-$('replayPrev').onclick=()=>selectReplay(replayIndex-1);
-$('replayPlay').onclick=playReplay;
-$('replayNext').onclick=()=>selectReplay(replayIndex+1);
-$('replayLive').onclick=()=>{if(replayTimer){clearInterval(replayTimer);replayTimer=0}selectReplay(replayFrames.length-1,{live:true})};
-$('replayMarkers').onclick=e=>{const marker=e.target.closest('.replay-marker');if(marker)selectReplay(Number(marker.dataset.index))};
-refresh();
-setInterval(refresh,3000);
+function renderUnitDetail() {
+  const entity = entitiesState.find(item => item.alias === selectedAlias) || entitiesState[0];
+  if (!entity) {
+    setHtml('unitDetail', '<div class="empty-detail">等待单位状态</div>');
+    return;
+  }
+  selectedAlias = entity.alias;
+  setHtml('unitDetail', card(entity));
+  if ($('taskAlias')) $('taskAlias').value = entity.alias;
+}
+
+function chooseUnit(alias, { focusMap = true } = {}) {
+  if (!entitiesState.some(entity => entity.alias === alias)) return;
+  selectedAlias = alias;
+  renderUnitList();
+  renderUnitDetail();
+  renderResourceInfo(currentRenderedView, true);
+  if (focusMap) window.focusTacticalUnit?.(alias);
+  else window.selectTacticalUnit?.(alias);
+}
+window.selectDashboardUnit = alias => chooseUnit(alias, { focusMap: false });
+
+function cell(value) {
+  const match = String(value).trim().match(/^(-?\d+)\s*,\s*(-?\d+)$/);
+  return match ? [Number(match[1]), Number(match[2])] : null;
+}
+
+function syncEntityChoices(entities) {
+  const select = $('taskAlias');
+  if (!select) return;
+  const chosen = selectedAlias || select.value;
+  const items = (entities || []).filter(entity => /^entity_[0-9a-f]{12}$/.test(String(entity.alias || '')));
+  select.innerHTML = `<option value="">选择当前实体…</option>${items.map(entity => (
+    `<option value="${esc(entity.alias)}">${esc(entity.alias)} · ${esc(labels[entity.kind] || entity.kind || '未知')}</option>`
+  )).join('')}`;
+  if (items.some(entity => entity.alias === chosen)) select.value = chosen;
+}
+
+function taskLine(item, showTick = false) {
+  const target = Array.isArray(item.target) ? ` · 目标 ${esc(item.target.join(','))}` : '';
+  const lease = item.lease_until_tick == null ? '' : ` · 租约至 #${esc(item.lease_until_tick)}`;
+  return `<div class="row">${showTick ? `<span class="tick">#${esc(item.tick)}</span> ` : ''}<b>${esc(item.task_id)}</b> <span class="tag">${esc(status(item.status))}</span> ${esc(goal(item.goal) || task(item.kind) || '')} ${esc(item.actor_alias || '')}${target}${lease} ${esc(reason(item.reason) || '')}</div>`;
+}
+
+function renderResourceInfo(view, force = false) {
+  const current = view?.current || {};
+  const commandCenter = view?.command_center || {};
+  const resources = (current.map?.resources || []).filter(item => Array.isArray(item) && item.length === 2);
+  const selected = (commandCenter.entities || []).find(entity => entity.alias === selectedAlias);
+  const mappedSelected = (current.map?.friendly || []).find(entity => entity.alias === selectedAlias);
+  const core = (current.map?.friendly || []).find(entity => entity.kind === 'CORE');
+  const focus = selected?.position || mappedSelected?.position || core?.position || [0, 0];
+  const nearest = resources.map(position => ({
+    position,
+    distance: Math.abs(position[0] - focus[0]) + Math.abs(position[1] - focus[1]),
+  })).sort((left, right) => left.distance - right.distance || left.position[0] - right.position[0] || left.position[1] - right.position[1]).slice(0, 8);
+  const key = signature([current.tick, selectedAlias, nearest]);
+  if (!force && renderCache.resources === key) return;
+  renderCache.resources = key;
+  setHtml('resourceInfo', nearest.length ? nearest.map(item => (
+    `<button class="resource-row" data-cell="${item.position[0]},${item.position[1]}"><span>资源点 ${esc(item.position.join(','))} · 距离 ${item.distance}</span><small>余量未知</small></button>`
+  )).join('') : '<div class="muted">当前无可见资源点</div>');
+}
+
+function render(view) {
+  const service = view?.service || {};
+  const current = view?.current || {};
+  const commandCenter = view?.command_center || {};
+  currentRenderedView = view;
+  version = Number(commandCenter.command_version ?? version);
+
+  const metricsKey = signature([
+    service.running, service.connected, service.last_tick, current.tick, current.resources,
+    current.resource_capacity, current.mode_label, commandCenter.entities?.length,
+  ]);
+  if (renderCache.metrics !== metricsKey) {
+    renderCache.metrics = metricsKey;
+    const statusNode = $('status');
+    if (statusNode) statusNode.className = `status ${service.connected ? 'ok' : ''}`;
+    setText('status', !service.running ? '服务已停止' : (service.connected ? '已连接 · 对战中' : '服务在线 · 等待连接'));
+    setText('tick', current.tick ?? service.last_tick ?? '—');
+    setText('resources', current.resources == null ? '—' : `${current.resources}/${current.resource_capacity ?? '—'}`);
+    setText('mode', current.mode_label || '等待数据');
+    setText('unitCount', commandCenter.entities?.length || 0);
+  }
+
+  const nextEntities = (commandCenter.entities || []).slice().sort((left, right) => (
+    ({ CORE: 0, WORKER: 1, VANGUARD: 2, RANGER: 3 }[left.kind] ?? 9)
+    - ({ CORE: 0, WORKER: 1, VANGUARD: 2, RANGER: 3 }[right.kind] ?? 9)
+    || String(left.alias).localeCompare(String(right.alias))
+  ));
+  const entitiesKey = signature([current.tick, nextEntities]);
+  if (renderCache.entities !== entitiesKey) {
+    renderCache.entities = entitiesKey;
+    entitiesState = nextEntities;
+    if (!entitiesState.some(entity => entity.alias === selectedAlias)) selectedAlias = entitiesState[0]?.alias || '';
+    renderUnitList();
+    renderUnitDetail();
+    syncEntityChoices(entitiesState);
+    if (selectedAlias) window.selectTacticalUnit?.(selectedAlias);
+  }
+
+  const overviewKey = signature([
+    current.tick, current.mode_label, commandCenter.goals, commandCenter.tasks,
+    commandCenter.commands, commandCenter.timeline, entitiesState.map(entity => entity.task),
+  ]);
+  if (renderCache.overview !== overviewKey) {
+    renderCache.overview = overviewKey;
+    const taskCounts = entitiesState.reduce((output, entity) => {
+      output[entity.task || 'IDLE'] = (output[entity.task || 'IDLE'] || 0) + 1;
+      return output;
+    }, {});
+    const summary = Object.entries(taskCounts).map(([name, count]) => `${esc(task(name) || '空闲')} ${count} 个`).join(' · ');
+    setHtml('goals', rows(commandCenter.goals, item => (
+      `<div class="row"><b>${esc(goal(item.goal))}</b> <span class="tag">${esc(status(item.status))}</span> ${esc(task(item.stage) || item.stage || '')}</div>`
+    )) + (commandCenter.tasks?.length ? '' : `<div class="row"><b>当前主线</b> <span class="tag">${esc(current.mode_label || '待命')}</span> ${summary || '暂无单位决策'}</div>`));
+    setHtml('tasks', rows(commandCenter.tasks, item => taskLine(item), '当前没有人工或租约任务'));
+    setHtml('timeline', rows(commandCenter.timeline, item => taskLine(item, true), '当前没有任务切换记录'));
+    setHtml('commands', rows(commandCenter.commands, item => (
+      `<div class="row">${esc(commandLabels[item.type] || humanize(item.type, {}))} · ${esc(status(item.status))}</div>`
+    ), '尚无命令'));
+  }
+
+  setText('mapSummary', `己方 ${current.map?.friendly?.length || 0} · 敌方 ${current.map?.enemies?.length || 0} · 资源 ${current.map?.resources?.length || 0} · 已观测 ${current.map?.observed?.length || 0}格`);
+  renderResourceInfo(view);
+}
+
+async function api(path, method = 'GET', data) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (csrf) {
+    headers['X-CSRF-Token'] = csrf;
+    headers['If-Match'] = `"command-version-${version}"`;
+    headers['Idempotency-Key'] = `ui-${crypto.randomUUID()}`;
+  }
+  const response = await fetch(path, {
+    method,
+    headers,
+    body: data ? JSON.stringify(data) : undefined,
+  });
+  const payload = await response.json();
+  if (payload.command_version != null) version = payload.command_version;
+  if (!response.ok) throw Error(payload.error || '请求失败');
+  return payload;
+}
+
+async function login() {
+  try {
+    const payload = await api('/api/v1/session', 'POST', { password: $('password').value });
+    csrf = payload.csrf_token;
+    version = Number(payload.command_version ?? 0);
+    setText('loginState', '已认证；写操作将在下一 Tick 生效。');
+    await Promise.all([refreshTasks(), refreshPolicy(true)]);
+  } catch (_) { setText('loginState', '认证失败或写功能未配置。'); }
+}
+
+async function assign() {
+  if (!csrf) { setText('taskState', '请先认证。'); return; }
+  const alias = $('taskAlias').value.trim();
+  const taskKind = $('taskKind').value;
+  const target = cell($('taskTarget').value);
+  const priority = Number($('taskPriority').value);
+  if (!/^entity_[0-9a-f]{12}$/.test(alias)) { setText('taskState', '请选择当前实体。'); return; }
+  if (taskKind === 'MOVE_TO_CELL' && !target) { setText('taskState', '移动任务需要 x,y 目标。'); return; }
+  try {
+    await api(`/api/v1/entities/${alias}/tasks`, 'POST', { task_kind: taskKind, priority, ...(target ? { target } : {}) });
+    setText('taskState', '任务已排队，下一次成功提交后生效。');
+    await refreshTasks();
+  } catch (error) { setText('taskState', `任务未接受：${error.message}`); }
+}
+
+function renderTasks(tasks) {
+  setHtml('taskCommands', rows(tasks, item => (
+    `<div class="row"><b>${esc(commandLabels[item.type] || humanize(item.type, {}))}</b> <span class="tag">${esc(status(item.status))}</span>${item.status === 'QUEUED' ? ` <button class="neutral cancel-command" data-command="${esc(item.command_id)}">撤回</button>` : ''}${item.status === 'APPLIED' && item.type === 'ASSIGN_TASK' ? ` <button class="neutral cancel-entity" data-alias="${esc(item.entity_alias)}">取消任务</button>` : ''}</div>`
+  ), '暂无人工任务。'));
+}
+
+async function refreshTasks() {
+  if (!csrf) return;
+  try { renderTasks((await api('/api/v1/tasks')).tasks || []); }
+  catch (error) { setText('taskCommands', `任务状态读取失败：${error.message}`); }
+}
+
+async function cancelCommand(id) {
+  try {
+    await api(`/api/v1/commands/${encodeURIComponent(id)}`, 'DELETE');
+    setText('taskState', '排队命令已撤回。');
+    await refreshTasks();
+  } catch (error) { setText('taskState', `撤回失败：${error.message}`); }
+}
+
+async function cancelEntity(alias) {
+  try {
+    await api(`/api/v1/entities/${encodeURIComponent(alias)}/cancel`, 'POST', {});
+    setText('taskState', '取消任务已排队，下一次成功提交后生效。');
+    await refreshTasks();
+  } catch (error) { setText('taskState', `取消未接受：${error.message}`); }
+}
+
+async function migrate() {
+  if (!csrf) { setText('taskState', '请先认证。'); return; }
+  const target = cell($('migrationTarget').value);
+  if (!target) { setText('taskState', '迁移目标必须是 x,y。'); return; }
+  if (!confirm('确认排队 Core 迁移？执行时仍会重新校验安全性。')) return;
+  try {
+    await api('/api/v1/core/migrations', 'POST', { target });
+    setText('taskState', '迁移已排队，下一次成功提交后生效。');
+  } catch (error) { setText('taskState', `迁移未接受：${error.message}`); }
+}
+
+async function cancelMigration() {
+  if (!csrf) { setText('taskState', '请先认证。'); return; }
+  try {
+    await api('/api/v1/core/migrations', 'DELETE');
+    setText('taskState', '取消已排队，下一次成功提交后生效。');
+  } catch (error) { setText('taskState', `取消未接受：${error.message}`); }
+}
+
+function renderPolicy(policy) {
+  setText('policyCurrent', postureLabels[policy.posture] || '其他');
+  if ($('policyPosture')) $('policyPosture').value = policy.posture || 'BALANCED';
+}
+
+async function refreshPolicy(force = false) {
+  if (!csrf || policyInFlight || (!force && Date.now() - lastPolicyRefresh < 15000)) return;
+  policyInFlight = true;
+  try {
+    renderPolicy(await api('/api/v1/policy'));
+    lastPolicyRefresh = Date.now();
+  } catch (error) { setText('policyState', `策略读取失败：${error.message}`); }
+  finally { policyInFlight = false; }
+}
+
+async function setPolicy() {
+  if (!csrf) { setText('policyState', '请先认证。'); return; }
+  try {
+    await api('/api/v1/policy', 'PATCH', { posture: $('policyPosture').value });
+    setText('policyState', '策略已排队，下一次成功提交后生效。');
+    await refreshPolicy(true);
+  } catch (error) { setText('policyState', `策略未接受：${error.message}`); }
+}
+
+function selectedFrame() { return replayFrames[replayIndex] || null; }
+
+function renderReplayMarkers() {
+  const markerKey = signature(replayFrames.map(frame => [frame.tick, frame.markers]));
+  if (renderCache.markers === markerKey) return;
+  renderCache.markers = markerKey;
+  const maximum = Math.max(1, replayFrames.length - 1);
+  setHtml('replayMarkers', replayFrames.flatMap((frame, index) => (
+    (frame.markers || []).map(marker => `<button class="replay-marker ${esc(String(marker.kind || '').toLowerCase())}" style="left:${index / maximum * 100}%" data-index="${index}" title="#${esc(frame.tick)} · ${esc(marker.label)}"></button>`)
+  )).join(''));
+}
+
+function renderReplay({ forceMap = false } = {}) {
+  const frame = selectedFrame();
+  if (!frame) {
+    setText('replayState', '等待回放快照');
+    setText('replayTick', '—');
+    return;
+  }
+  const view = {
+    ...lastPayload,
+    current: frame.snapshot,
+    command_center: frame.command_center || { timeline: lastPayload?.command_center?.timeline || [] },
+  };
+  $('replaySlider').value = String(replayIndex);
+  setText('replayTick', `#${frame.tick ?? '—'}`);
+  setText('replayState', replayLive ? '实时跟随最新 Tick' : '历史回放 · 自动态势仍在后台更新');
+  setText('replayPlay', replayTimer ? '⏸ 暂停' : '▶ 播放');
+  const badge = $('mapModeBadge');
+  if (badge) {
+    badge.textContent = replayLive ? '实时态势' : '历史回放';
+    badge.classList.toggle('is-replay', !replayLive);
+  }
+  window.DashboardReplay = { selected: view };
+  render(view);
+  const mapKey = `${frame.tick ?? 'unknown'}:${replayLive ? 'live' : 'replay'}`;
+  if (forceMap || lastMapKey !== mapKey) {
+    lastMapKey = mapKey;
+    try {
+      window.renderTacticalMap?.(view);
+      if (selectedAlias) window.selectTacticalUnit?.(selectedAlias);
+    } catch (error) { console.error('Tactical map render error:', error); }
+  }
+}
+
+function selectReplay(index, { live = false } = {}) {
+  if (!replayFrames.length) return;
+  replayIndex = Math.max(0, Math.min(replayFrames.length - 1, index));
+  replayLive = live;
+  renderReplay();
+}
+
+function setFrames(payload) {
+  const priorTick = selectedFrame()?.tick;
+  lastPayload = payload;
+  replayFrames = (payload.replay?.frames || []).slice(-32).sort((left, right) => Number(left.tick) - Number(right.tick));
+  const latest = Math.max(0, replayFrames.length - 1);
+  if (replayLive || replayIndex >= replayFrames.length) replayIndex = latest;
+  else if (priorTick != null) {
+    const retained = replayFrames.findIndex(frame => frame.tick === priorTick);
+    replayIndex = retained >= 0 ? retained : Math.min(replayIndex, latest);
+  }
+  $('replaySlider').max = String(latest);
+  $('replaySlider').value = String(replayIndex);
+  renderReplayMarkers();
+  renderReplay();
+}
+
+function stopReplay() {
+  if (replayTimer) window.clearInterval(replayTimer);
+  replayTimer = 0;
+}
+
+function startReplay() {
+  if (!replayFrames.length || replayTimer) return;
+  replayLive = false;
+  replayTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    if (replayIndex >= replayFrames.length - 1) {
+      stopReplay();
+      renderReplay();
+      return;
+    }
+    selectReplay(replayIndex + 1);
+  }, 700);
+  renderReplay();
+}
+
+function playReplay() {
+  if (replayTimer) { stopReplay(); renderReplay(); }
+  else startReplay();
+}
+
+async function refresh() {
+  if (refreshInFlight || document.hidden) return;
+  refreshInFlight = true;
+  try {
+    const response = await fetch('/api/dashboard', { cache: 'no-store' });
+    if (!response.ok) throw Error(`HTTP ${response.status}`);
+    setFrames(await response.json());
+    await refreshPolicy();
+  } catch (_) {
+    const statusNode = $('status');
+    if (statusNode) statusNode.className = 'status';
+    setText('status', '状态获取失败 · 将自动重试');
+  } finally { refreshInFlight = false; }
+}
+
+function startPolling() {
+  if (refreshTimer) window.clearInterval(refreshTimer);
+  refreshTimer = 0;
+  if (document.hidden) return;
+  refresh();
+  refreshTimer = window.setInterval(refresh, 3000);
+}
+
+function updateDashboardMapCursor(position) {
+  setText('mapCursor', position ? `光标 ${position[0]},${position[1]}` : '光标 —');
+}
+function updateDashboardTargetMode(enabled) {
+  if ($('mapTargetMode')) $('mapTargetMode').hidden = !enabled;
+  if ($('mapPickTarget')) {
+    $('mapPickTarget').classList.toggle('is-active', Boolean(enabled));
+    $('mapPickTarget').setAttribute('aria-pressed', String(Boolean(enabled)));
+  }
+}
+function setDashboardMapTarget(position) {
+  $('taskTarget').value = `${position[0]},${position[1]}`;
+  $('taskKind').value = 'MOVE_TO_CELL';
+  updateDashboardMapCursor(position);
+  setText('taskState', `已从地图锁定目标 ${position[0]},${position[1]}；认证后可排队任务。`);
+  const drawer = document.querySelector('.order-drawer');
+  if (drawer) drawer.open = true;
+}
+window.updateDashboardMapCursor = updateDashboardMapCursor;
+window.updateDashboardTargetMode = updateDashboardTargetMode;
+window.setDashboardMapTarget = setDashboardMapTarget;
+
+$('login').onclick = login;
+$('assign').onclick = assign;
+$('migrate').onclick = migrate;
+$('cancelMigration').onclick = cancelMigration;
+$('setPolicy').onclick = setPolicy;
+$('unitSearch').oninput = renderUnitList;
+$('unitFilters').onclick = event => {
+  const button = event.target.closest('.filter-btn');
+  if (!button) return;
+  activeKind = button.dataset.kind;
+  document.querySelectorAll('.filter-btn').forEach(item => item.classList.toggle('is-active', item === button));
+  renderUnitList();
+};
+$('unitList').onclick = event => {
+  const button = event.target.closest('.unit-row');
+  if (button) chooseUnit(button.dataset.alias);
+};
+$('unitDetail').onclick = event => {
+  const button = event.target.closest('.select-entity');
+  if (button) chooseUnit(button.dataset.alias);
+};
+$('taskAlias').onchange = event => {
+  if (event.target.value) chooseUnit(event.target.value);
+};
+$('resourceInfo').onclick = event => {
+  const button = event.target.closest('.resource-row');
+  const position = button ? cell(button.dataset.cell) : null;
+  if (!position) return;
+  window.focusTacticalCell?.(position);
+  updateDashboardMapCursor(position);
+};
+$('mapPickTarget').onclick = () => {
+  const next = $('mapTargetMode').hidden;
+  window.setTacticalMapTargetMode?.(next);
+  updateDashboardTargetMode(next);
+};
+$('mapZoomIn').onclick = () => window.zoomTacticalMap?.(1.2);
+$('mapZoomOut').onclick = () => window.zoomTacticalMap?.(0.84);
+$('mapReset').onclick = () => window.resetTacticalMap?.();
+$('layerFog').onchange = event => window.setTacticalMapLayer?.('fog', event.target.checked);
+$('visionMode').onchange = event => window.setTacticalVisionMode?.(event.target.value);
+$('layerCoordinates').onchange = event => window.setTacticalMapLayer?.('coordinates', event.target.checked);
+$('layerLabels').onchange = event => window.setTacticalMapLayer?.('labels', event.target.checked);
+$('taskCommands').onclick = event => {
+  const button = event.target.closest('button');
+  if (button?.dataset.command) cancelCommand(button.dataset.command);
+  if (button?.dataset.alias) cancelEntity(button.dataset.alias);
+};
+$('replaySlider').oninput = event => selectReplay(Number(event.target.value));
+$('replayStart').onclick = () => selectReplay(0);
+$('replayPrev').onclick = () => selectReplay(replayIndex - 1);
+$('replayPlay').onclick = playReplay;
+$('replayNext').onclick = () => selectReplay(replayIndex + 1);
+$('replayLive').onclick = () => {
+  stopReplay();
+  selectReplay(replayFrames.length - 1, { live: true });
+};
+$('replayMarkers').onclick = event => {
+  const marker = event.target.closest('.replay-marker');
+  if (marker) selectReplay(Number(marker.dataset.index));
+};
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (refreshTimer) window.clearInterval(refreshTimer);
+    refreshTimer = 0;
+    resumeReplayAfterVisibility = Boolean(replayTimer);
+    stopReplay();
+  } else {
+    startPolling();
+    if (resumeReplayAfterVisibility) startReplay();
+    resumeReplayAfterVisibility = false;
+  }
+});
+
+startPolling();

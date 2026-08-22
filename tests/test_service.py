@@ -41,6 +41,9 @@ def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_pa
     assert "policyPosture" in body.decode()
     assert "taskPriority" in body.decode()
     assert "单位状态与决策链" in body.decode()
+    assert "map-axis-x" in body.decode()
+    assert "visionMode" in body.decode()
+    assert "mapDebugHud" in body.decode()
     assert "当前任务" not in body.decode()  # labels are rendered from live entity cards
     static = _http_response("/static/command-center.js", status, DashboardDataStore(replay, cache_seconds=0))
     assert static is not None and static[2].startswith("application/javascript") and b"setPolicy" in static[1]
@@ -53,6 +56,10 @@ def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_pa
         assert dictionary_key in static_text
     map_asset = _http_response("/static/tactical-map.js", status, DashboardDataStore(replay, cache_seconds=0))
     assert map_asset is not None and map_asset[2].startswith("application/javascript")
+    map_text = map_asset[1].decode()
+    assert "createDirtyScheduler" in map_text and "compressObservedRows" in map_text
+    assert "getTacticalMapStats" in map_text and "removeChildren()" not in map_text
+    assert "refreshInFlight" in static_text and "visibilitychange" in static_text
 
     status_code, _, body = _response("/status", status, replay)
     payload = json.loads(body)
@@ -94,15 +101,17 @@ def test_dashboard_map_projection_is_bounded_and_allowlisted(tmp_path: Path):
     replay = tmp_path / "replay.jsonl"
     replay.write_text(json.dumps({"tick": 1, "mode": "DEFEND", "state": {
         "resources": 2, "resource_capacity": 10, "population": 1,
-        "core": {"id": "corealias", "kind": "CORE", "position": [0, 0], "hp": 5},
+        "core": {"id": "corealias", "kind": "CORE", "position": [0, 0], "hp": 5, "vision_radius": 5},
         "units": [{"id": "unitalias", "kind": "UNIT", "unit_type": "WORKER", "position": [1, 0], "hp": 2, "cargo": 0}],
         "visible_enemies": [{"id": "enemyalias", "kind": "UNIT", "unit_type": "RANGER", "position": [2, 0], "hp": 2}],
-        "resource_cells": [[1, 1]], "obstacle_cells": [[0, 1]], "beacon": {"position": [3, 0], "status": "GROUND"},
+        "resource_cells": [[1, 1]], "obstacle_cells": [[0, 1]], "observed_cells": [[0, 0], [1, 0], [0, 1]], "beacon": {"position": [3, 0], "status": "GROUND"},
     }, "intents": [], "events": [], "secret": "do-not-expose"}) + "\n", encoding="utf-8")
     _, _, body = _response("/api/dashboard", ServiceStatus(), replay)
     payload = json.loads(body)
     assert payload["current"]["map"]["friendly"][0]["position"] == [0, 0]
     assert payload["current"]["map"]["enemies"][0]["kind"] == "RANGER"
+    assert payload["current"]["map"]["friendly"][0]["vision_radius"] == 5
+    assert payload["current"]["map"]["observed"] == [[0, 0], [1, 0], [0, 1]]
     assert "do-not-expose" not in body.decode()
 
 
@@ -127,6 +136,20 @@ def test_dashboard_replay_frames_align_decisions_and_classify_event_markers(tmp_
     assert {marker["kind"] for marker in frames[1]["markers"]} == {"SPAWN"}
     assert frames[0]["command_center"]["state_synced"] is True
     assert frames[1]["command_center"] is None
+
+
+def test_dashboard_default_replay_window_is_32_ticks(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": []})
+        for tick in range(1, 41)
+    ) + "\n", encoding="utf-8")
+
+    _, _, body = _response("/api/dashboard", ServiceStatus(), replay)
+    frames = json.loads(body)["replay"]["frames"]
+
+    assert len(frames) == 32
+    assert [frames[0]["tick"], frames[-1]["tick"]] == [9, 40]
 
 
 def test_dashboard_projects_only_redacted_command_center_trace_fields(tmp_path: Path):
