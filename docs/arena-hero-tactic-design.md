@@ -6,7 +6,8 @@
 
 本文档描述当前已经落地的自适应 Agent 总体架构。具体阈值和模式切换见
 [`arena-hero-strategy.md`](arena-hero-strategy.md)，运行、持久化、回放和验证见
-[`arena-hero-runtime-testing.md`](arena-hero-runtime-testing.md)。代码行为最终以
+[`arena-hero-runtime-testing.md`](arena-hero-runtime-testing.md)，作战指挥中心地图的渲染、交互、脱敏投影与回放边界见
+[`arena-hero-tactical-map.md`](arena-hero-tactical-map.md)。代码行为最终以
 `arena_tactic/`、`tactic.py` 和 `tests/` 为准。
 
 本项目不把 Python 代码部署到 Arena Hero 官方服务器。程序在本地运行，通过官方 `arena-hero` Python SDK 接收当前 `Turn`，在本地计算行动，再把当前 Tick 的计划提交给服务器。
