@@ -9,6 +9,7 @@ from arena_tactic import (
 )
 from arena_tactic.context import DecisionContext
 from arena_tactic.models import ActionKind
+from arena_tactic import strategy
 from arena_tactic.strategy import choose_mode
 
 from .factories import core, event, turn, unit, uuid
@@ -117,6 +118,67 @@ def test_defend_rallies_workers_when_combat_ready():
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert worker_intent.reason == "emergency_worker_rally_to_core"
     assert core_intent.action is not ActionKind.SPAWN
+
+
+def test_defend_cargo_worker_adjacent_to_full_core_queues_for_deposit():
+    cargo_worker = unit(1, UnitType.WORKER, (1, 0), cargo=1)
+    core_occupant = unit(2, UnitType.VANGUARD, (0, 0))
+    ranger = unit(3, UnitType.RANGER, (0, 1))
+    attacker = unit(200, UnitType.VANGUARD, (1, 1), controlled=False)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(cargo_worker, core_occupant, ranger),
+            enemies=(attacker,),
+        )
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == cargo_worker.id)
+    assert intent.action is ActionKind.WAIT
+    assert intent.reason == "emergency_deposit_queue_wait"
+
+
+def test_defend_nearby_empty_worker_shelters_when_core_approach_is_closed():
+    worker = unit(1, UnitType.WORKER, (2, 0))
+    core_occupant = unit(2, UnitType.VANGUARD, (0, 0))
+    ranger = unit(3, UnitType.RANGER, (0, 1))
+    attacker = unit(200, UnitType.VANGUARD, (1, 1), controlled=False)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(worker, core_occupant, ranger),
+            enemies=(attacker,),
+            obstacle_cells=((1, 0), (2, -1), (2, 1), (3, 0)),
+        )
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == worker.id)
+    assert intent.action is ActionKind.WAIT
+    assert intent.reason == "emergency_worker_sheltered_near_core"
+    assert "blocked" not in intent.reason
+
+
+def test_defend_distant_worker_sidestep_when_direct_return_step_is_congested(monkeypatch):
+    cargo_worker = unit(1, UnitType.WORKER, (2, 1), cargo=1)
+    vanguard = unit(2, UnitType.VANGUARD, (1, 1))
+    ranger = unit(3, UnitType.RANGER, (1, 1))
+    attacker = unit(200, UnitType.VANGUARD, (1, 0), controlled=False)
+    monkeypatch.setattr(strategy, "_return_to_core", lambda *args, **kwargs: None)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(cargo_worker, vanguard, ranger),
+            enemies=(attacker,),
+        )
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == cargo_worker.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason == "emergency_worker_rally_to_core_sidestep"
+    assert intent.direction is Direction.UP
 
 
 def test_defend_empty_workers_keep_harvesting_and_core_spawns_vanguard_when_not_combat_ready():

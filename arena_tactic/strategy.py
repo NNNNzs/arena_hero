@@ -688,6 +688,56 @@ def _return_to_core(
     )
 
 
+def _return_to_core_sidestep(
+    unit: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+    *,
+    minimum_distance: int,
+) -> ActionIntent | None:
+    """Reserve a local approach cell after the direct return step is contested.
+
+    This is deliberately local: a failed bounded route still waits for the next
+    authoritative Turn, while a congested first step can yield to an equally
+    useful neighboring approach cell without creating a new long-lived route.
+    """
+    current_distance = distance(unit.position, target)
+    if current_distance <= minimum_distance:
+        return None
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+    )
+    candidates = sorted(
+        (
+            (distance(destination(unit.position, direction), target), direction)
+            for direction in DIRECTIONS
+            if destination(unit.position, direction) not in blocked
+            and distance(destination(unit.position, direction), target)
+            <= current_distance
+        ),
+        key=lambda candidate: (candidate[0], candidate[1].value),
+    )
+    for _, direction in candidates:
+        cell = destination(unit.position, direction)
+        if reservations.reserve(cell):
+            return ActionIntent(
+                unit.id,
+                False,
+                ActionKind.MOVE,
+                625,
+                reason + "_sidestep",
+                target_cell=target,
+                direction=direction,
+                reserved_cell=cell,
+            )
+    return None
+
+
 def _plan_workers(
     context: DecisionContext,
     memory: AgentMemory,
@@ -722,7 +772,29 @@ def _plan_workers(
                     worker, context, memory, reservations, deadline, config,
                     "emergency_worker_rally_to_core",
                 )
-                intents.append(intent or _wait(worker, "emergency_worker_rally_blocked"))
+                target = (
+                    core.destination
+                    if core.state is CoreState.MOVING and core.destination
+                    else core.position
+                )
+                if intent is None:
+                    intent = _return_to_core_sidestep(
+                        worker,
+                        target,
+                        context,
+                        memory,
+                        reservations,
+                        "emergency_worker_rally_to_core",
+                        minimum_distance=1 if worker.cargo else 2,
+                    )
+                if intent is not None:
+                    intents.append(intent)
+                elif worker.cargo and distance(worker.position, target) <= 1:
+                    intents.append(_wait(worker, "emergency_deposit_queue_wait"))
+                elif combat_ready and distance(worker.position, target) <= 2:
+                    intents.append(_wait(worker, "emergency_worker_sheltered_near_core"))
+                else:
+                    intents.append(_wait(worker, "emergency_worker_rally_blocked"))
                 continue
         if combat_ready:
             return intents

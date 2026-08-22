@@ -318,6 +318,8 @@ def test_large_drop_tick_summary_actual_line_respects_byte_limit(tmp_path):
         ("resource_route_blocked", "BLOCKED", "ROUTE_AVAILABLE", None),
         ("holding_defense_ring", "ACTIVE", "NEXT_AUTHORITATIVE_TURN", 1),
         ("healing_waits_for_resources", "RESOURCE_WAIT", "CORE_RESOURCES_AVAILABLE", None),
+        ("emergency_deposit_queue_wait", "DEPOSIT_QUEUE", "CORE_DEPOSIT_SLOT_AVAILABLE", 1),
+        ("emergency_worker_sheltered_near_core", "SHELTER", "NEXT_AUTHORITATIVE_TURN", 1),
         ("core_migration_progresses_naturally", "LIFECYCLE", "CORE_MOVEMENT_COMPLETES", None),
         ("validator_safe_fallback", "SAFETY", "NEXT_AUTHORITATIVE_TURN", 1),
         ("totally_new_reason", "UNKNOWN_WAIT", "NEXT_AUTHORITATIVE_TURN", None),
