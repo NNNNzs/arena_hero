@@ -30,6 +30,7 @@ _CORE_ACTIONS = {
     ActionKind.REPAIR_SHIELD,
     ActionKind.START_MOVE,
     ActionKind.PICKUP_BEACON,
+    ActionKind.SELF_DESTRUCT,
 }
 
 
@@ -47,7 +48,7 @@ def _basic_rejection(
     if isinstance(actor, CoreView):
         if intent.action not in _CORE_ACTIONS:
             return "action_not_supported_by_core"
-        if intent.action is not ActionKind.WAIT and actor.state is CoreState.MOVING:
+        if intent.action not in (ActionKind.WAIT, ActionKind.SELF_DESTRUCT) and actor.state is CoreState.MOVING:
             return "moving_core_must_wait"
         if intent.action is ActionKind.SPAWN and (
             intent.unit_type is None

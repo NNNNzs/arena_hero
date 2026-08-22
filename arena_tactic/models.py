@@ -40,6 +40,7 @@ class ActionKind(StrEnum):
     REPAIR_SHIELD = "REPAIR_SHIELD"
     START_MOVE = "START_MOVE"
     PICKUP_BEACON = "PICKUP_BEACON"
+    SELF_DESTRUCT = "SELF_DESTRUCT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +60,11 @@ class AgentConfig:
     attack_exit_grace_ticks: int = 4
     migration_idle_ticks: int = 8
     migration_cooldown_ticks: int = 8
-    early_workers: int = 3
+    early_workers: int = 2
+    enable_spawn_reroll: bool = True
+    spawn_eval_max_ticks: int = 20
+    spawn_eval_mine_max_dist: int = 12
+    spawn_eval_worker_max: int = 2
     early_vanguards: int = 2
     early_rangers: int = 1
     mature_workers: int = 12

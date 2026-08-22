@@ -34,7 +34,7 @@ def test_core_heal_repair_spawn_wait_move_and_pickup_map_to_sdk():
     choose_actions(spawn_turn)
     assert spawn_turn.plan.core_action.type == "SPAWN"
 
-    wait_turn = turn(owned_core=core(), resources=9)
+    wait_turn = turn(owned_core=core(), resources=4)
     choose_actions(wait_turn)
     assert wait_turn.plan.core_action.type == "WAIT"
 

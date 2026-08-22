@@ -1633,6 +1633,30 @@ def _hidden_attack_escape_direction(
     return min(candidates, key=lambda item: item.value, default=None)
 
 
+def _spawn_evaluation_active(
+    context: DecisionContext, memory: AgentMemory, config: AgentConfig
+) -> bool:
+    """Return whether this Core generation is still scouting its spawn."""
+    return (
+        config.enable_spawn_reroll
+        and context.core is not None
+        and memory.spawn_eval_status == "PENDING"
+        and memory.spawn_eval_core_id == str(context.core.id)
+        and len(context.workers) <= config.spawn_eval_worker_max
+        and not context.vanguards
+        and not context.rangers
+    )
+
+
+def _barren_spawn_reroll_due(
+    context: DecisionContext, memory: AgentMemory, config: AgentConfig
+) -> bool:
+    return _spawn_evaluation_active(context, memory, config) and (
+        context.tick - memory.spawn_eval_started_tick + 1
+        >= max(1, config.spawn_eval_max_ticks)
+    )
+
+
 def _plan_core(
     context: DecisionContext,
     memory: AgentMemory,
@@ -1644,6 +1668,17 @@ def _plan_core(
     core = context.core
     if core is None:
         return None
+    # This is intentionally ahead of normal recovery/production/migration:
+    # a failed early spawn must reroll on its configured final scout Tick.
+    # _spawn_evaluation_active hard-gates it to <=2 Workers and no combat.
+    if _barren_spawn_reroll_due(context, memory, config):
+        return ActionIntent(
+            actor_id=core.id,
+            is_core=True,
+            action=ActionKind.SELF_DESTRUCT,
+            score=1_100,
+            reason="barren_spawn_fast_reroll",
+        )
     if core.state is CoreState.MOVING:
         return _wait(core, "core_migration_progresses_naturally", is_core=True)
     available_resources = _anticipated_resources(context)
@@ -1725,6 +1760,14 @@ def _plan_core(
     )
     shield_cap = 10 if _beacon_owned(context) else 5
     spawn_type = _spawn_target(context, config, mode)
+    # Keep exactly the two-scout opening team while the spawn is being
+    # evaluated.  Further production would establish the roster and disable
+    # the barren-start safety gate before the full survey window completes.
+    if (
+        _spawn_evaluation_active(context, memory, config)
+        and len(context.workers) >= config.spawn_eval_worker_max
+    ):
+        spawn_type = None
     allow_spawn_mode = (
         mode is not StrategicMode.DEFEND
         or not combat_ready
@@ -1795,6 +1838,7 @@ def _plan_core(
 
     if (
         mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE)
+        and not _spawn_evaluation_active(context, memory, config)
         and memory.no_resource_ticks >= config.migration_idle_ticks
         and context.tick > memory.migration_cooldown_until_tick
         and not context.resource_cells

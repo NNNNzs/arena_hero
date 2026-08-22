@@ -34,6 +34,7 @@ ACTION_LABELS = {
     "REPAIR_SHIELD": "修复护盾",
     "START_MOVE": "核心迁移",
     "PICKUP_BEACON": "拾取信标",
+    "SELF_DESTRUCT": "自毁重掷",
 }
 VISION_RADIUS = {"CORE": 5, "WORKER": 3, "VANGUARD": 4, "RANGER": 5}
 
@@ -66,6 +67,8 @@ def _replay_markers(record: dict[str, Any]) -> list[dict[str, str]]:
             add("SPAWN", "生产")
         elif action_type in {"MOVE", "START_MOVE"}:
             add("MOVE", "迁移/移动")
+        elif action_type == "SELF_DESTRUCT":
+            add("REROLL", "贫瘠出生点重掷")
     return markers
 
 

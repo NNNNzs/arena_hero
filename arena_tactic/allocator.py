@@ -42,6 +42,8 @@ def apply_intents(turn: Turn, intents: Iterable[ActionIntent]) -> None:
             controller.start_move(intent.direction)
         elif intent.action is ActionKind.PICKUP_BEACON:
             controller.pickup_beacon()
+        elif intent.action is ActionKind.SELF_DESTRUCT:
+            controller.self_destruct()
 
 
 def action_counts(intents: Iterable[ActionIntent]) -> dict[str, int]:

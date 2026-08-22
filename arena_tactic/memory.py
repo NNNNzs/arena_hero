@@ -228,6 +228,12 @@ class AgentMemory:
     migration_cooldown_until_tick: int = 0
     last_core_id: str | None = None
     last_core_position: Position | None = None
+    # The spawn evaluation is deliberately tied to a Core generation, never
+    # to a position or remembered resource.  Only current visible cells can
+    # mark a start viable.
+    spawn_eval_core_id: str | None = None
+    spawn_eval_started_tick: int = 0
+    spawn_eval_status: str = "PENDING"
     previous_migration_position: Position | None = None
     core_damage_streak: int = 0
     last_core_damage_tick: int = 0
@@ -302,7 +308,41 @@ class AgentMemory:
             next_memory.enemy_tracks.clear()
             next_memory.core_damage_streak = 0
             next_memory.last_core_damage_tick = 0
+            next_memory.spawn_eval_core_id = None
+            next_memory.spawn_eval_started_tick = 0
+            next_memory.spawn_eval_status = "PENDING"
         else:
+            core_id = str(context.core.id)
+            respawned = any(event.event_type == "CORE_RESPAWNED" for event in context.events)
+            new_core_generation = (
+                respawned
+                or (
+                    next_memory.last_core_id is not None
+                    and next_memory.last_core_id != core_id
+                )
+                or next_memory.last_tick == 0
+            )
+            if new_core_generation:
+                next_memory.spawn_eval_core_id = core_id
+                next_memory.spawn_eval_started_tick = context.tick
+                next_memory.spawn_eval_status = "PENDING"
+            elif next_memory.spawn_eval_core_id != core_id:
+                # A pre-reroll persisted state may have no generation marker
+                # despite already tracking prior Ticks.  Do not reinterpret
+                # that established Core as a brand-new spawn after upgrade.
+                next_memory.spawn_eval_core_id = core_id
+                next_memory.spawn_eval_started_tick = context.tick
+                next_memory.spawn_eval_status = "PASSED"
+            if (
+                next_memory.spawn_eval_status == "PENDING"
+                and any(
+                    abs(cell[0] - context.core.position[0])
+                    + abs(cell[1] - context.core.position[1])
+                    <= config.spawn_eval_mine_max_dist
+                    for cell in context.resource_cells
+                )
+            ):
+                next_memory.spawn_eval_status = "PASSED"
             next_memory.enemy_tracks = {
                 alias: track
                 for alias, track in next_memory.enemy_tracks.items()
@@ -540,6 +580,9 @@ class AgentMemory:
             "migration_cooldown_until_tick": self.migration_cooldown_until_tick,
             "last_core_id": self.last_core_id,
             "last_core_position": list(self.last_core_position) if self.last_core_position else None,
+            "spawn_eval_core_id": self.spawn_eval_core_id,
+            "spawn_eval_started_tick": self.spawn_eval_started_tick,
+            "spawn_eval_status": self.spawn_eval_status,
             "previous_migration_position": (
                 list(self.previous_migration_position)
                 if self.previous_migration_position else None
@@ -611,6 +654,13 @@ class AgentMemory:
                 migration_cooldown_until_tick=integer("migration_cooldown_until_tick"),
                 last_core_id=str(data["last_core_id"]) if data.get("last_core_id") else None,
                 last_core_position=next(iter(_safe_cells([data.get("last_core_position")])), None),
+                spawn_eval_core_id=str(data["spawn_eval_core_id"]) if data.get("spawn_eval_core_id") else None,
+                spawn_eval_started_tick=integer("spawn_eval_started_tick"),
+                spawn_eval_status=(
+                    str(data.get("spawn_eval_status"))
+                    if data.get("spawn_eval_status") in {"PENDING", "PASSED"}
+                    else "PENDING"
+                ),
                 previous_migration_position=next(
                     iter(_safe_cells([data.get("previous_migration_position")])), None
                 ),

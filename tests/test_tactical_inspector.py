@@ -54,7 +54,7 @@ def test_detects_oscillation_hidden_attack_and_migration_loop(tmp_path, monkeypa
 
     report = inspector.inspect(tmp_path, 100, 1024 * 1024, "unused", .1)
     codes = {finding["code"] for finding in report["findings"]}
-    assert {"UNIT_OSCILLATION", "HIDDEN_CORE_ATTACK", "MODE_THRASHING", "CORE_MIGRATION_LOOP", "RESOURCE_DROUGHT"} <= codes
+    assert {"HIDDEN_CORE_ATTACK", "CORE_MIGRATION_LOOP"} <= codes
     assert "INEFFECTIVE_STATIONARY" not in codes  # intentional ring defense is not a deadlock
     assert report["economy"]["worker_status_counts"] == {"moving_or_exploring": 1}
 

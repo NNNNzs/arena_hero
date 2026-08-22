@@ -40,6 +40,7 @@ _ACTION_LABELS = {
     "REPAIR_SHIELD": "修复护盾",
     "START_MOVE": "开始迁移",
     "PICKUP_BEACON": "拾取信标",
+    "SELF_DESTRUCT": "自毁重掷",
 }
 _DIRECTION_LABELS = {"UP": "向上", "DOWN": "向下", "LEFT": "向左", "RIGHT": "向右"}
 _REASON_LABELS = {
@@ -48,6 +49,7 @@ _REASON_LABELS = {
     "resources_reserved_or_no_legal_core_action": "资源需要保留，或当前没有合适的核心动作",
     "reobserve_remembered_resource": "复查记忆中的资源位置",
     "no_visible_resource": "当前没有可见资源",
+    "barren_spawn_fast_reroll": "出生点贫瘠，快速重掷",
 }
 
 
