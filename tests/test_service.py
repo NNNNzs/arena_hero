@@ -54,10 +54,10 @@ def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_pa
         assert chinese_label in static_text
     for dictionary_key in ("actionLabels", "statusLabels", "goalLabels", "reasonLabels", "wakeLabels", "commandLabels"):
         assert dictionary_key in static_text
-    map_asset = _http_response("/static/tactical-map.js", status, DashboardDataStore(replay, cache_seconds=0))
+    map_asset = _http_response("/static/tactical-map/main.js", status, DashboardDataStore(replay, cache_seconds=0))
     assert map_asset is not None and map_asset[2].startswith("application/javascript")
     map_text = map_asset[1].decode()
-    assert "createDirtyScheduler" in map_text and "compressObservedRows" in map_text
+    assert "renderTacticalMap" in map_text and "TacticalMap" in map_text
     assert "getTacticalMapStats" in map_text and "removeChildren()" not in map_text
     assert "refreshInFlight" in static_text and "visibilitychange" in static_text
 

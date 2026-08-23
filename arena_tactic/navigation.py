@@ -214,6 +214,10 @@ def plan_step(
     if start == goal:
         return None
     blocked = set(persistent_obstacles) | set(context.enemy_occupancy)
+    # Newly visible obstacles exist in the authoritative context before the
+    # memory layer absorbs them; without this union the planner proposes a
+    # first step the validator immediately rejects as destination_blocked.
+    blocked |= set(context.obstacle_cells)
     blocked.discard(goal)
     if avoid_threats:
         blocked.update(enemy_threat_cells(context))

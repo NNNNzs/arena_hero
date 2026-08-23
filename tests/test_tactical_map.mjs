@@ -4,10 +4,12 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(path.resolve('arena_tactic/web/static/tactical-map.js'), 'utf8');
 const browser = { location: { search: '' } };
 const context = vm.createContext({ window: browser, console, URLSearchParams });
-vm.runInContext(source, context, { filename: 'tactical-map.js' });
+for (const name of ['layers.js', 'camera.js', 'radar.js', 'renderers.js', 'input.js', 'main.js']) {
+  const source = fs.readFileSync(path.resolve('arena_tactic/web/static/tactical-map', name), 'utf8');
+  vm.runInContext(source, context, { filename: `tactical-map/${name}` });
+}
 const utils = browser.__TACTICAL_MAP_TEST__;
 const plain = value => JSON.parse(JSON.stringify(value));
 

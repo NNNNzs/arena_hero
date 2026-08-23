@@ -458,7 +458,12 @@ _STATIC_ROOT = Path(__file__).with_name("web") / "static"
 _STATIC_TYPES = {
     "command-center.css": "text/css; charset=utf-8",
     "command-center.js": "application/javascript; charset=utf-8",
-    "tactical-map.js": "application/javascript; charset=utf-8",
+    "tactical-map/layers.js": "application/javascript; charset=utf-8",
+    "tactical-map/camera.js": "application/javascript; charset=utf-8",
+    "tactical-map/radar.js": "application/javascript; charset=utf-8",
+    "tactical-map/renderers.js": "application/javascript; charset=utf-8",
+    "tactical-map/input.js": "application/javascript; charset=utf-8",
+    "tactical-map/main.js": "application/javascript; charset=utf-8",
     "pixi.min.js": "application/javascript; charset=utf-8",
 }
 
@@ -533,4 +538,4 @@ DASHBOARD_HTML = """<!doctype html>
   <div class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div></div>
   <div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮ 首帧</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶ 播放</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button></div>
 </section>
-</main><script src="/static/command-center.js"></script><script src="/static/tactical-map.js"></script></body></html>"""
+</main><script src="/static/command-center.js"></script><script src="/static/tactical-map/layers.js"></script><script src="/static/tactical-map/camera.js"></script><script src="/static/tactical-map/radar.js"></script><script src="/static/tactical-map/renderers.js"></script><script src="/static/tactical-map/input.js"></script><script src="/static/tactical-map/main.js"></script></body></html>"""

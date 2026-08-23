@@ -299,6 +299,11 @@ class WorkerCanaryPlanner:
                 all(type(axis) is int for axis in candidate)
                 and candidate != worker.position
                 and candidate not in frame.memory.active_temporary_blocks(frame.context.tick)
+                # An obstacle cell is never a legal destination: reusing it
+                # makes the planner route into a step the validator rejects
+                # every tick until the task expires on its own.
+                and candidate not in frame.context.obstacle_cells
+                and candidate not in frame.memory.obstacles
             ):
                 return candidate
         sector = cls._sector(worker, frame.memory)
