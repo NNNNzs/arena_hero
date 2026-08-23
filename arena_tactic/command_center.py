@@ -27,6 +27,20 @@ _ALIAS = re.compile(r"^entity_[0-9a-f]{12}$")
 _TASK_KIND = re.compile(r"^[A-Z][A-Z_]{1,47}$")
 _POSTURES = frozenset({"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"})
 _MANUAL_TASKS = frozenset({"RETREAT_TO_CORE", "HOLD_POSITION", "HARVEST_VISIBLE", "MOVE_TO_CELL"})
+# 策略热更新白名单：允许通过 UPDATE_POLICY 覆盖的 AgentConfig 数值字段
+# 格式: {字段名: (最小值, 最大值)}
+_POLICY_NUMERIC_FIELDS: dict[str, tuple[int, int]] = {
+    "core_guard_vanguards": (0, 8),
+    "core_guard_rangers": (0, 8),
+    "early_workers": (0, 12),
+    "early_vanguards": (0, 8),
+    "early_rangers": (0, 8),
+    "patrol_radius_min": (1, 20),
+    "patrol_radius_max": (2, 30),
+    "patrol_rotation_ticks": (1, 30),
+    "minimum_resource_reserve": (0, 200),
+    "peacetime_resource_buffer": (0, 500),
+}
 
 
 class CommandError(ValueError):
@@ -87,7 +101,12 @@ class CommandQueue:
             return
         with self._lock:
             if self._version == 0 and not self._commands:
-                self._policy = {"version": version, "posture": posture, "effective_tick": effective_tick}
+                restored: dict[str, Any] = {"version": version, "posture": posture, "effective_tick": effective_tick}
+                # 恢复数值字段覆盖
+                for field_name in _POLICY_NUMERIC_FIELDS:
+                    if field_name in policy:
+                        restored[field_name] = policy[field_name]
+                self._policy = restored
 
     def enqueue(
         self, body: Mapping[str, Any], *, issuer: str, current_tick: int | None,
@@ -183,8 +202,17 @@ class CommandQueue:
                 elif updated.type is CommandType.RESUME_AUTO and status is CommandStatus.APPLIED:
                     self._emergency_halt = False
                 elif updated.type is CommandType.UPDATE_POLICY and status is CommandStatus.APPLIED:
-                    self._policy = {"version": (updated.expected_version or 0) + 1, "posture": updated.payload["posture"],
-                                    "effective_tick": prepared.tick}
+                    # 策略更新：保留 posture + 所有白名单数值字段覆盖
+                    policy_update: dict[str, Any] = {
+                        "version": (updated.expected_version or 0) + 1,
+                        "posture": updated.payload["posture"],
+                        "effective_tick": prepared.tick,
+                    }
+                    # 将数值字段覆盖合并到策略快照
+                    for field_name in _POLICY_NUMERIC_FIELDS:
+                        if field_name in updated.payload:
+                            policy_update[field_name] = updated.payload[field_name]
+                    self._policy = policy_update
                 self._audit_event(prepared.tick, updated.issuer, "COMMAND_APPLIED", updated.command_id,
                                   updated.status.value, self._version, self._version, None)
         return tuple(changed)
@@ -266,10 +294,27 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
             raise CommandError("INVALID_PAYLOAD", "this command does not accept payload fields")
         payload = {}
     elif command_type is CommandType.UPDATE_POLICY:
+        # 支持 posture 字段 + 白名单内数值字段覆盖
         posture = raw_payload.get("posture")
         if posture not in _POSTURES:
             raise CommandError("INVALID_POLICY", "posture is not allowed")
-        payload = {"posture": posture}
+        payload: dict[str, Any] = {"posture": posture}
+        # 遍历白名单数值字段，逐个校验并加入 payload
+        for field_name, (minimum, maximum) in _POLICY_NUMERIC_FIELDS.items():
+            if field_name in raw_payload:
+                value = raw_payload[field_name]
+                if type(value) is not int or not minimum <= value <= maximum:
+                    raise CommandError(
+                        "INVALID_POLICY",
+                        f"{field_name} must be an integer from {minimum} to {maximum}",
+                    )
+                payload[field_name] = value
+    elif command_type is CommandType.TRIGGER_ANALYSIS:
+        # 手动触发分析扫描：payload 可指定 task_name，默认 resource_density_scan
+        task_name = raw_payload.get("task_name", "resource_density_scan")
+        if not isinstance(task_name, str) or not re.fullmatch(r"[a-z_]{1,64}", task_name):
+            raise CommandError("INVALID_PAYLOAD", "task_name must be lowercase snake_case")
+        payload = {"task_name": task_name}
     else:
         if raw_payload:
             raise CommandError("INVALID_PAYLOAD", "this command does not accept payload fields")

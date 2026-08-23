@@ -145,9 +145,19 @@ def migration_site_score(
 
 
 def rich_resource_center(
-    resource_observations: Mapping[Position, int], *, current_tick: int, bucket_size: int = 6
-) -> Position | None:
-    """Return an age-weighted center of the richest spatial resource bucket."""
+    resource_observations: Mapping[Position, int], *, current_tick: int, bucket_size: int = 6,
+    top_n: int = 1,
+) -> list[dict[str, object]] | None:
+    """返回加权资源桶的 top-N 候选中心。
+
+    每个候选包含:
+      - center: 候选中心坐标 (Position)
+      - score: 加权总分 (float)
+      - resource_count: 桶内矿点数量 (int)
+      - resources: 桶内矿点列表 (list[Position])
+
+    当 top_n=1 时兼容旧行为，返回单元素列表。
+    """
     if not resource_observations:
         return None
     buckets: dict[Position, list[tuple[Position, float]]] = {}
@@ -155,13 +165,24 @@ def rich_resource_center(
         weight = 1.0 / (1.0 + max(0, current_tick - seen_tick) / 8.0)
         bucket = cell[0] // bucket_size, cell[1] // bucket_size
         buckets.setdefault(bucket, []).append((cell, weight))
-    richest = max(
+    # 按加权总分排序，取 top-N
+    ranked_buckets = sorted(
         buckets.values(),
-        key=lambda items: (sum(weight for _, weight in items), len(items), min(cell for cell, _ in items)),
-    )
-    total = sum(weight for _, weight in richest)
-    center = (
-        round(sum(cell[0] * weight for cell, weight in richest) / total),
-        round(sum(cell[1] * weight for cell, weight in richest) / total),
-    )
-    return min((cell for cell, _ in richest), key=lambda cell: (distance(cell, center), cell))
+        key=lambda items: (sum(w for _, w in items), len(items), min(c for c, _ in items)),
+        reverse=True,
+    )[:max(1, top_n)]
+    results: list[dict[str, object]] = []
+    for richest in ranked_buckets:
+        total = sum(weight for _, weight in richest)
+        center: Position = (
+            round(sum(cell[0] * weight for cell, weight in richest) / total),
+            round(sum(cell[1] * weight for cell, weight in richest) / total),
+        )
+        nearest = min((cell for cell, _ in richest), key=lambda cell: (distance(cell, center), cell))
+        results.append({
+            "center": nearest,
+            "score": total,
+            "resource_count": len(richest),
+            "resources": sorted(cell for cell, _ in richest),
+        })
+    return results if results else None

@@ -282,6 +282,114 @@ function render(view) {
 
   setText('mapSummary', `己方 ${current.map?.friendly?.length || 0} · 敌方 ${current.map?.enemies?.length || 0} · 资源 ${current.map?.resources?.length || 0} · 已观测 ${current.map?.observed?.length || 0}格`);
   renderResourceInfo(view);
+  renderMigrationAnalysis(view);
+  renderPolicyConfig(view);
+  renderChunkSaturation(view);
+}
+
+function renderMigrationAnalysis(view) {
+  const rec = view?.migration_recommendation || {};
+  const el = $('migrationAnalysis');
+  if (!el) return;
+  if (!rec.center) {
+    el.innerHTML = '<div class="muted">尚无迁移分析数据</div>';
+    return;
+  }
+  const tick = view?.current?.tick || 0;
+  const age = tick - (rec.computed_at_tick || 0);
+  const fresh = age < (rec.interval_ticks || 60) * 2;
+  const candidates = rec.candidates || [];
+  const candidateRows = candidates.map((c, i) => {
+    const center = Array.isArray(c.center) ? c.center.join(',') : '—';
+    return `<div class="row"><span class="tick">#${i + 1}</span> <b>中心 ${esc(center)}</b> ` +
+      `<span class="tag">分数 ${esc(c.score)}</span> ` +
+      `<span class="muted">矿点 ${esc(c.resource_count)}</span></div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="row"><b>推荐中心</b> <span class="tag">${esc(Array.isArray(rec.center) ? rec.center.join(',') : '—')}</span>
+      <span class="tag">分数 ${esc(rec.score?.toFixed?.(1) || rec.score)}</span>
+      <span class="${fresh ? '' : 'muted'}">${fresh ? '有效' : '已过期'} (${esc(age)} Tick 前)</span></div>
+    <div class="row"><small>扫描间隔 ${esc(rec.interval_ticks)} Tick · 上次 #${esc(rec.computed_at_tick)}</small></div>
+    ${candidateRows}`;
+}
+
+/* 策略配置面板渲染 */
+const configFieldLabels = {
+  core_guard_vanguards: '核心守卫·先锋', core_guard_rangers: '核心守卫·游侠',
+  early_workers: '初期工人', early_vanguards: '初期先锋', early_rangers: '初期游侠',
+  patrol_radius_min: '巡逻半径·最小', patrol_radius_max: '巡逻半径·最大',
+  patrol_rotation_ticks: '巡逻轮换周期', minimum_resource_reserve: '最低资源储备',
+  peacetime_resource_buffer: '和平期资源缓冲',
+};
+
+function renderPolicyConfig(view) {
+  const policy = view?.policy_config || {};
+  const overrides = policy.overrides || {};
+  const el = $('policyConfig');
+  if (!el) return;
+  const overrideRows = Object.keys(configFieldLabels).map(field => {
+    const label = configFieldLabels[field];
+    const value = overrides[field];
+    const display = value != null ? `<span class="tag">${esc(value)}</span>` : '<span class="muted">默认</span>';
+    return `<div class="config-row"><span>${esc(label)}</span>${display}</div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="row"><b>姿态</b> <span class="tag">${esc(postureLabels[policy.posture] || policy.posture)}</span>
+      <small>生效 #${esc(policy.effective_tick || 0)}</small></div>
+    ${overrideRows}`;
+}
+
+/* Chunk 饱和度渲染 */
+function renderChunkSaturation(view) {
+  const chunks = view?.chunk_saturation || {};
+  const el = $('chunkSaturation');
+  if (!el) return;
+  const keys = Object.keys(chunks);
+  if (!keys.length) {
+    el.innerHTML = '<div class="muted">尚无已知矿区</div>';
+    return;
+  }
+  const rows = keys.sort().map(key => {
+    const c = chunks[key];
+    const pct = Math.round((c.saturation || 0) * 100);
+    const barColor = pct >= 80 ? 'var(--cyan)' : pct >= 40 ? 'var(--amber)' : 'var(--red)';
+    return `<div class="chunk-row" data-chunk="${esc(key)}">
+      <span class="chunk-label">Chunk ${esc(key)}</span>
+      <span class="chunk-stats">${esc(c.visible_count)}/${esc(c.quota)}</span>
+      <div class="bar" style="height:5px"><i style="width:${pct}%;background:${barColor}"></i></div>
+      <small>补货倒计时 ${esc(c.refresh_countdown)} Tick</small>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows;
+}
+
+/* 触发分析扫描 */
+async function triggerAnalysis() {
+  if (!csrf) { setText('migrationState', '请先认证。'); return; }
+  try {
+    await api('/api/v1/commands', 'POST', { type: 'TRIGGER_ANALYSIS', payload: { task_name: 'resource_density_scan' } });
+    setText('migrationState', '分析扫描已触发，结果将在下一 Tick 更新。');
+  } catch (error) { setText('migrationState', `触发失败：${error.message}`); }
+}
+
+/* 策略配置更新（扩展版：支持数值字段覆盖） */
+async function setPolicyExtended() {
+  if (!csrf) { setText('policyState', '请先认证。'); return; }
+  const payload = { posture: $('policyPosture').value };
+  // 收集所有配置字段的修改值
+  document.querySelectorAll('.config-input').forEach(input => {
+    const field = input.dataset.field;
+    const value = input.value.trim();
+    if (field && value !== '') {
+      const num = Number(value);
+      if (Number.isInteger(num)) payload[field] = num;
+    }
+  });
+  try {
+    await api('/api/v1/policy', 'PATCH', payload);
+    setText('policyState', '策略已排队，下一次成功提交后生效。');
+    await refreshPolicy(true);
+  } catch (error) { setText('policyState', `策略未接受：${error.message}`); }
 }
 
 async function api(path, method = 'GET', data) {
@@ -583,7 +691,7 @@ $('login').onclick = login;
 $('assign').onclick = assign;
 $('migrate').onclick = migrate;
 $('cancelMigration').onclick = cancelMigration;
-$('setPolicy').onclick = setPolicy;
+$('setPolicy').onclick = setPolicyExtended;
 $('unitSearch').oninput = renderUnitList;
 $('unitFilters').onclick = event => {
   const button = event.target.closest('.filter-btn');
@@ -641,6 +749,9 @@ $('replayMarkers').onclick = event => {
   const marker = event.target.closest('.replay-marker');
   if (marker) selectReplay(Number(marker.dataset.index));
 };
+// 迁移分析触发按钮
+const triggerBtn = $('triggerAnalysis');
+if (triggerBtn) triggerBtn.onclick = triggerAnalysis;
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

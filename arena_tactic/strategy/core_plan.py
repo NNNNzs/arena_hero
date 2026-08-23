@@ -157,9 +157,11 @@ def _core_migration_direction(
         else:
             return None
     elif memory.resource_observations:
-        target = rich_resource_center(
+        # rich_resource_center 现在返回 top-N 候选列表，取最优（首个）候选的中心。
+        resource_candidates = rich_resource_center(
             memory.resource_observations, current_tick=context.tick
-        ) or core_pos
+        )
+        target = resource_candidates[0]["center"] if resource_candidates else core_pos
     elif frontier:
         target = max(
             frontier,

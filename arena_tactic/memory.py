@@ -212,6 +212,7 @@ def _safe_scheduler_assignments(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _safe_policy_state(value: Any) -> dict[str, Any]:
+    """策略状态安全提取：保留 posture + 白名单内数值字段覆盖。"""
     if not isinstance(value, dict):
         return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
     version, effective = value.get("version"), value.get("effective_tick")
@@ -220,7 +221,19 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
         return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
     if posture not in {"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"}:
         return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
-    return {"version": version, "posture": posture, "effective_tick": effective}
+    result: dict[str, Any] = {"version": version, "posture": posture, "effective_tick": effective}
+    # 保留白名单内的数值字段覆盖（与 command_center._POLICY_NUMERIC_FIELDS 对齐）
+    _NUMERIC_WHITELIST = {
+        "core_guard_vanguards", "core_guard_rangers",
+        "early_workers", "early_vanguards", "early_rangers",
+        "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
+        "minimum_resource_reserve", "peacetime_resource_buffer",
+    }
+    for field_name in _NUMERIC_WHITELIST:
+        raw = value.get(field_name)
+        if type(raw) is int:
+            result[field_name] = raw
+    return result
 
 
 @dataclass(slots=True)

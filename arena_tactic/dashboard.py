@@ -396,6 +396,38 @@ class DashboardDataStore:
                 self._memory_cached_at = now
             return dict(self._cached_memory)
 
+    @staticmethod
+    def _compute_chunk_saturation(
+        memory_data: dict[str, Any], latest: dict[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """从 memory 数据计算 chunk 饱和度，用于 dashboard 展示。"""
+        from .chunk_quota import compute_chunk_saturation
+        # 解析当前可见资源格
+        resource_cells: set[tuple[int, int]] = set()
+        if latest and isinstance(latest.get("map"), dict):
+            for cell in latest["map"].get("resources", []):
+                if isinstance(cell, list) and len(cell) == 2 and all(type(v) is int for v in cell):
+                    resource_cells.add((cell[0], cell[1]))
+        # 解析已挖空格
+        mined_cells: set[tuple[int, int]] = set()
+        raw_mined = memory_data.get("mined_cells", [])
+        if isinstance(raw_mined, list):
+            for cell in raw_mined:
+                if isinstance(cell, list) and len(cell) == 2 and all(type(v) is int for v in cell):
+                    mined_cells.add((cell[0], cell[1]))
+        # 解析资源观察
+        resource_observations: dict[tuple[int, int], int] = {}
+        raw_obs = memory_data.get("resource_observations", {})
+        if isinstance(raw_obs, dict):
+            for key, tick in raw_obs.items():
+                try:
+                    x_str, y_str = str(key).split(",", 1)
+                    resource_observations[(int(x_str), int(y_str))] = int(tick)
+                except (ValueError, AttributeError, TypeError):
+                    continue
+        current_tick = int(latest.get("tick", 0)) if latest else 0
+        return compute_chunk_saturation(resource_cells, mined_cells, resource_observations, current_tick)
+
     def payload(self, status_snapshot: Callable[[], dict[str, object]]) -> dict[str, Any]:
         raw_status = status_snapshot()
         status = {
@@ -451,12 +483,42 @@ class DashboardDataStore:
                 latest["map"]["explored"] = explored_cells
                 latest["map"]["mined"] = mined_cells
                 latest["map"]["known_resources"] = known_resources
+
+            # 注入迁移分析数据（推荐中心 + top-3 候选）
+            migration_rec = memory_data.get("migration_recommendation", {})
+
+            # 注入 chunk 饱和度数据
+            chunk_saturation = self._compute_chunk_saturation(memory_data, latest)
+
+            # 注入策略配置覆盖
+            policy_state = memory_data.get("policy_state", {})
+
+            return {
+                "schema_version": 1,
+                "generated_at": int(time.time()),
+                "service": status,
+                "current": latest,
+                "command_center": command_center,
+                "migration_recommendation": migration_rec,
+                "chunk_saturation": chunk_saturation,
+                "policy_config": {
+                    "posture": policy_state.get("posture", "BALANCED"),
+                    "effective_tick": policy_state.get("effective_tick", 0),
+                    "overrides": {
+                        k: v for k, v in policy_state.items()
+                        if k not in ("version", "posture", "effective_tick") and type(v) is int
+                    },
+                },
+            }
         return {
             "schema_version": 1,
             "generated_at": int(time.time()),
             "service": status,
             "current": latest,
             "command_center": command_center,
+            "migration_recommendation": {},
+            "chunk_saturation": {},
+            "policy_config": {"posture": "BALANCED", "effective_tick": 0, "overrides": {}},
         }
 
     def replay_payload(
@@ -636,7 +698,7 @@ DASHBOARD_HTML = """<!doctype html>
     <section class="situation-section"><div class="section-head"><h3>附近资源点</h3><span class="resource-note">余量由协议隐藏</span></div><div id="resourceInfo" class="resource-list muted">当前无可见资源点</div></section>
     <section class="situation-section"><h3>目标与任务概览</h3><div id="goals" class="compact-list muted">尚无决策记录</div><div id="tasks" class="compact-list muted"></div></section>
     <details class="order-drawer" open><summary>人工任务 · 地图下令</summary><div class="detail-actions"><p class="muted">只对选中对象生效，下一权威 Tick 会重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button></div><span id="loginState" class="muted" aria-live="polite"></span><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="primary-action">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></details>
-    <details class="advanced-drawer"><summary>策略与指挥设置</summary><div class="advanced-grid"><section><h3>核心迁移</h3><input id="migrationTarget" placeholder="目标 x,y"><div class="button-row"><button id="migrate" class="neutral">排队迁移</button><button id="cancelMigration" class="neutral">取消</button></div></section><section><h3>策略姿态</h3><p class="muted">生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可更新。</p></section></div><h3>命令审计</h3><div id="commands" class="compact-list muted">尚无命令</div><h3>任务切换</h3><div id="timeline" class="compact-list muted">尚无任务切换记录</div></details>
+    <details class="advanced-drawer"><summary>策略与指挥设置</summary><div class="advanced-grid"><section><h3>核心迁移</h3><input id="migrationTarget" placeholder="目标 x,y"><div class="button-row"><button id="migrate" class="neutral">排队迁移</button><button id="cancelMigration" class="neutral">取消</button></div></section><section><h3>策略姿态</h3><p class="muted">生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可更新。</p></section><section><h3>策略参数热更新</h3><div id="policyConfig" class="config-list muted">加载中…</div></section></div><h3>迁移分析</h3><div id="migrationAnalysis" class="compact-list muted">尚无迁移分析数据</div><div class="button-row"><button id="triggerAnalysis" class="neutral">立即扫描</button></div><p id="migrationState" class="muted"></p><h3>矿区饱和度</h3><div id="chunkSaturation" class="compact-list muted">尚无已知矿区</div><h3>命令审计</h3><div id="commands" class="compact-list muted">尚无命令</div><h3>任务切换</h3><div id="timeline" class="compact-list muted">尚无任务切换记录</div></details>
   </aside>
 </section>
 

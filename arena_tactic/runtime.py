@@ -78,15 +78,40 @@ class AgentRuntime:
         if self.command_queue is not None:
             self.command_queue.restore_policy(self.memory.policy_state)
 
+    # 策略热更新白名单：与 command_center._POLICY_NUMERIC_FIELDS 对齐
+    _CONFIG_OVERRIDE_FIELDS = frozenset({
+        "core_guard_vanguards", "core_guard_rangers",
+        "early_workers", "early_vanguards", "early_rangers",
+        "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
+        "minimum_resource_reserve", "peacetime_resource_buffer",
+    })
+
+    def _apply_config_overrides(self, memory: AgentMemory) -> AgentConfig:
+        """从 policy_state 读取数值覆盖，生成每 tick 有效的配置副本。"""
+        overrides: dict[str, int] = {}
+        for field_name in self._CONFIG_OVERRIDE_FIELDS:
+            value = memory.policy_state.get(field_name)
+            if type(value) is int and hasattr(self.config, field_name):
+                overrides[field_name] = value
+        if overrides:
+            return replace(self.config, **overrides)
+        return self.config
+
     def decide(self, turn: Turn) -> DecisionResult:
         started = perf_counter()
         deadline = started + self.config.planning_budget_ms / 1_000
         context = DecisionContext.from_turn(turn)
         prepared_commands = self._prepare_commands(context)
         next_memory = self.memory.advance(context, self.config)
+        # 应用策略覆盖到运行时配置（每 tick 从 policy_state 读取数值覆盖）
+        effective_config = self._apply_config_overrides(next_memory)
+        self._effective_config = effective_config
         # Run due analysis tasks – pure functional check, then execute.
         self._run_due_analyses(context, next_memory)
         command_assignments = self._stage_manual_commands(context, next_memory, prepared_commands)
+        # TRIGGER_ANALYSIS 命令会重置 last_run_tick，需再次检查以立即执行
+        if "analysis" in command_assignments:
+            self._run_due_analyses(context, next_memory)
         objective_shadow = self._objective_shadow(context, next_memory)
         schedule = self._schedule_canary(context, next_memory) if (self.config.scheduler_canary or self.config.planner_canary) else None
         if self.config.planner_canary:
@@ -424,9 +449,8 @@ class AgentRuntime:
                 tasks.append(ScheduledTask(task, utility=110.0 if posture == "DEFENSIVE" else 10.0, target_key=f"defend:{alias}", eligible_aliases=(alias,)))
         return tuple(tasks)
 
-    @staticmethod
     def _stage_manual_commands(
-        context: DecisionContext, memory: AgentMemory, prepared: PreparedCommands | None,
+        self, context: DecisionContext, memory: AgentMemory, prepared: PreparedCommands | None,
     ) -> tuple[str, ...]:
         """Stage bounded manual assignments in next memory, never in HTTP state."""
         if prepared is None:
@@ -436,12 +460,26 @@ class AgentRuntime:
             if command.type.value == "UPDATE_POLICY":
                 posture = command.payload.get("posture")
                 if isinstance(posture, str):
-                    memory.policy_state = {
+                    # 策略状态更新：posture + 数值字段覆盖
+                    policy_update: dict[str, object] = {
                         "version": (command.expected_version or 0) + 1,
                         "posture": posture,
                         "effective_tick": context.tick,
                     }
+                    # 合并白名单内的数值字段覆盖
+                    for field_name, value in command.payload.items():
+                        if field_name != "posture" and type(value) is int:
+                            policy_update[field_name] = value
+                    memory.policy_state = policy_update
                     staged.append("policy")
+                continue
+            if command.type.value == "TRIGGER_ANALYSIS":
+                # 手动触发分析扫描：重置调度器的 last_run_tick 使下次检查立即触发
+                task_name = command.payload.get("task_name", "resource_density_scan")
+                task = self.analysis_scheduler.get_task(task_name)
+                if task is not None:
+                    task.last_run_tick = None
+                staged.append("analysis")
                 continue
             if command.type.value == "START_CORE_MIGRATION":
                 target = command.payload.get("target")
@@ -567,15 +605,19 @@ class AgentRuntime:
     def _execute_resource_density_scan(
         self, context: DecisionContext, memory: AgentMemory
     ) -> None:
-        """Run rich_resource_center and cache the result."""
+        """Run rich_resource_center (top-3) and cache the result with candidates."""
         if not memory.resource_observations:
             return
-        center = rich_resource_center(
-            memory.resource_observations, current_tick=context.tick
+        # 获取 top-3 候选桶
+        candidates = rich_resource_center(
+            memory.resource_observations, current_tick=context.tick, top_n=3,
         )
-        if center is None:
+        if not candidates:
             return
-        # Compute a score for the center using migration_site_score.
+        # 以最佳候选作为推荐中心
+        best = candidates[0]
+        center: Position = best["center"]  # type: ignore[assignment]
+        # 用 migration_site_score 对中心评分
         score = migration_site_score(
             center,
             resource_observations=memory.resource_observations,
@@ -588,12 +630,23 @@ class AgentRuntime:
             len(memory.explored), len(memory.resource_observations)
         ) if task else 60
         rec = MigrationRecommendation(
-            center=center,
+            center=center,  # type: ignore[arg-type]
             score=score,
             computed_at_tick=context.tick,
             interval_ticks=interval,
         )
-        memory.migration_recommendation = rec.to_dict()
+        # 缓存推荐 + top-3 候选
+        rec_dict = rec.to_dict()
+        rec_dict["candidates"] = [
+            {
+                "center": list(c["center"]),  # type: ignore[arg-type]
+                "score": round(float(c["score"]), 2),  # type: ignore[arg-type]
+                "resource_count": c["resource_count"],
+                "resources": [list(r) for r in c["resources"][:20]],  # type: ignore[arg-type]
+            }
+            for c in candidates
+        ]
+        memory.migration_recommendation = rec_dict
 
     @staticmethod
     def _emergency_waits(context: DecisionContext) -> tuple[ActionIntent, ...]:
