@@ -239,6 +239,7 @@ class AgentMemory:
     last_core_damage_tick: int = 0
     obstacles: set[Position] = field(default_factory=set)
     explored: set[Position] = field(default_factory=set)
+    mined_cells: set[Position] = field(default_factory=set)
     resource_observations: dict[Position, int] = field(default_factory=dict)
     resource_recheck_failures: dict[Position, int] = field(default_factory=dict)
     resource_recheck_cooldowns: dict[Position, int] = field(default_factory=dict)
@@ -512,6 +513,8 @@ class AgentMemory:
                 # and must not send the new Worker on a long stale recheck.
                 next_memory.unit_tasks.clear()
                 next_memory.enemy_tracks.clear()
+                next_memory.explored.clear()
+                next_memory.mined_cells.clear()
                 next_memory.resource_observations.clear()
                 next_memory.resource_recheck_failures.clear()
                 next_memory.resource_recheck_cooldowns.clear()
@@ -526,6 +529,7 @@ class AgentMemory:
                 or event.reason_code == "RESOURCE_DEPLETED"
                 or event.event_type == "HARVEST_SUCCEEDED"
             ):
+                next_memory.mined_cells.add(event.position)
                 next_memory.resource_observations.pop(event.position, None)
                 next_memory.resource_recheck_failures.pop(event.position, None)
         next_memory.event_counts = dict(counts)
@@ -591,6 +595,7 @@ class AgentMemory:
             "last_core_damage_tick": self.last_core_damage_tick,
             "obstacles": [list(cell) for cell in sorted(self.obstacles)],
             "explored": [list(cell) for cell in sorted(self.explored)],
+            "mined_cells": [list(cell) for cell in sorted(self.mined_cells)],
             "resource_observations": {
                 _cell_key(cell): tick
                 for cell, tick in sorted(self.resource_observations.items())
@@ -668,6 +673,7 @@ class AgentMemory:
                 last_core_damage_tick=integer("last_core_damage_tick"),
                 obstacles=_safe_cells(data.get("obstacles", [])),
                 explored=_safe_cells(data.get("explored", [])),
+                mined_cells=_safe_cells(data.get("mined_cells", [])),
                 resource_observations=_safe_cell_map(data.get("resource_observations", {})),
                 resource_recheck_failures=_safe_cell_map(data.get("resource_recheck_failures", {})),
                 resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),

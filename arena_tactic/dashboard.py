@@ -346,18 +346,22 @@ class DashboardDataStore:
         replay_path: Path,
         *,
         trace_path: Path | None = None,
+        memory_path: Path | None = None,
         max_bytes: int = 256 * 1024,
         recent_limit: int = 32,
         cache_seconds: float = 1.0,
     ) -> None:
         self.replay_path = replay_path
         self.trace_path = trace_path or replay_path.with_name("decision-trace.jsonl")
+        self.memory_path = memory_path or replay_path.parent / "agent-state.json"
         self.max_bytes = max_bytes
         self.recent_limit = recent_limit
         self.cache_seconds = cache_seconds
         self._cached_at = 0.0
         self._cached_records: list[dict[str, Any]] = []
         self._cached_traces: list[dict[str, Any]] = []
+        self._cached_memory: dict[str, Any] = {}
+        self._memory_cached_at = 0.0
         self._lock = threading.Lock()
 
     def _records(self) -> list[dict[str, Any]]:
@@ -379,6 +383,18 @@ class DashboardDataStore:
         self._records()  # refresh both bounded caches under the same TTL/lock.
         with self._lock:
             return list(self._cached_traces)
+
+    def _memory(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            if now - self._memory_cached_at >= self.cache_seconds * 3:
+                try:
+                    raw = self.memory_path.read_text(encoding="utf-8")
+                    self._cached_memory = json.loads(raw) if raw.strip() else {}
+                except (FileNotFoundError, OSError, json.JSONDecodeError):
+                    self._cached_memory = {}
+                self._memory_cached_at = now
+            return dict(self._cached_memory)
 
     def payload(self, status_snapshot: Callable[[], dict[str, object]]) -> dict[str, Any]:
         raw_status = status_snapshot()
@@ -419,6 +435,26 @@ class DashboardDataStore:
             })
         if command_center is not None:
             command_center = _merge_entity_state({**command_center, "timeline": timeline}, latest)
+        # Inject persistent memory layers (explored fog, mined resource markers)
+        # from the agent-state file into the latest map projection.
+        memory_data = self._memory()
+        if memory_data:
+            def _parse_cell_set(raw: Any) -> list[list[int]]:
+                if not isinstance(raw, list):
+                    return []
+                return [list(item) for item in raw
+                        if isinstance(item, list) and len(item) == 2
+                        and all(type(v) is int for v in item)]
+            explored_cells = _parse_cell_set(memory_data.get("explored", []))
+            mined_cells = _parse_cell_set(memory_data.get("mined_cells", []))
+            if latest and isinstance(latest.get("map"), dict):
+                latest["map"]["explored"] = explored_cells
+                latest["map"]["mined"] = mined_cells
+            for frame in frames:
+                snapshot = frame.get("snapshot")
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("map"), dict):
+                    snapshot["map"]["explored"] = explored_cells
+                    snapshot["map"]["mined"] = mined_cells
         return {
             "schema_version": 1,
             "generated_at": int(time.time()),
