@@ -211,6 +211,47 @@ def test_no_exploration_stall_below_step_threshold(tmp_path, monkeypatch):
     assert stall == []
 
 
+def test_no_exploration_stall_when_worker_deposits(tmp_path, monkeypatch):
+    """Worker oscillating between mine and core with successful deposits is not stalled."""
+    positions = [[0, 0], [1, 0]] * 25  # 50 rows
+    rows = _exploration_stall_rows(50, positions)
+    # Add a DEPOSIT_SUCCEEDED event for the worker
+    rows[10]["events"] = [{"type": "DEPOSIT_SUCCEEDED", "actor": "worker", "values": {"amount": 2}}]
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    stall = [f for f in report["findings"] if f["code"] == "EXPLORATION_STALL"]
+    assert stall == []
+
+
+def test_detects_defense_disengaged_when_threat_is_near(tmp_path, monkeypatch):
+    """Combat unit WAITs when enemy Vanguard is within local threat distance (7-16)."""
+    rows = []
+    for tick in range(10, 15):
+        row = _row(tick, [0, 0], mode="DEFEND")
+        row["state"]["units"] = [{"id": "vanguard_1", "unit_type": "VANGUARD", "position": [0, 0], "hp": 10}]
+        row["state"]["visible_enemies"] = [{"id": "enemy_vg", "unit_type": "VANGUARD", "position": [8, 0], "hp": 10}]
+        row["intents"] = [{"actor": "vanguard_1", "action": "WAIT", "reason": "holding_position"}]
+        rows.append(row)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    finding = next((f for f in report["findings"] if f["code"] == "DEFENSE_DISENGAGED"), None)
+    assert finding is not None
+    assert finding["evidence"][0]["units"][0]["enemy_distance"] == 8
+
+
+def test_no_defense_disengaged_when_threat_is_distant(tmp_path, monkeypatch):
+    """Combat unit guarding Core (distance > 16 from distant scout enemy) is not disengaged."""
+    rows = []
+    for tick in range(10, 15):
+        row = _row(tick, [0, 0], mode="ECONOMY")
+        row["state"]["units"] = [{"id": "vanguard_1", "unit_type": "VANGUARD", "position": [0, 0], "hp": 10}]
+        # Enemy is 50 tiles away (seen by distant scout)
+        row["state"]["visible_enemies"] = [{"id": "enemy_vg", "unit_type": "VANGUARD", "position": [50, 0], "hp": 10}]
+        row["intents"] = [{"actor": "vanguard_1", "action": "WAIT", "reason": "holding_defense_ring"}]
+        rows.append(row)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    finding = next((f for f in report["findings"] if f["code"] == "DEFENSE_DISENGAGED"), None)
+    assert finding is None
+
+
 def _main_report(severity: str) -> dict:
     return {
         "window": {"tick_start": 1, "tick_end": 2},

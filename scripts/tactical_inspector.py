@@ -109,7 +109,7 @@ def _distance(a: Any, b: Any) -> int | None:
 
 
 def _event_type(event: dict[str, Any]) -> str:
-    return str(event.get("type") or event.get("event_type") or "UNKNOWN")
+    return str(event.get("type") or event.get("event_type") or event.get("event") or "UNKNOWN")
 
 
 def _event_reason(event: dict[str, Any]) -> str | None:
@@ -285,7 +285,9 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             for unit in combat:
                 nearest = min((_distance(unit.get("position"), p) for p in enemy_cells), default=None)
                 intent = next((i for i in intents if str(i.get("actor")) == str(unit.get("id"))), {})
-                if nearest is not None and nearest > 6 and intent.get("action") == "WAIT":
+                # Threat must be within local operational range (<= 16) to constitute disengagement.
+                # Combat units guarding Core when enemies are in a distant sector (> 16) are correctly holding perimeter.
+                if nearest is not None and 6 < nearest <= 16 and intent.get("action") == "WAIT":
                     far_waiting.append({"id": unit.get("id"), "type": unit.get("unit_type"), "enemy_distance": nearest, "reason": intent.get("reason")})
             if far_waiting:
                 disengaged.append({"tick": tick, "units": far_waiting})
@@ -337,8 +339,17 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     #    which targets tight 2-4 cell loops; this catches broader "running in
     #    circles" patterns where net displacement is near zero over ≥40 steps.
     exploration_stall: list[dict[str, Any]] = []
+    successful_deposit_actors = {
+        str(_event_actor(event))
+        for row in replay
+        for event in row.get("events", [])
+        if isinstance(event, dict) and _event_type(event) == "DEPOSIT_SUCCEEDED"
+    }
     for actor, samples in positions.items():
         if kinds.get(actor) != "WORKER":
+            continue
+        # Workers actively harvesting or depositing are performing shuttle runs, not stalling exploration
+        if actor in successful_deposit_actors or actions[actor].get("HARVEST", 0) > 0 or actions[actor].get("DEPOSIT", 0) > 0:
             continue
         ordered = sorted(dict(samples).items())
         if len(ordered) < 2:
