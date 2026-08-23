@@ -87,7 +87,7 @@ class AgentConfig:
     # observation remains the authority: depletion or an authoritative empty
     # recheck still removes the lock immediately.
     resource_target_grace_ticks: int = 4
-    core_guard_vanguards: int = 2
+    core_guard_vanguards: int = 1
     core_guard_rangers: int = 1
     patrol_radius_min: int = 5
     patrol_radius_max: int = 8

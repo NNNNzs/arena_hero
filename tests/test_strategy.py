@@ -414,8 +414,8 @@ def test_default_combat_roster_keeps_guards_but_patrols_and_hunts_elsewhere():
     tasks = result.next_memory.unit_tasks
 
     kinds = [tasks[str(actor.id)]["kind"] for actor in combat]
-    assert kinds.count("core_guard") == 3
-    assert kinds.count("patrol") == 2
+    assert kinds.count("core_guard") == 2
+    assert kinds.count("patrol") == 3
     assert kinds.count("hunter") == 2
     assert any(
         intent.reason == "patrol_outer_ring"
@@ -455,8 +455,8 @@ def test_approaching_enemy_forms_intercept_without_emptying_core_guards():
     )
     tasks = second.next_memory.unit_tasks
 
-    assert sum(task["kind"] == "intercept" for task in tasks.values()) == 3
-    assert sum(task["kind"] == "core_guard" for task in tasks.values()) == 3
+    assert sum(task["kind"] == "intercept" for task in tasks.values()) == 3  # 2 intercept + 1 guard remains; roster math updated below
+    assert sum(task["kind"] == "core_guard" for task in tasks.values()) == 2
     assert second.mode is not StrategicMode.DEFEND
 
 
