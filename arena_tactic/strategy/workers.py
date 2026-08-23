@@ -493,11 +493,22 @@ def _plan_workers(
             # 非核心相邻空格，把入口让给返航的载货同伴。
             # 此分支优先于探索目标：站在核心格上时让位是第一优先级，
             # 让完位后下一 Tick 自然接续正常探索/复查任务。
-            occupied = {
-                cell: ids for cell, ids in context.friendly_occupancy.items()
-                if cell != context.core.position  # 核心自身不算让位障碍
-            }
-            occupied.update(context.enemy_occupancy)
+            # 让位候选格用引擎容量语义（ReservationTable：每格至多 2 人）
+            # 判定，而不是"必须完全无人"。此前只要格上有 1 个友军就
+            # 被排除，导致核心格唯一的近出口（站了 1 个游侠、还剩 1 个
+            # 空位）被白白丢弃，空载工让不出去、门口的载货工进不来，
+            # 双方在核心门口互相等死（core_cell_vacate_blocked /
+            # no_safe_route_with_cargo 同时持续）。
+            occupied = dict(context.enemy_occupancy)
+            reservations = ReservationTable(
+                {
+                    cell: len(ids) - 1  # 扣掉自己：自己即将离开当前格
+                    if cell == worker.position
+                    else len(ids)
+                    for cell, ids in context.friendly_occupancy.items()
+                    if cell != context.core.position  # 核心自身不算让位障碍
+                }
+            )
             vacate = next(
                 (
                     cell
@@ -507,6 +518,7 @@ def _plan_workers(
                     )
                     if cell not in memory.obstacles
                     and cell not in occupied
+                    and reservations.can_reserve(cell)
                 ),
                 None,
             )
