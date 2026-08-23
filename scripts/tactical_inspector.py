@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from arena_tactic.alert_rules import ALERT_RULES, serialized_rules
+
 DEFAULT_RUNTIME = Path(__file__).resolve().parents[1] / "runtime"
 LIVEZ_URL = "http://127.0.0.1:8787/livez"
 MODES = {"DEFEND", "ATTACK", "BEACON", "RECOVER", "ECONOMY"}
@@ -136,7 +138,16 @@ def _runs(samples: list[dict[str, Any]], minimum: int) -> list[list[dict[str, An
 
 
 def _finding(code: str, severity: str, summary: str, *, ticks: Iterable[int] = (), entities: Iterable[str] = (), evidence: Any = None, confidence: str = "high") -> dict[str, Any]:
-    result = {"code": code, "severity": severity, "summary": summary, "confidence": confidence}
+    rule = ALERT_RULES[code]
+    result = {
+        "code": rule.code,
+        "severity": severity,
+        "zh_label": rule.zh_label,
+        "description": rule.description,
+        "recommendation": rule.recommendation,
+        "summary": summary,
+        "confidence": confidence,
+    }
     tick_list, entity_list = list(ticks), list(entities)
     if tick_list:
         result["ticks"] = tick_list[-12:]
@@ -499,6 +510,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
         "battlefield": {"core": latest.get("core"), "visible_enemy_count": len(latest.get("visible_enemies") or []), "recent_lifecycle_events": lifecycle, "hidden_attack_ticks": hidden_damage_ticks, "defense_disengagement": disengaged[-8:]},
         "strategy": {"current_mode": modes[-1][1] if modes else agent_state.get("last_mode"), "mode_history": [{"tick": t, "mode": m} for t, m in modes[-20:]], "switch_count": len(switches), "switches": switches[-20:], "migration": {"current_state": migration_state, "destination": (latest.get("core") or {}).get("destination") if isinstance(latest.get("core"), dict) else None, "events": migration_events, "failures_or_cancels": migration_failures, "cooldown_until_tick": agent_state.get("migration_cooldown_until_tick")}},
         "findings": findings,
+        "alert_rules": serialized_rules(),
         "tactical_clues": [f["summary"] for f in findings[:8]] or ["窗口内未发现达到阈值的战术异常；仍应结合更长时间窗复核。"],
         "data_quality": {"replay": replay_quality, "decision_trace": trace_quality, "agent_state_error": state_error, "notes": ["只分析当前可见敌人；无敌不等于无威胁。", "轮转文件按 Tick 去重，单文件读取受 --max-bytes 限制。"]},
     }
@@ -524,7 +536,8 @@ def render_text(report: dict[str, Any]) -> str:
     ]
     for i, finding in enumerate(report["findings"], 1):
         ticks = f" ticks={finding.get('ticks')}" if finding.get("ticks") else ""
-        lines.append(f"{i}. [{finding['severity'].upper()}] {finding['code']}: {finding['summary']}{ticks}")
+        rule = ALERT_RULES[finding["code"]]
+        lines.append(f"{i}. [{finding['severity'].upper()}] {rule.code} ({rule.zh_label}): {finding['summary']}{ticks}")
     if not report["findings"]:
         lines.append("未发现达到阈值的异常。")
     lines.extend(("", "[战术研判线索]"))
@@ -547,7 +560,9 @@ def render_alert_text(report: dict[str, Any]) -> str:
     ]
     for i, finding in enumerate(findings, 1):
         ticks = f" (Ticks: {finding.get('ticks')})" if finding.get("ticks") else ""
-        lines.append(f"{i}. [{finding['severity'].upper()}] {finding['code']}: {finding['summary']}{ticks}")
+        rule = ALERT_RULES[finding["code"]]
+        lines.append(f"{i}. [{finding['severity'].upper()}] {rule.code} ({rule.zh_label}): {finding['summary']}{ticks}")
+        lines.append(f"   研判建议: {rule.recommendation}")
     
     if report.get("tactical_clues"):
         lines.extend(("", "[研判建议与破局线索]:"))
@@ -565,8 +580,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit pure JSON")
     parser.add_argument("--record-nightly", action="store_true", help="record snapshot to nightly reports log during quiet hours (23:00-08:00)")
     parser.add_argument("--alert-only", action="store_true", help="only emit output when warnings/critical findings are detected (silent on healthy/normal)")
+    parser.add_argument("--force-alert", action="store_true", help="explicitly allow CRITICAL alerts during quiet hours; WARNING remains silent")
+    parser.add_argument("--list-rules", action="store_true", help="list registered alert codes, severities, and Chinese labels")
     parser.add_argument("--min-severity", choices=["info", "warning", "critical"], default="warning", help="minimum severity to trigger alert")
     args = parser.parse_args(argv)
+    if args.list_rules:
+        for rule in ALERT_RULES.values():
+            print(f"{rule.code}\t{rule.severity.upper()}\t{rule.zh_label}")
+        return 0
     if not 1 <= args.ticks <= 10_000 or args.max_bytes < 4096 or args.health_timeout <= 0:
         parser.error("invalid --ticks, --max-bytes, or --health-timeout")
     report = inspect(args.runtime, args.ticks, args.max_bytes, args.health_url, args.health_timeout)
@@ -593,8 +614,11 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Warning: failed to record nightly log: {e}\n")
 
     if args.alert_only:
-        # In quiet hours, stay silent unless it's a catastrophic service failure
-        if is_quiet_hours and not service_down:
+        has_critical = any(f.get("severity") == "critical" for f in active_findings)
+        # CRITICAL alerts always break quiet hours. WARNING remains silent,
+        # including with --force-alert; the flag makes watchdog intent explicit.
+        force_critical = args.force_alert and has_critical
+        if is_quiet_hours and not service_down and not (has_critical or force_critical):
             return 0
         # If no alerts found, exit silently with empty stdout (0 token watchdog mode)
         if not has_alert:

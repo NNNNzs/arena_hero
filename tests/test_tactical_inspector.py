@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "tactical_inspector.py"
 SPEC = importlib.util.spec_from_file_location("tactical_inspector", SCRIPT)
@@ -207,3 +209,68 @@ def test_no_exploration_stall_below_step_threshold(tmp_path, monkeypatch):
     report = _inspect_rows(tmp_path, monkeypatch, rows)
     stall = [f for f in report["findings"] if f["code"] == "EXPLORATION_STALL"]
     assert stall == []
+
+
+def _main_report(severity: str) -> dict:
+    return {
+        "window": {"tick_start": 1, "tick_end": 2},
+        "service": {"reachable": True},
+        "economy": {"core_resources": 3, "capacity": 10},
+        "battlefield": {"visible_enemy_count": 1},
+        "strategy": {"current_mode": "DEFEND"},
+        "findings": [{"code": "CORE_UNDER_ATTACK" if severity == "critical" else "PRODUCTION_FREEZE", "severity": severity, "summary": "test"}],
+        "tactical_clues": [],
+    }
+
+
+@pytest.mark.parametrize("force_alert", [False, True])
+def test_quiet_hours_always_emit_critical_alert(monkeypatch, capsys, force_alert):
+    class QuietDatetime:
+        @classmethod
+        def now(cls):
+            return type("Now", (), {"hour": 2})()
+
+    monkeypatch.setattr(inspector, "datetime", QuietDatetime)
+    monkeypatch.setattr(inspector, "inspect", lambda *args: _main_report("critical"))
+    argv = ["--alert-only"] + (["--force-alert"] if force_alert else [])
+    assert inspector.main(argv) == 0
+    assert "CORE_UNDER_ATTACK (核心正在遭受攻击)" in capsys.readouterr().out
+
+
+def test_quiet_hours_keep_warning_silent_with_force_alert(monkeypatch, capsys):
+    class QuietDatetime:
+        @classmethod
+        def now(cls):
+            return type("Now", (), {"hour": 2})()
+
+    monkeypatch.setattr(inspector, "datetime", QuietDatetime)
+    monkeypatch.setattr(inspector, "inspect", lambda *args: _main_report("warning"))
+    assert inspector.main(["--alert-only", "--force-alert"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_non_quiet_alert_behavior_is_unchanged(monkeypatch, capsys):
+    class DayDatetime:
+        @classmethod
+        def now(cls):
+            return type("Now", (), {"hour": 12})()
+
+    monkeypatch.setattr(inspector, "datetime", DayDatetime)
+    monkeypatch.setattr(inspector, "inspect", lambda *args: _main_report("warning"))
+    assert inspector.main(["--alert-only"]) == 0
+    assert "PRODUCTION_FREEZE (兵营生产冻结)" in capsys.readouterr().out
+
+
+def test_list_rules_prints_all_registered_rules(capsys):
+    assert inspector.main(["--list-rules"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 14
+    assert {line.split("\t", 1)[0] for line in lines} == set(inspector.ALERT_RULES)
+
+
+def test_json_findings_and_registry_use_rule_metadata(tmp_path, monkeypatch):
+    report = _inspect_rows(tmp_path, monkeypatch, [_row(1, [1, 1], damaged=True)])
+    finding = next(f for f in report["findings"] if f["code"] == "CORE_UNDER_ATTACK")
+    assert finding["zh_label"] == "核心正在遭受攻击"
+    assert finding["recommendation"]
+    assert len(report["alert_rules"]) == 14
