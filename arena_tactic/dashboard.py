@@ -402,12 +402,16 @@ class DashboardDataStore:
     ) -> dict[str, dict[str, Any]]:
         """从 memory 数据计算 chunk 饱和度，用于 dashboard 展示。"""
         from .chunk_quota import compute_chunk_saturation
-        # 解析当前可见资源格
+        # 解析当前可见资源格：优先当前帧 resources，回退到记忆中的 known_resources
         resource_cells: set[tuple[int, int]] = set()
         if latest and isinstance(latest.get("map"), dict):
             for cell in latest["map"].get("resources", []):
                 if isinstance(cell, list) and len(cell) == 2 and all(type(v) is int for v in cell):
                     resource_cells.add((cell[0], cell[1]))
+            if not resource_cells:
+                for cell in latest["map"].get("known_resources", []):
+                    if isinstance(cell, list) and len(cell) == 2 and all(type(v) is int for v in cell):
+                        resource_cells.add((cell[0], cell[1]))
         # 解析已挖空格
         mined_cells: set[tuple[int, int]] = set()
         raw_mined = memory_data.get("mined_cells", [])
