@@ -21,6 +21,7 @@ from .mode import (
     _pressure_distance,
 )
 
+
 def _past_early_roster(context: DecisionContext, config: AgentConfig) -> bool:
     """Return *True* when the early-wave roster targets are all met."""
     counts = Counter(unit.unit_type for unit in context.units)
@@ -151,13 +152,14 @@ def _core_migration_direction(
         if cached is not None and cached.is_fresh(context.tick, max_cycles=2):
             target = cached.center
         elif memory.resource_observations:
-            target = rich_resource_center(
+            resource_candidates = rich_resource_center(
                 memory.resource_observations, current_tick=context.tick
-            ) or core_pos
+            )
+            target = resource_candidates[0]["center"] if resource_candidates else core_pos
         else:
             return None
     elif memory.resource_observations:
-        # rich_resource_center 现在返回 top-N 候选列表，取最优（首个）候选的中心。
+        # rich_resource_center returns top-N candidates; use the best center.
         resource_candidates = rich_resource_center(
             memory.resource_observations, current_tick=context.tick
         )
@@ -362,20 +364,23 @@ def _plan_core(
         and _spawn_cell_is_free(context, unit_intents)
     ):
         price = unit_cost(spawn_type, context.population)
-        # In peacetime, once the mature roster is filled, conserve
-        # resources for future wartime production by requiring an extra
-        # buffer beyond the normal reserve.
+        # Peacetime reserves must never make production mathematically
+        # impossible under the Core storage cap. Keep the configured buffer,
+        # but clamp it to the amount that can coexist with this spawn + reserve.
         peacetime_conserve = (
             config.peacetime_resource_buffer > 0
             and mode not in (StrategicMode.DEFEND, StrategicMode.ATTACK)
             and combat_ready
             and _past_early_roster(context, config)
         )
-        effective_reserve = (
-            reserve + config.peacetime_resource_buffer
-            if peacetime_conserve
-            else reserve
-        )
+        if peacetime_conserve:
+            storage_capacity = context.resources + context.resource_space
+            buffer_room = max(0, storage_capacity - price - reserve)
+            effective_reserve = reserve + min(
+                config.peacetime_resource_buffer, buffer_room
+            )
+        else:
+            effective_reserve = reserve
         if (
             not combat_ready
             and core.hp == CORE_MAX_HP
@@ -441,6 +446,3 @@ def _plan_core(
                 reserved_cell=destination(core.position, direction),
             )
     return _wait(core, "resources_reserved_or_no_legal_core_action", is_core=True)
-
-
-

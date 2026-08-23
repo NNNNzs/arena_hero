@@ -67,6 +67,7 @@ def _combat_rosters(context: DecisionContext, memory: AgentMemory, config: Agent
         set(sorted(hunters, key=lambda unit_id: unit_id.bytes)[:config.intercept_rangers]),
     )
 
+
 def ranger_target_score(
     ranger: UnitView,
     enemy: CoreView | UnitView,
@@ -82,7 +83,11 @@ def ranger_target_score(
     ):
         score += 30.0
     score += shadow_fire_advantage(ranger.position, enemy, memory.obstacles)
-    score -= distance(ranger.position, enemy.position) * 5.0
+    firing_range = shot_range(ranger.position, enemy.position, memory.obstacles)
+    score -= (
+        firing_range if firing_range is not None
+        else distance(ranger.position, enemy.position)
+    ) * 5.0
     return score
 
 
@@ -90,6 +95,3 @@ def vanguard_cell_score(
     enemies: Iterable[CoreView | UnitView],
 ) -> float:
     return sum(100.0 if isinstance(enemy, CoreView) else 10.0 for enemy in enemies)
-
-
-
