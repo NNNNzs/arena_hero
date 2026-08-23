@@ -10,7 +10,7 @@ from arena_hero import CoreState, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
-from ..navigation import bounded_path_cost, distance
+from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance
 from .common import (
     UNIT_MAX_HP,
     _EXPLORATION_SECTORS,
@@ -125,6 +125,9 @@ def _frontier_assignments(
             candidates = (
                 (unit.position[0] + dx * 3, unit.position[1] + dy * 3),
                 (unit.position[0] + dx * 4, unit.position[1] + dy * 4),
+                # 滞留核心格的空载工人：优先把让位格作为探索投影目标，
+                # 避免原地等待堵死核心入口（拥堵死锁）。
+                (unit.position[0] + dx, unit.position[1] + dy),
             )
             target = next(
                 (cell for cell in candidates if cell not in blocked and cell not in assigned),
@@ -360,7 +363,12 @@ def _plan_workers(
         task_kind="explore",
     )
 
-    for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
+    # 载货工人优先决策：先为有货的工人预约核心格与路径，
+    # 避免空载探索工人占满核心入口导致返航死锁（拥堵互堵）。
+    for worker in sorted(
+        context.workers,
+        key=lambda unit: (0 if (unit.cargo or 0) else 1, str(unit.id)),
+    ):
         cargo = worker.cargo or 0
         if (
             cargo
@@ -475,6 +483,48 @@ def _plan_workers(
         if target is None:
             target = exploration.get(str(worker.id))
             reason = "explore_sector_frontier"
+        if (
+            context.core is not None
+            and _at_normal_core(worker, context)
+            and not cargo
+        ):
+            # 空载工人滞留核心格：核心格容量只有 2（核心+1），
+            # 停在这里会堵死载货工人的存矿入口。主动让位到最近的
+            # 非核心相邻空格，把入口让给返航的载货同伴。
+            # 此分支优先于探索目标：站在核心格上时让位是第一优先级，
+            # 让完位后下一 Tick 自然接续正常探索/复查任务。
+            occupied = {
+                cell: ids for cell, ids in context.friendly_occupancy.items()
+                if cell != context.core.position  # 核心自身不算让位障碍
+            }
+            occupied.update(context.enemy_occupancy)
+            vacate = next(
+                (
+                    cell
+                    for cell in sorted(
+                        destination(worker.position, d)
+                        for d in DIRECTIONS
+                    )
+                    if cell not in memory.obstacles
+                    and cell not in occupied
+                ),
+                None,
+            )
+            if vacate is not None:
+                intent = _move(
+                    worker, vacate, "vacate_core_cell_for_delivery", 420,
+                    context=context, memory=memory,
+                    reservations=reservations, deadline=deadline, config=config,
+                )
+                if intent is not None:
+                    _record_unit_task(
+                        memory, context, worker, kind="vacate",
+                        target=vacate, intent=intent,
+                    )
+                    intents.append(intent)
+                    continue
+            intents.append(_wait(worker, "core_cell_vacate_blocked"))
+            continue
         if target is not None:
             task_kind = (
                 "recon" if reconnaissance.get(str(worker.id)) else "explore"

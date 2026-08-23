@@ -32,6 +32,7 @@ _WAIT_REASONS = {
     "healing_waits_for_resources": ("RESOURCE_WAIT", "CORE_RESOURCES_AVAILABLE", None),
     "resource_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "exploration_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
+    "core_cell_vacate_blocked": ("BLOCKED", "CELL_AVAILABLE", None),
     "no_resource_or_frontier": ("RESOURCE_WAIT", "RESOURCE_OR_FRONTIER_VISIBLE", None),
     "critical_retreat_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
     "emergency_worker_rally_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
