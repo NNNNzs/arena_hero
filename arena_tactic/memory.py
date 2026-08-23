@@ -16,9 +16,14 @@ from datetime import datetime, timezone
 from .context import DecisionContext
 from .identity import entity_alias
 from .models import AgentConfig, Position, StrategicMode
+from .analysis_scheduler import (
+    AnalysisScheduler,
+    MigrationRecommendation,
+    default_analysis_scheduler,
+)
 
 
-MEMORY_VERSION = 5
+MEMORY_VERSION = 6
 _CARDINAL = ((0, -1), (0, 1), (-1, 0), (1, 0))
 _SENSITIVE = ("credential", "controller", "authorization", "cookie", "token", "secret")
 _UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
@@ -254,6 +259,8 @@ class AgentMemory:
     event_counts: dict[str, int] = field(default_factory=dict)
     submitted_ticks: int = 0
     accepted_ticks: int = 0
+    analysis_tasks: list[dict[str, Any]] = field(default_factory=list)
+    migration_recommendation: dict[str, Any] = field(default_factory=dict)
 
     def clone(self) -> "AgentMemory":
         return deepcopy(self)
@@ -524,6 +531,12 @@ class AgentMemory:
                 next_memory.last_core_damage_tick = 0
                 next_memory.migration_cooldown_until_tick = 0
                 next_memory.previous_migration_position = None
+                # Analysis tasks survive respawn (keep definitions), but
+                # cached results are map-specific and must be cleared.
+                next_memory.migration_recommendation = {}
+                # Reset last_run_tick so tasks re-fire promptly on new map.
+                for task_data in next_memory.analysis_tasks:
+                    task_data["last_run_tick"] = None
             if event.position is not None and (
                 event.event_type == "RESOURCE_DEPLETED"
                 or event.reason_code == "RESOURCE_DEPLETED"
@@ -630,13 +643,15 @@ class AgentMemory:
             "event_counts": _safe_event_counts(self.event_counts),
             "submitted_ticks": self.submitted_ticks,
             "accepted_ticks": self.accepted_ticks,
+            "analysis_tasks": self.analysis_tasks,
+            "migration_recommendation": self.migration_recommendation,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentMemory":
         if not isinstance(data, dict):
             return cls()
-        if data.get("version") not in (1, 2, 3, 4, MEMORY_VERSION):
+        if data.get("version") not in (1, 2, 3, 4, 5, MEMORY_VERSION):
             return cls()
         def integer(name: str, default: int = 0) -> int:
             try:
@@ -696,6 +711,16 @@ class AgentMemory:
                 event_counts=_safe_event_counts(counts),
                 submitted_ticks=integer("submitted_ticks"),
                 accepted_ticks=integer("accepted_ticks"),
+                analysis_tasks=(
+                    data["analysis_tasks"]
+                    if isinstance(data.get("analysis_tasks"), list)
+                    else []
+                ),
+                migration_recommendation=(
+                    data["migration_recommendation"]
+                    if isinstance(data.get("migration_recommendation"), dict)
+                    else {}
+                ),
             )
 
 

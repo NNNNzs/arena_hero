@@ -27,6 +27,17 @@ def _cells(raw) -> list[tuple[int, int]]:
     return out
 
 
+def _resource_obs_keys(raw) -> list[tuple[int, int]]:
+    out = []
+    for key in (raw or {}):
+        try:
+            x_str, y_str = str(key).split(",", 1)
+            out.append((int(x_str), int(y_str)))
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
 def load_state() -> dict:
     if not STATE_FILE.exists():
         sys.exit(f"未找到 {STATE_FILE}")
@@ -44,6 +55,7 @@ def memory_view(state: dict) -> dict:
         "explored": set(_cells(mem.get("explored"))),
         "mined": set(_cells(mem.get("mined_cells") or mem.get("mined"))),
         "obstacles": set(_cells(mem.get("obstacles"))),
+        "known_resources": set(_resource_obs_keys(mem.get("resource_observations"))),
     }
 
 
@@ -59,6 +71,7 @@ def dist(a, b) -> float:
 
 def report(view: dict) -> dict:
     explored, mined = view["explored"], view["mined"]
+    known_resources = view.get("known_resources", set())
     core = None
     # 核心坐标若在顶层实体里可补充；此处以探索区质心作参照
     ref = (
@@ -72,6 +85,7 @@ def report(view: dict) -> dict:
         "explored_cells": len(explored),
         "mined_cells": len(mined),
         "obstacles_known": len(view["obstacles"]),
+        "known_resources": len(known_resources),
         "mined_in_explored": len(mined & explored),
         "mined_outside_explored": sorted(mined - explored),
     }
@@ -82,6 +96,9 @@ def report(view: dict) -> dict:
     if ref and mined:
         nearest = min(mined, key=lambda m: dist(m, ref))
         out["nearest_mined_to_center"] = {"cell": list(nearest), "dist": round(dist(nearest, ref), 1)}
+    if ref and known_resources:
+        nearest_kr = min(known_resources, key=lambda m: dist(m, ref))
+        out["nearest_known_resource_to_center"] = {"cell": list(nearest_kr), "dist": round(dist(nearest_kr, ref), 1)}
     if ref and not mined:
         # 探索了却没矿记录：列出离中心最远的探索边缘，辅助判断是否该扩探/迁移
         far = max(explored, key=lambda c: dist(c, ref))
@@ -110,10 +127,14 @@ def main() -> None:
     print(f"Tick: {result['tick']}  Core: {result['core_id']}")
     print(f"已探索格子: {result['explored_cells']}  范围: {result.get('explored_area', '-')}")
     print(f"已采矿点:   {result['mined_cells']}  （其中在探索区内: {result['mined_in_explored']}）")
+    print(f"已知矿点:   {result['known_resources']}")
     print(f"已知障碍:   {result['obstacles_known']}")
     if "nearest_mined_to_center" in result:
         n = result["nearest_mined_to_center"]
         print(f"最近矿点距探索中心: {n['dist']} 格 @ {n['cell']}")
+    if "nearest_known_resource_to_center" in result:
+        n = result["nearest_known_resource_to_center"]
+        print(f"最近已知矿点距探索中心: {n['dist']} 格 @ {n['cell']}")
     if "diagnosis" in result:
         d = result["diagnosis"]
         print(f"\n⚠️  {d['issue']}")

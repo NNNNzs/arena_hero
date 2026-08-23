@@ -257,3 +257,31 @@ def test_full_canary_environment_flag_is_explicit_and_enables_the_complete_opt_i
     assert config.planner_canary and config.scheduler_canary
     assert config.worker_bt_canary and config.vanguard_bt_canary and config.ranger_bt_canary and config.core_bt_canary
     assert config.beacon_campaign_v1 and config.core_migration_v1 and config.core_attack_campaign_v1
+
+
+def test_dashboard_payload_injects_known_resources_from_memory(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    memory = tmp_path / "agent-state.json"
+    replay.write_text(json.dumps({
+        "tick": 5, "mode": "ECONOMY", "state": {
+            "resources": 3, "resource_capacity": 10, "population": 1,
+            "core": {"id": "c1", "kind": "CORE", "position": [0, 0], "hp": 5},
+            "units": [], "resource_cells": [[2, 0]],
+        }, "intents": [], "events": [],
+    }) + "\n", encoding="utf-8")
+    memory.write_text(json.dumps({
+        "explored": [[0, 0], [1, 0], [2, 0]],
+        "mined_cells": [[2, 0]],
+        "resource_observations": {"2,0": 5, "10,20": 3, "-1,3": 1},
+    }), encoding="utf-8")
+    store = DashboardDataStore(replay, memory_path=memory, cache_seconds=0)
+    _, body, _ = _http_response(
+        "/api/dashboard", ServiceStatus(connected=True, last_tick=5), store,
+    )
+    payload = json.loads(body)
+    kr = payload["current"]["map"]["known_resources"]
+    assert [2, 0] in kr
+    assert [10, 20] in kr
+    assert [-1, 3] in kr
+    assert payload["current"]["map"]["mined"] == [[2, 0]]
+    assert payload["current"]["map"]["explored"] == [[0, 0], [1, 0], [2, 0]]

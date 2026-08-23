@@ -12,6 +12,7 @@ from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, ReservationTable, StrategicMode
 from ..navigation import DIRECTIONS, destination, enemy_threat_cells, distance
 from ..tactical_geometry import migration_site_score, rich_resource_center
+from ..analysis_scheduler import MigrationRecommendation
 from .common import CORE_MAX_HP, _anticipated_resources, _wait
 from .combat import _enemy_can_attack_core
 from .mode import (
@@ -144,6 +145,17 @@ def _core_migration_direction(
     returning_workers = [w for w in context.workers if (w.cargo or 0) > 0]
     if returning_workers:
         target = min(returning_workers, key=lambda w: distance(w.position, core_pos)).position
+    elif memory.migration_recommendation:
+        # Prefer cached analysis result when within 2 scan cycles.
+        cached = MigrationRecommendation.from_dict(memory.migration_recommendation)
+        if cached is not None and cached.is_fresh(context.tick, max_cycles=2):
+            target = cached.center
+        elif memory.resource_observations:
+            target = rich_resource_center(
+                memory.resource_observations, current_tick=context.tick
+            ) or core_pos
+        else:
+            return None
     elif memory.resource_observations:
         target = rich_resource_center(
             memory.resource_observations, current_tick=context.tick

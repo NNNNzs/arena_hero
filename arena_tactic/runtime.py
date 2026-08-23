@@ -29,6 +29,8 @@ from .objectives import (
 )
 from .planning import LegacyPlannerAdapter
 from .scheduler import Actor, DeterministicScheduler, ScheduledAssignment, ScheduledTask, ScheduleResult
+from .analysis_scheduler import AnalysisScheduler, MigrationRecommendation, default_analysis_scheduler
+from .tactical_geometry import migration_site_score, rich_resource_center
 from .strategy import propose_intents
 from .validation import validate_intents
 
@@ -65,6 +67,14 @@ class AgentRuntime:
         self.memory = memory or (
             memory_store.load() if memory_store is not None else AgentMemory()
         )
+        # Initialize analysis scheduler from persisted memory or defaults.
+        if self.memory.analysis_tasks:
+            self.analysis_scheduler = AnalysisScheduler.from_dict(
+                self.memory.analysis_tasks
+            )
+        else:
+            self.analysis_scheduler = default_analysis_scheduler()
+            self.memory.analysis_tasks = self.analysis_scheduler.to_dict()
         if self.command_queue is not None:
             self.command_queue.restore_policy(self.memory.policy_state)
 
@@ -74,6 +84,8 @@ class AgentRuntime:
         context = DecisionContext.from_turn(turn)
         prepared_commands = self._prepare_commands(context)
         next_memory = self.memory.advance(context, self.config)
+        # Run due analysis tasks – pure functional check, then execute.
+        self._run_due_analyses(context, next_memory)
         command_assignments = self._stage_manual_commands(context, next_memory, prepared_commands)
         objective_shadow = self._objective_shadow(context, next_memory)
         schedule = self._schedule_canary(context, next_memory) if (self.config.scheduler_canary or self.config.planner_canary) else None
@@ -529,6 +541,59 @@ class AgentRuntime:
             return ActionIntent(actor.id, False, ActionKind.WAIT, score, "manual_route_blocked")
         return ActionIntent(actor.id, False, ActionKind.MOVE, score, "manual_task_move", direction=direction,
                             target_cell=target, reserved_cell=destination(actor.position, direction))
+
+    def _run_due_analyses(
+        self, context: DecisionContext, memory: AgentMemory
+    ) -> None:
+        """Check for due analysis tasks and execute them.
+
+        Called every tick after ``memory.advance()``.  Results are written
+        directly into *memory* so that subsequent planning can consume them.
+        """
+        explored_count = len(memory.explored)
+        resource_count = len(memory.resource_observations)
+        due = self.analysis_scheduler.advance(
+            context.tick, explored_count, resource_count
+        )
+        if not due:
+            return
+        for task_name in due:
+            if task_name == "resource_density_scan":
+                self._execute_resource_density_scan(context, memory)
+            self.analysis_scheduler.mark_completed(task_name, context.tick)
+        # Persist scheduler state back to memory.
+        memory.analysis_tasks = self.analysis_scheduler.to_dict()
+
+    def _execute_resource_density_scan(
+        self, context: DecisionContext, memory: AgentMemory
+    ) -> None:
+        """Run rich_resource_center and cache the result."""
+        if not memory.resource_observations:
+            return
+        center = rich_resource_center(
+            memory.resource_observations, current_tick=context.tick
+        )
+        if center is None:
+            return
+        # Compute a score for the center using migration_site_score.
+        score = migration_site_score(
+            center,
+            resource_observations=memory.resource_observations,
+            obstacles=memory.obstacles,
+            explored=memory.explored,
+            current_tick=context.tick,
+        )
+        task = self.analysis_scheduler.get_task("resource_density_scan")
+        interval = task.current_interval(
+            len(memory.explored), len(memory.resource_observations)
+        ) if task else 60
+        rec = MigrationRecommendation(
+            center=center,
+            score=score,
+            computed_at_tick=context.tick,
+            interval_ticks=interval,
+        )
+        memory.migration_recommendation = rec.to_dict()
 
     @staticmethod
     def _emergency_waits(context: DecisionContext) -> tuple[ActionIntent, ...]:

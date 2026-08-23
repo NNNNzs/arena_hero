@@ -447,14 +447,25 @@ class DashboardDataStore:
                         and all(type(v) is int for v in item)]
             explored_cells = _parse_cell_set(memory_data.get("explored", []))
             mined_cells = _parse_cell_set(memory_data.get("mined_cells", []))
+            raw_resource_obs = memory_data.get("resource_observations", {})
+            known_resources: list[list[int]] = []
+            if isinstance(raw_resource_obs, dict):
+                for key in raw_resource_obs:
+                    try:
+                        x_str, y_str = str(key).split(",", 1)
+                        known_resources.append([int(x_str), int(y_str)])
+                    except (ValueError, AttributeError):
+                        continue
             if latest and isinstance(latest.get("map"), dict):
                 latest["map"]["explored"] = explored_cells
                 latest["map"]["mined"] = mined_cells
+                latest["map"]["known_resources"] = known_resources
             for frame in frames:
                 snapshot = frame.get("snapshot")
                 if isinstance(snapshot, dict) and isinstance(snapshot.get("map"), dict):
                     snapshot["map"]["explored"] = explored_cells
                     snapshot["map"]["mined"] = mined_cells
+                    snapshot["map"]["known_resources"] = known_resources
         return {
             "schema_version": 1,
             "generated_at": int(time.time()),
