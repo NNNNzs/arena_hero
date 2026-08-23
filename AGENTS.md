@@ -83,3 +83,18 @@ Keep tactical decisions in testable pure helpers where practical. The service
 wrapper must remain a thin worker, health endpoint, and reconnect boundary; do
 not add a web framework. Validate syntax, dependency health, image build, and
 the live health endpoint separately from real-match verification.
+
+## Language: bilingual output (中英双语输出)
+
+All agent-facing scheduled tasks (cron jobs, watchdogs, hourly reviews, morning
+reports) and any analysis/review output MUST present game terms, mode names,
+alert codes, task/reason identifiers, and strategy terminology in BOTH English
+and Chinese. Chinese translation is mandatory — never output an English-only
+term the operator may not understand.
+
+Rules:
+- First occurrence format: `English (中文)` — e.g. `ECONOMY (经济模式)`,
+  `DEFENSE_DISENGAGED (防守单位脱离交战)`, `explore_sector_frontier (扇区前沿探索)`.
+- Reuse the translation table in `docs/glossary-zh.md` when present; extend it
+  when a new term appears.
+- WeChat notifications, email reports, and chat replies follow the same rule.
