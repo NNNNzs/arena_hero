@@ -106,7 +106,7 @@ def run_shadow_canary(turns: Iterable[Turn], *, config: AgentConfig | None = Non
     return ShadowCanaryReport(ticks, maximum, p95, timed_out, rejected, tuple(signatures))
 
 
-def verify_redacted_replay(path: Path, *, required_ticks: int = 500) -> ReplayCanaryGate:
+def verify_redacted_replay(path: Path, *, required_ticks: int = 500, history_limit: int | None = None) -> ReplayCanaryGate:
     """Run the complete opt-in pipeline twice and return a redacted gate result."""
     if required_ticks <= 0:
         raise ValueError("required_ticks must be positive")
@@ -120,7 +120,7 @@ def verify_redacted_replay(path: Path, *, required_ticks: int = 500) -> ReplayCa
     )
     # Freeze JSON records before either run.  A live ReplayWriter may append
     # while this gate executes, but it cannot change either deterministic input.
-    snapshot = freeze_redacted_replay_history(path)
+    snapshot = freeze_redacted_replay_history(path, limit=history_limit)
     all_turns = load_frozen_redacted_replay(snapshot)
     turns = _latest_longest_contiguous_run(all_turns)
     second_turns = _latest_longest_contiguous_run(load_frozen_redacted_replay(snapshot))

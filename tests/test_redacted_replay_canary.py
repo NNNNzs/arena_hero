@@ -13,7 +13,7 @@ from arena_tactic.runtime import AgentRuntime
 
 def test_project_redacted_replay_runs_as_a_deterministic_offline_canary():
     path = Path(__file__).parents[1] / "runtime" / "replay.jsonl"
-    snapshot = freeze_redacted_replay(path)
+    snapshot = freeze_redacted_replay(path, limit=500)
     turns = load_frozen_redacted_replay(snapshot)
 
     assert len(turns) >= 100
@@ -56,7 +56,7 @@ def test_recent_replay_canary_explains_every_current_entity_without_legacy_actio
 def test_replay_gate_keeps_its_threshold_and_accepts_only_enough_representative_ticks():
     path = Path(__file__).parents[1] / "runtime" / "replay.jsonl"
 
-    gate = verify_redacted_replay(path, required_ticks=500)
+    gate = verify_redacted_replay(path, required_ticks=500, history_limit=500)
 
     assert gate.available_ticks >= 100
     assert gate.required_ticks == 500
@@ -69,7 +69,7 @@ def test_replay_gate_keeps_its_threshold_and_accepts_only_enough_representative_
 
 
 def test_replay_gate_uses_the_latest_longest_contiguous_tick_run():
-    turns = load_redacted_replay(Path(__file__).parents[1] / "runtime" / "replay.jsonl")
+    turns = load_redacted_replay(Path(__file__).parents[1] / "runtime" / "replay.jsonl", limit=500)
     selected = _latest_longest_contiguous_run(turns)
 
     assert selected

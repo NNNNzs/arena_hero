@@ -330,9 +330,14 @@ def test_wait_reason_classification_is_explicit(reason, kind, wake, eta):
 
 
 def test_every_literal_strategy_wait_reason_has_an_explicit_classification():
-    tree = ast.parse(Path("arena_tactic/strategy.py").read_text(encoding="utf-8"))
+    strategy_dir = Path("arena_tactic/strategy")
+    trees = [
+        ast.parse(path.read_text(encoding="utf-8"))
+        for path in sorted(strategy_dir.glob("*.py"))
+    ] or [ast.parse(Path("arena_tactic/strategy.py").read_text(encoding="utf-8"))]
     reasons = {
         node.args[1].value
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         and node.func.id == "_wait" and len(node.args) > 1
