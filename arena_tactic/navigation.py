@@ -222,7 +222,12 @@ def plan_step(
         goal,
         blocked=blocked,
         deadline=deadline,
-        node_limit=config.astar_node_limit,
+        # Long-haul routes need more than the default node budget: the
+        # bounding box is capped at +-12 cells while the corridor inside it
+        # may be dense with remembered obstacles, so a fixed limit starves
+        # the search before it can escape a pocket (seen as an endless
+        # no_safe_route_with_cargo wait on far workers).
+        node_limit=max(config.astar_node_limit, 40 * distance(start, goal)),
     )
     # A bounded search that cannot prove a route must not fall back to a
     # locally greedy step.  That step can move toward the same unreachable
