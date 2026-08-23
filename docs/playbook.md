@@ -20,6 +20,14 @@
   - `python3 scripts/tactical_inspector.py --ticks 300` 再次运行，`DEFENSE_DISENGAGED` 与 `EXPLORATION_STALL` 误报均已彻底消除。
   - 在线运行时服务健康状态正常（`accepted=304+`, `rejected=0`, `reconnects=0`）。
 
+### 2026-08-24 Tick 157522~157622 | INEFFECTIVE_STATIONARY (对象长期无效静止) Command API 干预处置
+- **现象**：小时复盘在 300/120 Tick 窗口检出 `INEFFECTIVE_STATIONARY` (对象长期无效静止)：先锋 `13272e4e5024` 停在 `[-901,1567]`（距核心约 6 格），`stationary_ticks=32`、`blocked_waits=55`，但 `failed_moves=0`（无移动失败记录，属地形围堵型原地等待）。同窗口另有一次性 `PRODUCTION_FREEZE` (兵营生产冻结，Tick 157506)，后续窗口自愈未复发。
+- **根因分析**：先锋被核心周边障碍物半包围，导航避障进入等待循环；策略自身的失败目的地冷却机制未触发（无 MOVE_FAILED 记录），属检测规则覆盖的盲区组合。
+- **处置动作**：
+  1. 通过 Command API (指令接口) 下发一次 `ASSIGN_TASK / MOVE_TO_CELL` 手动脱困指令至 `[-903,1565]`（priority=900）。
+  2. 指令调用格式要点（本次踩坑实录）：body 必须嵌套为 `{"type":"ASSIGN_TASK","payload":{...}}`；鉴权需三件套——session cookie + `X-CSRF-Token` + `Origin: http://127.0.0.1:8787`；并发控制头 `If-Match` 必须带引号写成 `"command-version-N"`（裸写会被拒）；每次请求需唯一 `Idempotency-Key`。
+- **效果验证**：指令在 Tick 157615 状态变为 `APPLIED`；随后 40 Tick 窗口复检异常数为 **0**，服务健康（accepted/rejected 正常，reconnects=0）。
+
 ## 战术知识库
 
 1. **核心环防与远征接敌解耦准则**：
@@ -27,3 +35,6 @@
    - 告警检测器需以局部战术距离（16 格内）评估防守单位是否脱战。
 2. **往返采矿与探索停滞区分准则**：
    - 工人往返采矿虽然全局净位移接近 0，但有持续的 `HARVEST`/`DEPOSIT_SUCCEEDED` 行为，必须与在迷雾中绕圈卡死的探索工人区分。
+3. **Command API 应急干预标准流程**：
+   - 适用场景：warning 级别且策略自身冷却机制无法自愈的原地卡死（有 `blocked_waits` 但 `failed_moves=0` 的地形围堵型静止）。
+   - 流程：登录取 CSRF → POST `/api/v1/commands`（嵌套 payload + 引号版 If-Match + 幂等键）→ 等 2~5 Tick 后查 `/api/v1/entities/<alias>` 确认 `APPLIED` → 用 tactical_inspector 复检窗口清零才算闭环。
