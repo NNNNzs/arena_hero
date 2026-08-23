@@ -418,21 +418,12 @@ class DashboardDataStore:
             traces = [item for record in self._traces() if (item := _project_trace_record(record))]
         except Exception:
             traces = []
-        trace_by_tick = {item["tick"]: item for item in traces}
         command_center = traces[-1] if traces else None
         timeline = [
             {"tick": item["tick"], **task}
             for item in traces[-self.recent_limit:]
             for task in item["tasks"]
         ][-100:]
-        frames = []
-        for snapshot in recent:
-            trace = trace_by_tick.get(snapshot.get("tick"))
-            center = _merge_entity_state({**trace, "timeline": timeline}, snapshot) if trace else None
-            frames.append({
-                "tick": snapshot.get("tick"), "snapshot": snapshot,
-                "command_center": center, "markers": _replay_markers(snapshot),
-            })
         if command_center is not None:
             command_center = _merge_entity_state({**command_center, "timeline": timeline}, latest)
         # Inject persistent memory layers (explored fog, mined resource markers)
@@ -465,14 +456,89 @@ class DashboardDataStore:
             "generated_at": int(time.time()),
             "service": status,
             "current": latest,
-            "recent": list(reversed(recent)),
-            "replay": {
-                "available": bool(recent),
-                "records": len(recent),
-                "window_bytes": self.max_bytes,
-                "frames": frames,
-            },
             "command_center": command_center,
+        }
+
+    def replay_payload(
+        self,
+        status_snapshot: Callable[[], dict[str, object]],
+        *,
+        limit: int = 32,
+        from_tick: int | None = None,
+    ) -> dict[str, Any]:
+        """Return replay frames only, for the /api/replay endpoint."""
+        limit = max(1, min(limit, 200))
+        # Read more data to satisfy larger limits.
+        scale = max(1, limit // self.recent_limit + 1)
+        raw_records = _bounded_jsonl_tail(
+            self.replay_path,
+            max_bytes=self.max_bytes * scale,
+            limit=limit * 2 if from_tick is not None else limit,
+        )
+        try:
+            recent = [_project_record(record) for record in raw_records]
+        except Exception:
+            recent = []
+        latest = recent[-1] if recent else None
+
+        # Build trace lookup for this batch.
+        try:
+            raw_traces = _bounded_jsonl_tail(
+                self.trace_path,
+                max_bytes=self.max_bytes * scale,
+                limit=limit * 2 if from_tick is not None else limit,
+            )
+            traces = [item for record in raw_traces if (item := _project_trace_record(record))]
+        except Exception:
+            traces = []
+        trace_by_tick = {item["tick"]: item for item in traces}
+
+        # Inject memory into latest snapshot.
+        memory_data = self._memory()
+        if memory_data and latest and isinstance(latest.get("map"), dict):
+            def _parse_cell_set(raw: Any) -> list[list[int]]:
+                if not isinstance(raw, list):
+                    return []
+                return [list(item) for item in raw
+                        if isinstance(item, list) and len(item) == 2
+                        and all(type(v) is int for v in item)]
+            explored_cells = _parse_cell_set(memory_data.get("explored", []))
+            mined_cells = _parse_cell_set(memory_data.get("mined_cells", []))
+            raw_resource_obs = memory_data.get("resource_observations", {})
+            known_resources: list[list[int]] = []
+            if isinstance(raw_resource_obs, dict):
+                for key in raw_resource_obs:
+                    try:
+                        x_str, y_str = str(key).split(",", 1)
+                        known_resources.append([int(x_str), int(y_str)])
+                    except (ValueError, AttributeError):
+                        continue
+            latest["map"]["explored"] = explored_cells
+            latest["map"]["mined"] = mined_cells
+            latest["map"]["known_resources"] = known_resources
+
+        # Compute timeline from traces.
+        timeline = [
+            {"tick": item["tick"], **task}
+            for item in traces[-self.recent_limit:]
+            for task in item["tasks"]
+        ][-100:]
+
+        frames: list[dict[str, Any]] = []
+        for snapshot in recent:
+            tick = snapshot.get("tick")
+            if from_tick is not None and tick is not None and tick <= from_tick:
+                continue
+            trace = trace_by_tick.get(tick)
+            center = _merge_entity_state({**trace, "timeline": timeline}, snapshot) if trace else None
+            frames.append({
+                "tick": tick, "snapshot": snapshot,
+                "command_center": center, "markers": _replay_markers(snapshot),
+            })
+        frames = frames[-limit:]
+        return {
+            "frames": frames,
+            "ticks": [frame["tick"] for frame in frames],
         }
 
 

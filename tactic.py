@@ -11,7 +11,7 @@ from getpass import getpass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from arena_hero import ArenaHeroClient
 
@@ -76,8 +76,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if command_response is not None:
             self._send(command_response.status, command_response.body, "application/json; charset=utf-8", command_response.headers)
             return
-        path = urlsplit(self.path).path
-        response = _http_response(path, self.status, self.dashboard)
+        response = _http_response(self.path, self.status, self.dashboard)
         if response is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -131,15 +130,33 @@ def _http_response(
     dashboard: DashboardDataStore,
 ) -> tuple[HTTPStatus, bytes, str] | None:
     """Build a route response without a socket, keeping HTTP behavior testable."""
-    if path.startswith("/static/"):
-        asset = dashboard_static_asset(path)
+    parsed = urlsplit(path)
+    clean_path = parsed.path
+    params = parse_qs(parsed.query)
+    if clean_path.startswith("/static/"):
+        asset = dashboard_static_asset(clean_path)
         return (HTTPStatus.OK, *asset) if asset is not None else None
-    if path == "/":
+    if clean_path == "/":
         return HTTPStatus.OK, DASHBOARD_HTML.encode(), "text/html; charset=utf-8"
-    if path == "/api/dashboard":
+    if clean_path == "/api/dashboard":
         payload = json.dumps(dashboard.payload(status.snapshot), ensure_ascii=False).encode()
         return HTTPStatus.OK, payload, "application/json; charset=utf-8"
-    if path not in {"/livez", "/healthz", "/status"}:
+    if clean_path == "/api/replay":
+        try:
+            limit = int(params.get("limit", ["32"])[0])
+        except (ValueError, TypeError):
+            limit = 32
+        from_tick_raw = params.get("from_tick", [None])[0]
+        try:
+            from_tick = int(from_tick_raw) if from_tick_raw is not None else None
+        except (ValueError, TypeError):
+            from_tick = None
+        payload = json.dumps(
+            dashboard.replay_payload(status.snapshot, limit=limit, from_tick=from_tick),
+            ensure_ascii=False,
+        ).encode()
+        return HTTPStatus.OK, payload, "application/json; charset=utf-8"
+    if clean_path not in {"/livez", "/healthz", "/status"}:
         return None
     snapshot = status.snapshot()
     payload = json.dumps(snapshot, ensure_ascii=False).encode()

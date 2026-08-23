@@ -75,7 +75,8 @@ def test_dashboard_api_tolerates_missing_and_truncated_replay(tmp_path: Path):
     empty = json.loads(body)
     assert code == 200
     assert empty["current"] is None
-    assert empty["recent"] == []
+    assert "recent" not in empty
+    assert "replay" not in empty
 
     replay.write_text(
             json.dumps({
@@ -127,15 +128,18 @@ def test_dashboard_replay_frames_align_decisions_and_classify_event_markers(tmp_
     trace.write_text(json.dumps({"record_type": "decision_trace", "tick": 20,
         "entity_traces": [], "goal_summaries": [], "task_transitions": [], "command_results": []}) + "\n", encoding="utf-8")
 
-    result = _http_response("/api/dashboard", ServiceStatus(), DashboardDataStore(replay, trace_path=trace, cache_seconds=0))
+    store = DashboardDataStore(replay, trace_path=trace, cache_seconds=0)
+    result = _http_response("/api/replay", ServiceStatus(), store)
     assert result is not None
     _, body, _ = result
-    frames = json.loads(body)["replay"]["frames"]
+    payload = json.loads(body)
+    frames = payload["frames"]
     assert [frame["tick"] for frame in frames] == [20, 21]
     assert {marker["kind"] for marker in frames[0]["markers"]} == {"DAMAGE", "MOVE"}
     assert {marker["kind"] for marker in frames[1]["markers"]} == {"SPAWN"}
     assert frames[0]["command_center"]["state_synced"] is True
     assert frames[1]["command_center"] is None
+    assert payload["ticks"] == [20, 21]
 
 
 def test_dashboard_default_replay_window_is_32_ticks(tmp_path: Path):
@@ -145,11 +149,14 @@ def test_dashboard_default_replay_window_is_32_ticks(tmp_path: Path):
         for tick in range(1, 41)
     ) + "\n", encoding="utf-8")
 
-    _, _, body = _response("/api/dashboard", ServiceStatus(), replay)
-    frames = json.loads(body)["replay"]["frames"]
+    store = DashboardDataStore(replay, cache_seconds=0)
+    _, body, _ = _http_response("/api/replay", ServiceStatus(), store)
+    payload = json.loads(body)
+    frames = payload["frames"]
 
     assert len(frames) == 32
     assert [frames[0]["tick"], frames[-1]["tick"]] == [9, 40]
+    assert payload["ticks"][0] == 9 and payload["ticks"][-1] == 40
 
 
 def test_dashboard_projects_only_redacted_command_center_trace_fields(tmp_path: Path):
@@ -285,3 +292,85 @@ def test_dashboard_payload_injects_known_resources_from_memory(tmp_path: Path):
     assert [-1, 3] in kr
     assert payload["current"]["map"]["mined"] == [[2, 0]]
     assert payload["current"]["map"]["explored"] == [[0, 0], [1, 0], [2, 0]]
+
+
+def test_replay_endpoint_returns_default_32_frames(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": []})
+        for tick in range(1, 51)
+    ) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+    result = _http_response("/api/replay", ServiceStatus(), store)
+    assert result is not None
+    _, body, _ = result
+    payload = json.loads(body)
+    assert len(payload["frames"]) == 32
+    assert len(payload["ticks"]) == 32
+    assert payload["ticks"][0] == 19 and payload["ticks"][-1] == 50
+
+
+def test_replay_endpoint_respects_limit_parameter(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": []})
+        for tick in range(1, 21)
+    ) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+    result = _http_response("/api/replay?limit=5", ServiceStatus(), store)
+    assert result is not None
+    _, body, _ = result
+    payload = json.loads(body)
+    assert len(payload["frames"]) == 5
+    assert len(payload["ticks"]) == 5
+    assert payload["ticks"][-1] == 20
+
+
+def test_replay_endpoint_filters_by_from_tick(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": []})
+        for tick in range(1, 21)
+    ) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+    result = _http_response("/api/replay?from_tick=15&limit=32", ServiceStatus(), store)
+    assert result is not None
+    _, body, _ = result
+    payload = json.loads(body)
+    frames = payload["frames"]
+    assert all(frame["tick"] > 15 for frame in frames)
+    assert len(frames) == 5  # ticks 16..20
+    assert payload["ticks"] == [16, 17, 18, 19, 20]
+
+
+def test_replay_endpoint_without_from_tick_returns_full_batch(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": []})
+        for tick in range(1, 11)
+    ) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+    result = _http_response("/api/replay?limit=10", ServiceStatus(), store)
+    assert result is not None
+    _, body, _ = result
+    payload = json.loads(body)
+    assert len(payload["frames"]) == 10
+    assert payload["ticks"] == list(range(1, 11))
+
+
+def test_dashboard_api_no_longer_contains_replay_or_recent_keys(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({
+        "tick": 5, "mode": "EXPLORE", "state": {"resources": 3, "resource_capacity": 10, "population": 1},
+        "intents": [], "events": [],
+    }) + "\n", encoding="utf-8")
+    code, _, body = _response("/api/dashboard", ServiceStatus(connected=True, last_tick=5), replay)
+    payload = json.loads(body)
+    assert code == 200
+    assert "replay" not in payload
+    assert "recent" not in payload
+    assert "schema_version" in payload
+    assert "generated_at" in payload
+    assert "service" in payload
+    assert "current" in payload
+    assert "command_center" in payload

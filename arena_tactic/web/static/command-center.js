@@ -20,6 +20,9 @@ let refreshInFlight = false;
 let refreshTimer = 0;
 let policyInFlight = false;
 let lastPolicyRefresh = 0;
+let lastReplayTick = -1;
+let replayPollTimer = 0;
+let historyLoaded = false;
 
 const renderCache = {
   metrics: '',
@@ -444,13 +447,25 @@ function selectReplay(index, { live = false } = {}) {
   if (!replayFrames.length) return;
   replayIndex = Math.max(0, Math.min(replayFrames.length - 1, index));
   replayLive = live;
+  if (!live && !historyLoaded) {
+    historyLoaded = true;
+    fetchReplayHistory();
+  }
   renderReplay();
 }
 
-function setFrames(payload) {
-  const priorTick = selectedFrame()?.tick;
+function setLive(payload) {
   lastPayload = payload;
-  replayFrames = (payload.replay?.frames || []).slice(-32).sort((left, right) => Number(left.tick) - Number(right.tick));
+  render(payload);
+}
+
+function mergeReplayFrames(newFrames) {
+  if (!newFrames.length) return;
+  const priorTick = selectedFrame()?.tick;
+  const tickMap = new Map(replayFrames.map(f => [f.tick, f]));
+  for (const frame of newFrames) tickMap.set(frame.tick, frame);
+  replayFrames = [...tickMap.values()].sort((a, b) => Number(a.tick) - Number(b.tick)).slice(-200);
+  lastReplayTick = Math.max(...replayFrames.map(f => Number(f.tick)));
   const latest = Math.max(0, replayFrames.length - 1);
   if (replayLive || replayIndex >= replayFrames.length) replayIndex = latest;
   else if (priorTick != null) {
@@ -471,6 +486,10 @@ function stopReplay() {
 function startReplay() {
   if (!replayFrames.length || replayTimer) return;
   replayLive = false;
+  if (!historyLoaded) {
+    historyLoaded = true;
+    fetchReplayHistory();
+  }
   replayTimer = window.setInterval(() => {
     if (document.hidden) return;
     if (replayIndex >= replayFrames.length - 1) {
@@ -494,7 +513,7 @@ async function refresh() {
   try {
     const response = await fetch('/api/dashboard', { cache: 'no-store' });
     if (!response.ok) throw Error(`HTTP ${response.status}`);
-    setFrames(await response.json());
+    setLive(await response.json());
     await refreshPolicy();
   } catch (_) {
     const statusNode = $('status');
@@ -503,12 +522,39 @@ async function refresh() {
   } finally { refreshInFlight = false; }
 }
 
+async function refreshReplay() {
+  if (document.hidden || !lastPayload) return;
+  try {
+    const url = replayLive
+      ? `/api/replay?limit=32&from_tick=${lastReplayTick}`
+      : null;
+    if (!url) return;
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    mergeReplayFrames(data.frames || []);
+  } catch (_) {}
+}
+
+async function fetchReplayHistory() {
+  try {
+    const r = await fetch('/api/replay?limit=64', { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    mergeReplayFrames(data.frames || []);
+  } catch (_) {}
+}
+
 function startPolling() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   refreshTimer = 0;
+  if (replayPollTimer) window.clearInterval(replayPollTimer);
+  replayPollTimer = 0;
   if (document.hidden) return;
   refresh();
+  refreshReplay();
   refreshTimer = window.setInterval(refresh, 3000);
+  replayPollTimer = window.setInterval(refreshReplay, 3000);
 }
 
 function updateDashboardMapCursor(position) {
@@ -588,6 +634,7 @@ $('replayPlay').onclick = playReplay;
 $('replayNext').onclick = () => selectReplay(replayIndex + 1);
 $('replayLive').onclick = () => {
   stopReplay();
+  historyLoaded = false;
   selectReplay(replayFrames.length - 1, { live: true });
 };
 $('replayMarkers').onclick = event => {
@@ -599,6 +646,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (refreshTimer) window.clearInterval(refreshTimer);
     refreshTimer = 0;
+    if (replayPollTimer) window.clearInterval(replayPollTimer);
+    replayPollTimer = 0;
     resumeReplayAfterVisibility = Boolean(replayTimer);
     stopReplay();
   } else {
