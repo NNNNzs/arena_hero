@@ -460,12 +460,6 @@ class DashboardDataStore:
                 latest["map"]["explored"] = explored_cells
                 latest["map"]["mined"] = mined_cells
                 latest["map"]["known_resources"] = known_resources
-            for frame in frames:
-                snapshot = frame.get("snapshot")
-                if isinstance(snapshot, dict) and isinstance(snapshot.get("map"), dict):
-                    snapshot["map"]["explored"] = explored_cells
-                    snapshot["map"]["mined"] = mined_cells
-                    snapshot["map"]["known_resources"] = known_resources
         return {
             "schema_version": 1,
             "generated_at": int(time.time()),
