@@ -77,7 +77,7 @@ class AgentConfig:
     astar_node_limit: int = 1_500
     explored_history_limit: int = 20_000
     event_history_limit: int = 512
-    exploration_sector_ticks: int = 6
+    exploration_sector_ticks: int = 60
     movement_failure_cooldown_ticks: int = 4
     resource_recheck_failure_threshold: int = 2
     resource_recheck_cooldown_ticks: int = 8

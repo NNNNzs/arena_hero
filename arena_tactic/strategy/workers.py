@@ -156,11 +156,6 @@ def _frontier_assignments(
             ) % len(_EXPLORATION_SECTORS)
             sector_since = context.tick
 
-        if context.tick - sector_since >= config.exploration_sector_ticks:
-            sector = (sector + 1) % len(_EXPLORATION_SECTORS)
-            sector_since = context.tick
-            previous = {}
-
         previous_target: Position | None = None
         if previous.get("kind") == task_kind and isinstance(
             previous.get("target"), list
@@ -168,9 +163,22 @@ def _frontier_assignments(
             raw_target = previous["target"]
             if len(raw_target) == 2:
                 previous_target = int(raw_target[0]), int(raw_target[1])
+
+        # ── target lock: keep previous target as long as it is still on the
+        # frontier and unassigned.  The sector timer no longer forces rotation;
+        # the worker only re-picks when the target disappears / is taken.
         if previous_target in frontier and previous_target not in assigned:
             target = previous_target
         else:
+            # Target lost → consider sector rotation (minimum-hold semantics).
+            if context.tick - sector_since >= config.exploration_sector_ticks:
+                sector = (sector + 1) % len(_EXPLORATION_SECTORS)
+                sector_since = context.tick
+
+            remaining_hold = max(
+                1, config.exploration_sector_ticks - (context.tick - sector_since)
+            )
+
             target = None
             selected_sector = sector
             for rotation in range(len(_EXPLORATION_SECTORS)):
@@ -204,6 +212,11 @@ def _frontier_assignments(
                         node_limit=config.astar_node_limit,
                     )
                     if path_cost is None:
+                        continue
+                    # Reachability pre-filter: skip targets whose path cost
+                    # clearly exceeds the remaining sector hold window so we
+                    # never pick a destination the worker cannot reach.
+                    if path_cost > remaining_hold:
                         continue
                     candidates.append(
                         (path_cost + lateral, lateral, negative_projection, cell)

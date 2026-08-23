@@ -310,6 +310,67 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     if stuck:
         findings.append(_finding("INEFFECTIVE_STATIONARY", "warning", f"{len(stuck)} 个对象长期原地等待或移动失败", entities=(s["entity"] for s in stuck), evidence=stuck))
 
+    # ── EXPLORATION_STALL: workers moving a lot but not making progress,
+    #    or resource exploration completely dead.  Complements UNIT_OSCILLATION
+    #    which targets tight 2-4 cell loops; this catches broader "running in
+    #    circles" patterns where net displacement is near zero over ≥40 steps.
+    exploration_stall: list[dict[str, Any]] = []
+    for actor, samples in positions.items():
+        if kinds.get(actor) != "WORKER":
+            continue
+        ordered = sorted(dict(samples).items())
+        if len(ordered) < 2:
+            continue
+        steps = sum(
+            1 for i in range(1, len(ordered)) if ordered[i][1] != ordered[i - 1][1]
+        )
+        if steps < 40:
+            continue
+        first_pos, last_pos = ordered[0][1], ordered[-1][1]
+        net_disp = abs(first_pos[0] - last_pos[0]) + abs(first_pos[1] - last_pos[1])
+        if net_disp <= steps * 0.1:
+            # Find current target from latest intent
+            current_target = None
+            for intent in (replay[-1].get("intents") or []) if replay else []:
+                if str(intent.get("actor") or "") == actor:
+                    current_target = intent.get("target_position") or intent.get("target")
+                    break
+            exploration_stall.append({
+                "entity": actor,
+                "kind": "WORKER",
+                "steps": steps,
+                "net_displacement": net_disp,
+                "first_pos": list(first_pos),
+                "last_pos": list(last_pos),
+                "current_target": current_target,
+                "tick_range": [ordered[0][0], ordered[-1][0]],
+            })
+    no_resource_ticks = int(agent_state.get("no_resource_ticks") or 0)
+    if no_resource_ticks >= 600:
+        explored_growth = 0
+        resource_counts = [v for v in visible_resources if v is not None]
+        if resource_counts and max(resource_counts) > 0:
+            explored_growth = max(resource_counts) - min(resource_counts)
+        if explored_growth == 0:
+            exploration_stall.append({
+                "entity": "_global",
+                "kind": "RESOURCE_EXPLORATION",
+                "steps": 0,
+                "net_displacement": 0,
+                "no_resource_ticks": no_resource_ticks,
+                "explored_growth": explored_growth,
+                "current_target": None,
+            })
+    if exploration_stall:
+        findings.append(_finding(
+            "EXPLORATION_STALL",
+            "warning",
+            f"{sum(1 for e in exploration_stall if e['kind'] == 'WORKER')} 名工人大幅移动但净位移≈0"
+            + (f"；资源探索停滞 {no_resource_ticks} ticks" if no_resource_ticks >= 600 else ""),
+            entities=(e["entity"] for e in exploration_stall),
+            evidence=exploration_stall,
+        ))
+
     cargo_stagnation = []
     successful_deposits = {(_event_actor(event), row.get("tick")) for row in replay for event in row.get("events", []) if isinstance(event, dict) and _event_type(event) == "DEPOSIT_SUCCEEDED"}
     for worker, samples in worker_cargo_history.items():

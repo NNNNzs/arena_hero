@@ -150,3 +150,60 @@ def test_detects_decision_latency_spike(tmp_path, monkeypatch):
     finding = next(f for f in report["findings"] if f["code"] == "DECISION_LATENCY_SPIKE")
     assert finding["ticks"] == [41]
     assert finding["evidence"]["threshold_ms"] == 2000.0
+
+
+def _exploration_stall_rows(num_ticks: int, positions: list[list[int]], *, start_tick: int = 100) -> list[dict]:
+    """Build replay rows where a worker visits the given positions cyclically."""
+    rows = []
+    for i in range(num_ticks):
+        pos = positions[i % len(positions)]
+        rows.append(_row(start_tick + i, pos))
+    return rows
+
+
+def test_detects_exploration_stall_worker_high_steps_low_displacement(tmp_path, monkeypatch):
+    """Worker bounces between two cells for 50 ticks → steps=49, net=1."""
+    # Worker oscillates between [5,0] and [6,0] — many steps, near-zero displacement
+    positions = [[5, 0], [6, 0]] * 25  # 50 rows, alternating
+    rows = _exploration_stall_rows(50, positions)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    finding = next(f for f in report["findings"] if f["code"] == "EXPLORATION_STALL")
+    worker_evidence = [e for e in finding["evidence"] if e["kind"] == "WORKER"]
+    assert len(worker_evidence) == 1
+    assert worker_evidence[0]["entity"] == "worker"
+    assert worker_evidence[0]["steps"] >= 40
+    assert worker_evidence[0]["net_displacement"] <= worker_evidence[0]["steps"] * 0.1
+
+
+def test_detects_exploration_stall_resource_exploration_dead(tmp_path, monkeypatch):
+    """no_resource_ticks ≥ 600 and no resource cells visible → resource exploration stall."""
+    rows = [_row(tick, [1, 1]) for tick in range(100, 110)]
+    _write_jsonl(tmp_path / "replay.jsonl", rows)
+    _write_jsonl(tmp_path / "decision-trace.jsonl", [])
+    (tmp_path / "agent-state.json").write_text(
+        json.dumps({"no_resource_ticks": 800, "last_mode": "ECONOMY"})
+    )
+    monkeypatch.setattr(inspector, "_health", lambda *args: {"reachable": True, "http_status": 200})
+    report = inspector.inspect(tmp_path, 100, 1024 * 1024, "unused", .1)
+    finding = next(f for f in report["findings"] if f["code"] == "EXPLORATION_STALL")
+    resource_evidence = [e for e in finding["evidence"] if e["kind"] == "RESOURCE_EXPLORATION"]
+    assert len(resource_evidence) == 1
+    assert resource_evidence[0]["no_resource_ticks"] == 800
+
+
+def test_no_exploration_stall_when_worker_makes_progress(tmp_path, monkeypatch):
+    """Worker moves consistently in one direction → no stall."""
+    # Worker at (0,0) moves right each tick: high displacement, no stall
+    rows = [_row(tick, [tick, 0]) for tick in range(100, 150)]
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    stall = [f for f in report["findings"] if f["code"] == "EXPLORATION_STALL"]
+    assert stall == []  # no stall detected
+
+
+def test_no_exploration_stall_below_step_threshold(tmp_path, monkeypatch):
+    """Only 20 ticks of oscillation → below 40-step threshold, no stall."""
+    positions = [[3, 3], [4, 3]] * 10  # 20 rows
+    rows = _exploration_stall_rows(20, positions)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    stall = [f for f in report["findings"] if f["code"] == "EXPLORATION_STALL"]
+    assert stall == []
