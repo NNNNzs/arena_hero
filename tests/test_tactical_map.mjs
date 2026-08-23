@@ -37,6 +37,47 @@ test('map aliases reconcile with command-center entity aliases', () => {
   assert.equal(utils.entityAliasKey('entity_268fa23356e6'), '268fa23356e6');
 });
 
+test('active move decisions become bounded tactical route overlays', () => {
+  const routes = utils.collectMovementRoutes([
+    {
+      key: 'vanguard-1',
+      position: [2, 3],
+      data: {
+        alias: 'a1',
+        action: 'MOVE',
+        target_cell: [8, 5],
+        task: 'LEGACY_PATROL',
+        reason: 'patrol_outer_ring',
+      },
+    },
+    {
+      key: 'worker-waiting',
+      position: [0, 0],
+      data: { alias: 'b2', action: 'WAIT', target_cell: [4, 4] },
+    },
+    {
+      key: 'ranger-no-target',
+      position: [1, 1],
+      data: { alias: 'c3', action: 'MOVE', target_cell: null },
+    },
+  ]);
+
+  assert.deepEqual(plain(routes), [{
+    key: 'vanguard-1',
+    from: [2, 3],
+    target: [8, 5],
+    action: 'MOVE',
+    task: 'LEGACY_PATROL',
+    reason: 'patrol_outer_ring',
+  }]);
+});
+
+test('movement routes ignore a target that is already the current cell', () => {
+  assert.deepEqual(plain(utils.collectMovementRoutes([
+    { key: 'worker-1', position: [4, 4], data: { action: 'MOVE', target_cell: [4, 4] } },
+  ])), []);
+});
+
 test('a 2000-cell observed stress field does not create per-cell geometry', () => {
   const cells = [];
   for (let y = 0; y < 50; y += 1) {
