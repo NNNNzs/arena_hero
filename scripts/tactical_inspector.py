@@ -257,7 +257,18 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             if held:
                 hidden_damage_ticks.append(tick)
         if enemies and core:
-            enemy_cells = [e.get("position") for e in enemies if _pos(e.get("position"))]
+            # Only combat-capable enemies (enemy VANGUARD/RANGER) count as a
+            # real engagement threat.  An enemy CORE or WORKER scouting near
+            # our base is not worth chasing — holding the defense ring is the
+            # correct response, so those must not trigger this alarm.
+            threat_cells = [
+                e.get("position") for e in enemies
+                if _pos(e.get("position")) and e.get("unit_type") in {"VANGUARD", "RANGER"}
+                and e.get("kind") != "CORE"
+            ]
+            enemy_cells = [p for p in threat_cells if p]
+            if not enemy_cells:
+                continue
             combat = [u for u in state.get("units") or [] if isinstance(u, dict) and u.get("unit_type") in {"VANGUARD", "RANGER"}]
             far_waiting = []
             for unit in combat:
