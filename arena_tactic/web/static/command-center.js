@@ -59,7 +59,7 @@ const reasonLabels = {
   holding_defense_ring: '维持防守环', preferred_vanguard_to_beacon: '优先派先锋前往信标',
   path_to_resource: '前往资源路径', preserve_worker_cargo: '保留工人货物', current_resource: '当前资源',
   stale: '决策已过期', ok: '正常', manual_task_move: '人工移动任务',
-  unit_retreat_to_core_heal: '撤退治疗', unit_retreat_to_core_heal_unsafe_fallback: '撤退治疗（风险路径）',
+  unit_retreat_to_core_heal: '撤退治疗', unit_retreat_to_core_heal_unsafe_fallback: '撤退治疗（风险路径）', unit_retreat_to_core_heal_shelter: '撤退治疗（掩体庇护）',
 };
 const wakeLabels = {
   CORE_RESOURCES_OR_LEGAL_ACTION: '核心资源或出现合法动作',

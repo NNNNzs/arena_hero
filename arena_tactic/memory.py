@@ -228,6 +228,7 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
         "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
+        "unit_retreat_heal_return_ratio",
     }
     for field_name in _NUMERIC_WHITELIST:
         raw = value.get(field_name)
@@ -263,6 +264,9 @@ class AgentMemory:
     resource_recheck_cooldowns: dict[Position, int] = field(default_factory=dict)
     enemy_tracks: dict[str, dict[str, Any]] = field(default_factory=dict)
     temporary_blocks: dict[Position, int] = field(default_factory=dict)
+    # Runtime UUIDs are only retained while their Units are present in the
+    # current authoritative Turn.  Persistence redacts them to entity aliases.
+    retreating_unit_ids: set[str] = field(default_factory=set)
     unit_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     manual_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
     scheduler_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -310,6 +314,9 @@ class AgentMemory:
             alias = entity_alias(unit.id)
             if alias in next_memory.unit_tasks and str(unit.id) not in next_memory.unit_tasks:
                 next_memory.unit_tasks[str(unit.id)] = next_memory.unit_tasks.pop(alias)
+            if alias in next_memory.retreating_unit_ids:
+                next_memory.retreating_unit_ids.discard(alias)
+                next_memory.retreating_unit_ids.add(str(unit.id))
         next_memory.obstacles.update(context.obstacle_cells)
         next_memory.explored.update(context.observed_cells - context.obstacle_cells)
         next_memory.temporary_blocks = {
@@ -564,6 +571,7 @@ class AgentMemory:
         ]
 
         current_unit_ids = {str(unit.id) for unit in context.units}
+        next_memory.retreating_unit_ids.intersection_update(current_unit_ids)
         next_memory.unit_tasks = {
             unit_id: task
             for unit_id, task in next_memory.unit_tasks.items()
@@ -639,6 +647,11 @@ class AgentMemory:
                 _cell_key(cell): blocked_until
                 for cell, blocked_until in sorted(self.temporary_blocks.items())
             },
+            "retreating_unit_ids": [
+                alias
+                for unit_id in sorted(self.retreating_unit_ids)
+                if (alias := _persisted_task_key(unit_id))
+            ],
             "unit_tasks": {
                 alias: _safe_task(task)
                 for unit_id, task in self.unit_tasks.items()
@@ -678,6 +691,12 @@ class AgentMemory:
         tasks = data.get("unit_tasks", {})
         events = data.get("processed_event_ids", [])
         counts = data.get("event_counts", {})
+        retreating = data.get("retreating_unit_ids", [])
+        retreating_ids = {
+            alias
+            for value in (retreating if isinstance(retreating, list) else [])
+            if (alias := _persisted_task_key(str(value)))
+        }
         return cls(
                 version=MEMORY_VERSION,
                 last_tick=integer("last_tick"),
@@ -707,6 +726,7 @@ class AgentMemory:
                 resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
                 enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
                 temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
+                retreating_unit_ids=retreating_ids,
                 unit_tasks={
                     alias: _safe_task(task)
                     for unit_id, task in (tasks.items() if isinstance(tasks, dict) else ())

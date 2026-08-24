@@ -124,7 +124,7 @@ def _plan_vanguards(
                 else _wait(vanguard, "healing_waits_for_resources")
             )
             continue
-        if _unit_needs_retreat_heal(vanguard, config) and not urgent:
+        if _unit_needs_retreat_heal(vanguard, memory, config) and not urgent:
             if _at_normal_core(vanguard, context):
                 heal_cost = heal_allowances.get(vanguard.id, 0)
                 intents.append(

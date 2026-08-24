@@ -51,6 +51,8 @@ _REASON_LABELS = {
     "no_visible_resource": "当前没有可见资源",
     "barren_spawn_fast_reroll": "出生点贫瘠，快速重掷",
     "unit_retreat_to_core_heal": "撤退治疗",
+    "unit_retreat_to_core_heal_unsafe_fallback": "撤退治疗（风险路径）",
+    "unit_retreat_to_core_heal_shelter": "撤退治疗（掩体庇护）",
 }
 
 

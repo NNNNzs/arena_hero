@@ -11,7 +11,7 @@ from arena_hero import CoreState, CoreView, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, plan_step
+from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells, plan_step
 from .combat import _enemy_can_attack_core
 
 UNIT_MAX_HP = {
@@ -150,9 +150,83 @@ def _unit_heal_intent(unit: UnitView, planned_cost: int) -> ActionIntent:
     )
 
 
-def _unit_needs_retreat_heal(unit: UnitView, config: AgentConfig) -> bool:
-    """Whether the current authoritative HP warrants a healing retreat."""
-    return unit.hp < UNIT_MAX_HP[unit.unit_type] * config.unit_retreat_heal_ratio
+def _unit_needs_retreat_heal(
+    unit: UnitView, memory: AgentMemory, config: AgentConfig
+) -> bool:
+    """Apply low-HP entry and higher-HP exit thresholds for healing retreat."""
+    unit_id = str(unit.id)
+    maximum = UNIT_MAX_HP[unit.unit_type]
+    if unit_id in memory.retreating_unit_ids:
+        if unit.hp >= maximum * config.unit_retreat_heal_return_ratio:
+            memory.retreating_unit_ids.discard(unit_id)
+            return False
+        return True
+    if unit.hp < maximum * config.unit_retreat_heal_ratio:
+        memory.retreating_unit_ids.add(unit_id)
+        return True
+    return False
+
+
+def _retreat_threats_are_dense(
+    unit: UnitView, target: Position, context: DecisionContext
+) -> bool:
+    """Use only visible current-Turn enemies to reject a suicidal route home."""
+    toward_core = [
+        enemy
+        for enemy in context.enemies
+        if distance(enemy.position, unit.position) <= 3
+        and distance(enemy.position, target) < distance(unit.position, target)
+    ]
+    # One nearby shooter can make a route inconvenient; two converging visible
+    # enemies (or a point-blank attacker) make an unsafe path a likely kill.
+    return len(toward_core) >= 2 or any(
+        distance(enemy.position, unit.position) <= 2 for enemy in toward_core
+    )
+
+
+def _retreat_shelter_intent(
+    unit: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+) -> ActionIntent:
+    """Take one visible, unthreatened step away from concentrated attackers."""
+    threats = enemy_threat_cells(context)
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
+        | set(context.enemy_occupancy)
+        | threats
+    )
+    candidates = [
+        (destination(unit.position, direction), direction)
+        for direction in DIRECTIONS
+        if destination(unit.position, direction) not in blocked
+    ]
+    if not candidates:
+        return _wait(unit, "unit_retreat_to_core_heal_shelter")
+    cell, direction = min(
+        candidates,
+        key=lambda item: (
+            -min(distance(item[0], enemy.position) for enemy in context.enemies),
+            distance(item[0], target),
+            item[1].value,
+        ),
+    )
+    if not reservations.reserve(cell):
+        return _wait(unit, "unit_retreat_to_core_heal_shelter")
+    return ActionIntent(
+        actor_id=unit.id,
+        is_core=False,
+        action=ActionKind.MOVE,
+        score=760,
+        reason="unit_retreat_to_core_heal_shelter",
+        target_cell=cell,
+        direction=direction,
+        reserved_cell=cell,
+    )
 
 
 def _unit_retreat_to_core(
@@ -185,6 +259,10 @@ def _unit_retreat_to_core(
     )
     if intent is not None:
         return intent
+    if _retreat_threats_are_dense(unit, target, context):
+        return _retreat_shelter_intent(
+            unit, target, context, memory, reservations
+        )
     return _move(
         unit,
         target,
@@ -314,5 +392,4 @@ def _return_to_core_sidestep(
                 reserved_cell=cell,
             )
     return None
-
 

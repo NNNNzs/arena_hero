@@ -84,6 +84,7 @@ class AgentRuntime:
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
         "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
+        "unit_retreat_heal_return_ratio",
     })
 
     def _apply_config_overrides(self, memory: AgentMemory) -> AgentConfig:
@@ -468,7 +469,11 @@ class AgentRuntime:
                     }
                     # 合并白名单内的数值字段覆盖
                     for field_name, value in command.payload.items():
-                        if field_name != "posture" and type(value) is int:
+                        if (
+                            field_name != "posture"
+                            and isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                        ):
                             policy_update[field_name] = value
                     memory.policy_state = policy_update
                     staged.append("policy")

@@ -9,6 +9,7 @@ from arena_tactic import (
 )
 from arena_tactic.context import DecisionContext
 from arena_tactic.models import ActionKind
+from arena_tactic.strategy.common import _unit_needs_retreat_heal
 from arena_tactic import strategy
 from arena_tactic.strategy import choose_mode
 
@@ -591,6 +592,60 @@ def test_retreating_unit_at_stationary_core_uses_existing_heal_intent():
     intent = next(item for item in result.intents if item.actor_id == vanguard.id)
     assert intent.action is ActionKind.HEAL
     assert intent.reason == "damaged_at_stationary_core"
+
+
+def test_healing_retreat_uses_entry_exit_hysteresis():
+    memory = AgentMemory()
+    config = AgentConfig(
+        unit_retreat_heal_ratio=0.5,
+        unit_retreat_heal_return_ratio=0.7,
+    )
+    # A Vanguard at 25% enters retreat; at 50% it remains assigned, and at
+    # 75% it is released.  This is the integer-HP equivalent of 0.5 -> 0.55
+    # staying in retreat, then returning at 0.75.
+    injured = unit(1, UnitType.VANGUARD, (2, 0), hp=1)
+    recovering = unit(1, UnitType.VANGUARD, (2, 0), hp=2)
+    recovered = unit(1, UnitType.VANGUARD, (2, 0), hp=3)
+    assert _unit_needs_retreat_heal(injured, memory, config)
+    assert _unit_needs_retreat_heal(recovering, memory, config)
+    assert not _unit_needs_retreat_heal(recovered, memory, config)
+    assert memory.retreating_unit_ids == set()
+
+
+def test_healing_retreat_uses_shelter_when_visible_threats_are_dense():
+    vanguard = unit(1, UnitType.VANGUARD, (4, 0), hp=2)
+    enemies = (
+        unit(200, UnitType.RANGER, (1, 0), controlled=False),
+        unit(201, UnitType.RANGER, (2, 1), controlled=False),
+    )
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(vanguard,),
+            enemies=enemies,
+            obstacle_cells=((4, -1), (4, 1), (5, 0)),
+        ),
+        config=AgentConfig(unit_retreat_heal_ratio=0.75),
+    )
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.reason == "unit_retreat_to_core_heal_shelter"
+    assert intent.action is ActionKind.WAIT
+
+
+def test_healing_retreat_allows_unsafe_fallback_when_visible_threat_is_sparse():
+    vanguard = unit(1, UnitType.VANGUARD, (4, 0), hp=2)
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(vanguard,),
+            enemies=(unit(200, UnitType.RANGER, (1, 0), controlled=False),),
+            obstacle_cells=((4, -1), (4, 1), (5, 0)),
+        ),
+        config=AgentConfig(unit_retreat_heal_ratio=0.75),
+    )
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.reason == "unit_retreat_to_core_heal_unsafe_fallback"
+    assert intent.action is ActionKind.MOVE
 
 
 def test_ranger_scores_and_shoots_visible_enemy_core_first():

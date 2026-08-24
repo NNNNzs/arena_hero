@@ -53,6 +53,9 @@ class AgentConfig:
     # Units below this fraction of their maximum HP stop their ordinary task
     # and return to a stationary Core for healing.  Zero disables the rule.
     unit_retreat_heal_ratio: float = 0.5
+    # Once a Unit has started a healing retreat, keep that assignment until it
+    # has recovered past this higher threshold.  This avoids boundary churn.
+    unit_retreat_heal_return_ratio: float = 0.7
     defense_enter_distance: int = 3
     defense_exit_distance: int = 5
     # C: DEFEND 超时：连续 N 回合没有实际伤害事件则强制退出防守

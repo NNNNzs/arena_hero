@@ -145,7 +145,7 @@ def _plan_rangers(
                 )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
             continue
-        if _unit_needs_retreat_heal(ranger, config) and not urgent:
+        if _unit_needs_retreat_heal(ranger, memory, config) and not urgent:
             if _at_normal_core(ranger, context):
                 heal_cost = heal_allowances.get(ranger.id, 0)
                 intents.append(

@@ -434,7 +434,7 @@ def _plan_workers(
         # mining; it takes precedence over a defensive rally, including this
         # general healing-retreat rule.
         if (
-            _unit_needs_retreat_heal(worker, config)
+            _unit_needs_retreat_heal(worker, memory, config)
             and not (_core_emergency_defense(context) and not combat_ready and not cargo)
         ):
             intent = _unit_retreat_to_core(

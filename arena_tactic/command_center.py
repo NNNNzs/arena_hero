@@ -41,6 +41,7 @@ _POLICY_NUMERIC_FIELDS: dict[str, tuple[float, float]] = {
     "minimum_resource_reserve": (0, 200),
     "peacetime_resource_buffer": (0, 500),
     "unit_retreat_heal_ratio": (0, 1),
+    "unit_retreat_heal_return_ratio": (0, 1),
 }
 
 
