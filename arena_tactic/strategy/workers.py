@@ -20,6 +20,8 @@ from .common import (
     _return_to_core,
     _return_to_core_sidestep,
     _unit_heal_intent,
+    _unit_needs_retreat_heal,
+    _unit_retreat_to_core,
     _wait,
 )
 from .mode import _core_emergency_defense
@@ -428,6 +430,19 @@ def _plan_workers(
             )
             continue
 
+        # The zero-combat-roster defense rule deliberately keeps empty Workers
+        # mining; it takes precedence over a defensive rally, including this
+        # general healing-retreat rule.
+        if (
+            _unit_needs_retreat_heal(worker, config)
+            and not (_core_emergency_defense(context) and not combat_ready and not cargo)
+        ):
+            intent = _unit_retreat_to_core(
+                worker, context, memory, reservations, deadline, config
+            )
+            intents.append(intent or _wait(worker, "unit_retreat_to_core_heal_blocked"))
+            continue
+
         target = resource_assignments.get(str(worker.id))
         if target is not None and worker.position == target:
             intents.append(
@@ -566,4 +581,3 @@ def _plan_workers(
 
         intents.append(_wait(worker, "no_resource_or_frontier"))
     return intents
-

@@ -27,6 +27,8 @@ from .common import (
     _record_unit_task,
     _return_to_core,
     _unit_heal_intent,
+    _unit_needs_retreat_heal,
+    _unit_retreat_to_core,
     _wait,
 )
 from .mode import (
@@ -142,6 +144,20 @@ def _plan_rangers(
                     "critical_ranger_retreat",
                 )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
+            continue
+        if _unit_needs_retreat_heal(ranger, config) and not urgent:
+            if _at_normal_core(ranger, context):
+                heal_cost = heal_allowances.get(ranger.id, 0)
+                intents.append(
+                    _unit_heal_intent(ranger, heal_cost)
+                    if heal_cost > 0
+                    else _wait(ranger, "healing_waits_for_resources")
+                )
+            else:
+                intent = _unit_retreat_to_core(
+                    ranger, context, memory, reservations, deadline, config
+                )
+                intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
             continue
         if target is not None:
             # 记录集火伤害 (Ranger 单次伤害为 1)

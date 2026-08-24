@@ -55,6 +55,16 @@ def test_update_policy_accepts_numeric_override():
     assert payload["core_guard_vanguards"] == 1
 
 
+def test_update_policy_accepts_retreat_heal_ratio_override():
+    _, payload, _, _ = _payload({"posture": "ECONOMY", "unit_retreat_heal_ratio": 0.75})
+    assert payload["unit_retreat_heal_ratio"] == 0.75
+
+
+def test_update_policy_rejects_out_of_range_retreat_heal_ratio():
+    with pytest.raises(CommandError):
+        _payload({"posture": "ECONOMY", "unit_retreat_heal_ratio": 1.1})
+
+
 def test_update_policy_rejects_out_of_range():
     with pytest.raises(CommandError):
         _payload({"core_guard_vanguards": 99})

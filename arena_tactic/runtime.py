@@ -83,15 +83,15 @@ class AgentRuntime:
         "core_guard_vanguards", "core_guard_rangers",
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
-        "minimum_resource_reserve", "peacetime_resource_buffer",
+        "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
     })
 
     def _apply_config_overrides(self, memory: AgentMemory) -> AgentConfig:
         """从 policy_state 读取数值覆盖，生成每 tick 有效的配置副本。"""
-        overrides: dict[str, int] = {}
+        overrides: dict[str, int | float] = {}
         for field_name in self._CONFIG_OVERRIDE_FIELDS:
             value = memory.policy_state.get(field_name)
-            if type(value) is int and hasattr(self.config, field_name):
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and hasattr(self.config, field_name):
                 overrides[field_name] = value
         if overrides:
             return replace(self.config, **overrides)

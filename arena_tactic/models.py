@@ -50,6 +50,9 @@ class AgentConfig:
     planning_budget_ms: float = 500.0
     max_population: int = 40
     minimum_resource_reserve: int = 5
+    # Units below this fraction of their maximum HP stop their ordinary task
+    # and return to a stationary Core for healing.  Zero disables the rule.
+    unit_retreat_heal_ratio: float = 0.5
     defense_enter_distance: int = 3
     defense_exit_distance: int = 5
     # C: DEFEND 超时：连续 N 回合没有实际伤害事件则强制退出防守

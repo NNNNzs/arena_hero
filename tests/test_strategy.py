@@ -557,6 +557,42 @@ def test_damaged_worker_heals_before_leaving_core():
     assert intent.action is ActionKind.HEAL
 
 
+def test_low_hp_unit_retreats_to_core_for_healing_at_configured_threshold():
+    vanguard = unit(1, UnitType.VANGUARD, (2, 0), hp=2)
+    result = choose_actions(
+        turn(owned_core=core(), units=(vanguard,)),
+        config=AgentConfig(unit_retreat_heal_ratio=0.75),
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason == "unit_retreat_to_core_heal"
+    assert intent.target_cell == (0, 0)
+
+
+def test_full_hp_unit_does_not_retreat_to_core_for_healing():
+    vanguard = unit(1, UnitType.VANGUARD, (2, 0))
+    result = choose_actions(
+        turn(owned_core=core(), units=(vanguard,)),
+        config=AgentConfig(unit_retreat_heal_ratio=0.75),
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.reason != "unit_retreat_to_core_heal"
+
+
+def test_retreating_unit_at_stationary_core_uses_existing_heal_intent():
+    vanguard = unit(1, UnitType.VANGUARD, (0, 0), hp=2)
+    result = choose_actions(
+        turn(owned_core=core(), units=(vanguard,), resources=2),
+        config=AgentConfig(unit_retreat_heal_ratio=0.75),
+    )
+
+    intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert intent.action is ActionKind.HEAL
+    assert intent.reason == "damaged_at_stationary_core"
+
+
 def test_ranger_scores_and_shoots_visible_enemy_core_first():
     ranger = unit(1, UnitType.RANGER, (0, 0))
     enemy_unit = unit(201, UnitType.WORKER, (1, 0), controlled=False)

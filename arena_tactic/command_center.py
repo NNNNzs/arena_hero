@@ -29,7 +29,7 @@ _POSTURES = frozenset({"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"})
 _MANUAL_TASKS = frozenset({"RETREAT_TO_CORE", "HOLD_POSITION", "HARVEST_VISIBLE", "MOVE_TO_CELL"})
 # 策略热更新白名单：允许通过 UPDATE_POLICY 覆盖的 AgentConfig 数值字段
 # 格式: {字段名: (最小值, 最大值)}
-_POLICY_NUMERIC_FIELDS: dict[str, tuple[int, int]] = {
+_POLICY_NUMERIC_FIELDS: dict[str, tuple[float, float]] = {
     "core_guard_vanguards": (0, 8),
     "core_guard_rangers": (0, 8),
     "early_workers": (0, 12),
@@ -40,6 +40,7 @@ _POLICY_NUMERIC_FIELDS: dict[str, tuple[int, int]] = {
     "patrol_rotation_ticks": (1, 30),
     "minimum_resource_reserve": (0, 200),
     "peacetime_resource_buffer": (0, 500),
+    "unit_retreat_heal_ratio": (0, 1),
 }
 
 
@@ -295,6 +296,9 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
         payload = {}
     elif command_type is CommandType.UPDATE_POLICY:
         # 支持 posture 字段 + 白名单内数值字段覆盖
+        unknown_fields = set(raw_payload) - {"posture", *_POLICY_NUMERIC_FIELDS}
+        if unknown_fields:
+            raise CommandError("INVALID_POLICY", "policy contains a field outside the update whitelist")
         posture = raw_payload.get("posture")
         if posture not in _POSTURES:
             raise CommandError("INVALID_POLICY", "posture is not allowed")
@@ -303,10 +307,14 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
         for field_name, (minimum, maximum) in _POLICY_NUMERIC_FIELDS.items():
             if field_name in raw_payload:
                 value = raw_payload[field_name]
-                if type(value) is not int or not minimum <= value <= maximum:
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not minimum <= value <= maximum
+                ):
                     raise CommandError(
                         "INVALID_POLICY",
-                        f"{field_name} must be an integer from {minimum} to {maximum}",
+                        f"{field_name} must be a number from {minimum} to {maximum}",
                     )
                 payload[field_name] = value
     elif command_type is CommandType.TRIGGER_ANALYSIS:

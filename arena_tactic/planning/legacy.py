@@ -35,6 +35,7 @@ _WAIT_REASONS = {
     "core_cell_vacate_blocked": ("BLOCKED", "CELL_AVAILABLE", None),
     "no_resource_or_frontier": ("RESOURCE_WAIT", "RESOURCE_OR_FRONTIER_VISIBLE", None),
     "critical_retreat_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
+    "unit_retreat_to_core_heal_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
     "emergency_worker_rally_blocked": ("SAFETY", "SAFE_ROUTE_AVAILABLE", None),
     "beacon_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "enemy_approach_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),

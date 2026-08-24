@@ -28,6 +28,8 @@ from .common import (
     _record_unit_task,
     _return_to_core,
     _unit_heal_intent,
+    _unit_needs_retreat_heal,
+    _unit_retreat_to_core,
     _wait,
 )
 from .mode import (
@@ -121,6 +123,20 @@ def _plan_vanguards(
                 if heal_cost > 0
                 else _wait(vanguard, "healing_waits_for_resources")
             )
+            continue
+        if _unit_needs_retreat_heal(vanguard, config) and not urgent:
+            if _at_normal_core(vanguard, context):
+                heal_cost = heal_allowances.get(vanguard.id, 0)
+                intents.append(
+                    _unit_heal_intent(vanguard, heal_cost)
+                    if heal_cost > 0
+                    else _wait(vanguard, "healing_waits_for_resources")
+                )
+            else:
+                intent = _unit_retreat_to_core(
+                    vanguard, context, memory, reservations, deadline, config
+                )
+                intents.append(intent or _wait(vanguard, "unit_retreat_to_core_heal_blocked"))
             continue
         if best_cell is not None:
             direction = next(

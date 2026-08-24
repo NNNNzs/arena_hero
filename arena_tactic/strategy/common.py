@@ -150,6 +150,55 @@ def _unit_heal_intent(unit: UnitView, planned_cost: int) -> ActionIntent:
     )
 
 
+def _unit_needs_retreat_heal(unit: UnitView, config: AgentConfig) -> bool:
+    """Whether the current authoritative HP warrants a healing retreat."""
+    return unit.hp < UNIT_MAX_HP[unit.unit_type] * config.unit_retreat_heal_ratio
+
+
+def _unit_retreat_to_core(
+    unit: UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    deadline: float,
+    config: AgentConfig,
+) -> ActionIntent | None:
+    """Plan a safe current-Turn step home for a low-HP Unit."""
+    if context.core is None:
+        return None
+    target = (
+        context.core.destination
+        if context.core.state is CoreState.MOVING and context.core.destination
+        else context.core.position
+    )
+    intent = _move(
+        unit,
+        target,
+        "unit_retreat_to_core_heal",
+        790,
+        context=context,
+        memory=memory,
+        reservations=reservations,
+        deadline=deadline,
+        config=config,
+        avoid_threats=True,
+    )
+    if intent is not None:
+        return intent
+    return _move(
+        unit,
+        target,
+        "unit_retreat_to_core_heal_unsafe_fallback",
+        760,
+        context=context,
+        memory=memory,
+        reservations=reservations,
+        deadline=deadline,
+        config=config,
+        avoid_threats=False,
+    )
+
+
 def _at_normal_core(unit: UnitView, context: DecisionContext) -> bool:
     return (
         context.core is not None
@@ -265,6 +314,5 @@ def _return_to_core_sidestep(
                 reserved_cell=cell,
             )
     return None
-
 
 

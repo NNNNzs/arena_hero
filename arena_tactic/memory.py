@@ -227,11 +227,11 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
         "core_guard_vanguards", "core_guard_rangers",
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
-        "minimum_resource_reserve", "peacetime_resource_buffer",
+        "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
     }
     for field_name in _NUMERIC_WHITELIST:
         raw = value.get(field_name)
-        if type(raw) is int:
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             result[field_name] = raw
     return result
 

@@ -50,6 +50,7 @@ _REASON_LABELS = {
     "reobserve_remembered_resource": "复查记忆中的资源位置",
     "no_visible_resource": "当前没有可见资源",
     "barren_spawn_fast_reroll": "出生点贫瘠，快速重掷",
+    "unit_retreat_to_core_heal": "撤退治疗",
 }
 
 
