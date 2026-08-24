@@ -82,7 +82,8 @@ class AgentRuntime:
     _CONFIG_OVERRIDE_FIELDS = frozenset({
         "core_guard_vanguards", "core_guard_rangers",
         "early_workers", "early_vanguards", "early_rangers",
-        "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
+        "patrol_radius_min", "patrol_radius_max", "patrol_arc_segments",
+        "patrol_radius_units_per_step",
         "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
         "unit_retreat_heal_return_ratio",
     })

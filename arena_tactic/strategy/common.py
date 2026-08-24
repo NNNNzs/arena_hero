@@ -89,7 +89,11 @@ def _record_unit_task(
     intent: ActionIntent | None,
 ) -> None:
     existing = memory.unit_tasks.get(str(unit.id), {})
-    task = dict(existing) if existing.get("kind") == kind else {}
+    task = dict(existing) if existing.get("kind") == kind else {
+        key: existing[key]
+        for key in ("patrol_arc", "patrol_role", "patrol_core")
+        if key in existing
+    }
     task.update({"kind": kind, "target": list(target)})
     if intent is not None and intent.action is ActionKind.MOVE:
         task["step"] = list(intent.reserved_cell) if intent.reserved_cell else None
@@ -392,4 +396,3 @@ def _return_to_core_sidestep(
                 reserved_cell=cell,
             )
     return None
-

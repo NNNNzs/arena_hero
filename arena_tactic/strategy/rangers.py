@@ -14,6 +14,7 @@ from ..tactical_geometry import shadow_fire_advantage
 from .combat import (
     _combat_rosters,
     _combat_target,
+    _escort_assignment,
     _enemy_can_attack_core,
     _intercept_target,
     ranger_target_score,
@@ -93,9 +94,16 @@ def _plan_rangers(
 ) -> list[ActionIntent]:
     intents: list[ActionIntent] = []
     guard_slots = _guard_slots(context, memory)
-    _, guard_rangers, _, intercept_rangers = _combat_rosters(context, memory, config)
+    guard_vanguards, guard_rangers, _, intercept_rangers = _combat_rosters(context, memory, config)
     intercept_enemy = _intercept_target(context, memory, config)
-    hunter_index = 0
+    hunter_roster = tuple(
+        unit for unit in sorted(context.rangers, key=lambda item: item.id.bytes)
+        if unit.id not in guard_rangers
+    )
+    escort_combat = tuple(
+        unit for unit in (*context.vanguards, *context.rangers)
+        if unit.id not in guard_vanguards and unit.id not in guard_rangers
+    )
     
     # 局部集火与过杀保护统计: 记录本回合敌人已分配受击伤害
     targeted_damage: dict[UUID, int] = {}
@@ -238,10 +246,12 @@ def _plan_rangers(
                 core_pos = context.core.position
                 exploring_workers = [w for w in context.workers if (w.cargo or 0) == 0 and distance(w.position, core_pos) > 2]
                 if exploring_workers:
-                    assigned_worker = min(exploring_workers, key=lambda w: distance(w.position, ranger.position))
-                    # 站在工兵侧翼 2 格处提供火力掩护
-                    escort_slot = (assigned_worker.position[0] + 1, assigned_worker.position[1] - 1)
-                    if escort_slot not in memory.obstacles:
+                    assignment = _escort_assignment(
+                        ranger, escort_combat, exploring_workers, context.core
+                    )
+                    if assignment is not None:
+                        _, escort_slot = assignment
+                    if assignment is not None and escort_slot not in memory.obstacles:
                         intent = _move(
                             ranger, escort_slot, "recon_squad_ranger_flank", 450,
                             context=context, memory=memory, reservations=reservations,
@@ -253,10 +263,9 @@ def _plan_rangers(
                             continue
 
             hunter_target = _combat_target(
-                context.core, hunter_index, context.tick, config.hunter_radius_min,
-                config.hunter_radius_max, config.patrol_rotation_ticks,
+                context.core, ranger, hunter_roster.index(ranger), len(hunter_roster),
+                memory, config, role="hunter",
             ) if context.core is not None else None
-            hunter_index += 1
             if hunter_target is not None:
                 intent = _move(
                     ranger, hunter_target, "hunter_forward_recon", 420,

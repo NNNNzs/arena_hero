@@ -68,6 +68,11 @@
 | emergency_worker_rally_blocked | 紧急工人集结受阻 |
 | resource_grace_ticks | 资源目标宽限回合 |
 | sidestep | 侧滑解卡 |
+| Ring Patrol | 环形巡逻 |
+| patrol arc | 巡逻弧段 |
+| intercept | 拦截 |
+| recon escort | 侦察护航 |
+| escort formation slot | 护航编队槽位 |
 
 ## 游戏机制 (Mechanics)
 

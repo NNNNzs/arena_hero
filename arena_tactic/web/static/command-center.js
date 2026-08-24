@@ -335,7 +335,7 @@ const configFieldLabels = {
   core_guard_vanguards: '核心守卫·先锋', core_guard_rangers: '核心守卫·游侠',
   early_workers: '初期工人', early_vanguards: '初期先锋', early_rangers: '初期游侠',
   patrol_radius_min: '巡逻半径·最小', patrol_radius_max: '巡逻半径·最大',
-  patrol_rotation_ticks: '巡逻轮换周期', minimum_resource_reserve: '最低资源储备',
+  patrol_arc_segments: '巡逻弧段数', patrol_radius_units_per_step: '巡逻半径扩张单位数', minimum_resource_reserve: '最低资源储备',
   peacetime_resource_buffer: '和平期资源缓冲',
 };
 

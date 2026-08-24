@@ -71,11 +71,11 @@ def _safe_task(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     result: dict[str, Any] = {}
-    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick"):
+    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick", "patrol_arc", "patrol_role", "patrol_core"):
         item = value.get(key)
         if any(word in key.lower() for word in _SENSITIVE):
             continue
-        if key in {"target", "step"}:
+        if key in {"target", "step", "patrol_core"}:
             if isinstance(item, (list, tuple)) and len(item) == 2 and all(type(part) is int for part in item):
                 result[key] = list(item)
         elif key == "kind":
@@ -226,7 +226,8 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
     _NUMERIC_WHITELIST = {
         "core_guard_vanguards", "core_guard_rangers",
         "early_workers", "early_vanguards", "early_rangers",
-        "patrol_radius_min", "patrol_radius_max", "patrol_rotation_ticks",
+        "patrol_radius_min", "patrol_radius_max", "patrol_arc_segments",
+        "patrol_radius_units_per_step",
         "minimum_resource_reserve", "peacetime_resource_buffer", "unit_retreat_heal_ratio",
         "unit_retreat_heal_return_ratio",
     }
