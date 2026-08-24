@@ -23,6 +23,8 @@ let lastPolicyRefresh = 0;
 let lastReplayTick = -1;
 let replayPollTimer = 0;
 let historyLoaded = false;
+let activeEventCategory = 'ALL';
+let eventLogState = { events: [], category_counts: {} };
 
 const renderCache = {
   metrics: '',
@@ -222,12 +224,26 @@ function renderResourceInfo(view, force = false) {
   )).join('') : '<div class="muted">当前无可见资源点</div>');
 }
 
+const eventIcons = { combat: '⚔', harvest: '⛏', ops: '◈', anomaly: '⚠' };
+function renderEventLog(eventLog) {
+  eventLogState = eventLog || { events: [], category_counts: {} };
+  const counts = eventLogState.category_counts || {}, all = (eventLogState.events || []).length;
+  setText('eventCountAll', all); setText('eventCountCombat', counts.combat || 0); setText('eventCountHarvest', counts.harvest || 0); setText('eventCountOps', counts.ops || 0); setText('eventCountAnomaly', counts.anomaly || 0);
+  const filtered = (eventLogState.events || []).filter(item => activeEventCategory === 'ALL' || item.category === activeEventCategory);
+  setHtml('eventLogList', rows(filtered, item => {
+    const position = Array.isArray(item.position) ? item.position.join(',') : '—';
+    const clickable = Array.isArray(item.position) ? ` data-cell="${esc(position)}"` : '';
+    return `<button class="event-row event-${esc(item.category || 'ops')}"${clickable}><span class="event-tick">#${esc(item.tick)}</span><span class="event-icon">${eventIcons[item.category] || '•'}</span><span class="event-description">${esc(item.description)}${item.count > 1 ? ` × ${esc(item.count)}` : ''}</span><span class="event-position">${esc(position)}</span></button>`;
+  }, '没有符合筛选条件的事件'));
+}
+
 function render(view) {
   const service = view?.service || {};
   const current = view?.current || {};
   const commandCenter = view?.command_center || {};
   currentRenderedView = view;
   version = Number(commandCenter.command_version ?? version);
+  renderEventLog(view?.event_log);
 
   const metricsKey = signature([
     service.running, service.connected, service.last_tick, current.tick, current.resources,
@@ -714,6 +730,20 @@ $('taskAlias').onchange = event => {
 };
 $('resourceInfo').onclick = event => {
   const button = event.target.closest('.resource-row');
+  const position = button ? cell(button.dataset.cell) : null;
+  if (!position) return;
+  window.focusTacticalCell?.(position);
+  updateDashboardMapCursor(position);
+};
+$('eventFilters').onclick = event => {
+  const button = event.target.closest('[data-event-category]');
+  if (!button) return;
+  activeEventCategory = button.dataset.eventCategory || 'ALL';
+  document.querySelectorAll('[data-event-category]').forEach(item => item.classList.toggle('is-active', item === button));
+  renderEventLog(eventLogState);
+};
+$('eventLogList').onclick = event => {
+  const button = event.target.closest('.event-row');
   const position = button ? cell(button.dataset.cell) : null;
   if (!position) return;
   window.focusTacticalCell?.(position);

@@ -139,7 +139,11 @@ def _http_response(
     if clean_path == "/":
         return HTTPStatus.OK, DASHBOARD_HTML.encode(), "text/html; charset=utf-8"
     if clean_path == "/api/dashboard":
-        payload = json.dumps(dashboard.payload(status.snapshot), ensure_ascii=False).encode()
+        try:
+            event_limit = int(params.get("event_limit", ["200"])[0])
+        except (ValueError, TypeError):
+            event_limit = 200
+        payload = json.dumps(dashboard.payload(status.snapshot, event_limit=event_limit), ensure_ascii=False).encode()
         return HTTPStatus.OK, payload, "application/json; charset=utf-8"
     if clean_path == "/api/replay":
         try:

@@ -118,6 +118,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .status.ok { color: var(--friendly); }
 .status.ok::before { border-color: var(--friendly); background: var(--friendly); }
 
+.event-log-panel { max-height: 270px; overflow: hidden; }
+.event-filters { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.event-count { display: inline-block; min-width: 16px; border-radius: 99px; background: var(--line-soft); font: 10px/1.5 var(--utility); }
+.event-log-list { max-height: 205px; overflow: auto; border-top: 1px solid var(--line-soft); }
+.event-row { display: grid; grid-template-columns: 55px 22px minmax(0, 1fr) 78px; width: 100%; gap: 7px; align-items: center; padding: 7px 4px; border: 0; border-bottom: 1px solid var(--line-soft); color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.event-row:hover { background: #142933; }
+.event-tick, .event-position { color: var(--muted); font: 11px var(--utility); }
+.event-position { text-align: right; }
+.event-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-icon { font-size: 15px; text-align: center; }
+.event-combat .event-icon { color: var(--threat); }.event-harvest .event-icon { color: var(--resource); }.event-ops .event-icon { color: #68aee8; }.event-anomaly .event-icon { color: #e59a59; }
+
 .operations-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
