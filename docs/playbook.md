@@ -55,7 +55,23 @@
   2. `_manual_safety_preempts` 对 hp≤1 单位直接抢占手动任务——hp=1 游侠无法用 Command API 移动，只能靠先腾出它的目标格让它自己走；
   3. 手动 `MOVE_TO_CELL` 到达后单位会停在目标格 WAIT（`manual_target_reached`），若目标格选在咽喉位会形成新的堵点。
 - **处置**（顺序敏感）：① 移开唯一可动占位者卫兵 `c662bfdd181c` → `MOVE_TO_CELL [-900,1577]`（APPLIED Tick 160428）；② 游侠 `1b1da070a55a` 立即借空位脱出核心格；③ hp=1 游侠 `28f6d638896a` 自动回核进入 HEAL（`damaged_at_stationary_heal`）；④ 工人恢复入库（核心资源 6→8，`CARGO_DELIVERY_STAGNATION` 清零）；⑤ 收尾把手动停靠的单位取消任务/挪离咽喉位，避免二次堵塞。
-- **遗留**：先锋 `13272e4e5024` 的 `beacon_route_blocked (信标路线受阻)` 第 4 次复发，目标 `[-282,-308]` 距离约 600 格，而 `plan_step` 的 bounded_astar 包围盒上限 ±12 格——远距离信标远征在现导航约束下可能结构性不可达，建议后续评估"远距离目标分段航点路由"，本窗口未改代码。
+- **遗留**：先锋 `13272e4e5024` 的 `beacon_route_blocked (信标路线受阻)` 第 4 次复发，目标 `[-282,-308]` 距离约 600 格，已于 Tick 161280 升级分段航点导航彻底解决（见下文案例）。
+
+### 2026-08-24 Tick 161175~161281 | 远距离 A* 节点预算不足与超远距离信标分段航点导航闭环 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY)
+- **现象**：
+  1. 载货工人 `e945b3c756a7` 在 `[-846, 1618]`（距核心 97 格，cargo=1）连续 60+ Tick 无法规划回核路径（`no_safe_route_with_cargo`，触发 `CARGO_DELIVERY_STAGNATION` CRITICAL）；
+  2. 先锋 `13272e4e5024` 在 `[-894, 1577]` 持续 60+ Tick `beacon_route_blocked`（信标距离 2239 格，触发 `INEFFECTIVE_STATIONARY` WARNING）。
+- **根因分析**：
+  1. `arena_tactic/navigation.py:plan_step` 中 `node_limit` 原公式为 `max(config.astar_node_limit, min(4 * distance(start, goal), 3000))`，当距离为 97 格时 `4 * 97 = 388` 节点，在大规模障碍物地图中严重不足（实测需 ~2500 节点），导致 A* 提前耗尽预算误判为无路。
+  2. 对跨图超远距离目标（如 2200+ 格外的地面信标），单一全图 `bounded_astar` 因狭长包围盒（±12）与节点预算限制必然失败，导致远征单位永远停在核心咽喉处 `WAIT`。
+- **处置动作**：
+  1. 调整 A* 节点伸缩系数：`node_limit=max(config.astar_node_limit, min(40 * distance(start, goal), 4000))`，长途路径分配充足搜索预算（实测 97 格耗时仅 7ms）。
+  2. 引入分段航点回退（waypoint fallback）：当目标距离 > 30 格且直达 A* 失败时，沿方向向量投影局部航点（`step_dist = min(25, max(10, dist // 4))`），实现局部避障流式推进。
+  3. 新增单测 `test_plan_step_waypoint_fallback_for_distant_goal`（全量 351 测试绿灯）。
+- **效果验证**：
+  - 重启热加载后，载货工人 `e945b3c756a7` 立即恢复 `return_cargo_to_core` 移动（`[-846, 1618]` → `[-850, 1617]`）；
+  - 先锋 `13272e4e5024` 立即摆脱 `beacon_route_blocked`，执行航点推进（`[-894, 1577]` → `[-893, 1573]`）；
+  - `tactical_inspector` 60 Tick 窗口异常数归 **0**。
 
 ## 战术知识库
 
@@ -67,3 +83,6 @@
 3. **Command API 应急干预标准流程**：
    - 适用场景：warning 级别且策略自身冷却机制无法自愈的原地卡死（有 `blocked_waits` 但 `failed_moves=0` 的地形围堵型静止）。
    - 流程：登录取 CSRF → POST `/api/v1/commands`（嵌套 payload + 引号版 If-Match + 幂等键）→ 等 2~5 Tick 后查 `/api/v1/entities/<alias>` 确认 `APPLIED` → 用 tactical_inspector 复检窗口清零才算闭环。
+4. **长距离与跨图目标导航分层准则**：
+   - 单步 Manhattan 距离 > 30~50 格的长距离回矿或跨图远征，不能依赖单次全图 A* 搜索（易受节点预算耗尽与狭长包围盒截断影响）。
+   - 必须采用两级导航架构：首选全路径 A*（配置充足节点伸缩预算 `40 * distance`），当距离过远或受限时，沿目标向量投影局部航点（25 格内局部 A*）进行流式避障推进。

@@ -231,8 +231,28 @@ def plan_step(
         # may be dense with remembered obstacles, so a fixed limit starves
         # the search before it can escape a pocket (seen as an endless
         # no_safe_route_with_cargo wait on far workers).
-        node_limit=max(config.astar_node_limit, min(4 * distance(start, goal), 3000)),
+        node_limit=max(config.astar_node_limit, min(40 * distance(start, goal), 4000)),
     )
+    # For distant goals (e.g. Beacon or far exploration across the map),
+    # direct bounded A* across hundreds/thousands of tiles with a ±12 margin corridor
+    # can exhaust node limits or hit corridor dead-ends.
+    # Project an intermediate waypoint along the vector to find a safe local step.
+    if direction is None and distance(start, goal) > 30:
+        dist = distance(start, goal)
+        dx = goal[0] - start[0]
+        dy = goal[1] - start[1]
+        step_dist = min(25, max(10, dist // 4))
+        subgoal = (
+            start[0] + int(round(dx * step_dist / dist)),
+            start[1] + int(round(dy * step_dist / dist)),
+        )
+        direction = bounded_astar(
+            start,
+            subgoal,
+            blocked=blocked,
+            deadline=deadline,
+            node_limit=max(config.astar_node_limit, 2000),
+        )
     # A bounded search that cannot prove a route must not fall back to a
     # locally greedy step.  That step can move toward the same unreachable
     # target from alternating sides and create a left/right oscillation.

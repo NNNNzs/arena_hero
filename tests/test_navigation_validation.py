@@ -123,3 +123,25 @@ def test_validator_rejects_stale_ranger_target():
     accepted, rejected = validate_intents((stale,), context, AgentConfig())
     assert next(intent for intent in accepted if intent.actor_id == ranger.id).action is ActionKind.WAIT
     assert rejected[0].rejection_reason == "ranger_target_not_current_and_legal"
+
+
+def test_plan_step_waypoint_fallback_for_distant_goal():
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.navigation import plan_step
+
+    context = DecisionContext.from_turn(
+        turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),))
+    )
+    # Goal is 500 tiles away, unblocked open terrain
+    direction = plan_step(
+        actor_id=uuid(1),
+        start=(0, 0),
+        goal=(500, 0),
+        context=context,
+        persistent_obstacles=set(),
+        reservations=ReservationTable({}),
+        deadline=perf_counter() + 1,
+        config=AgentConfig(),
+    )
+    assert direction is Direction.RIGHT
+
