@@ -228,7 +228,7 @@ const eventIcons = { combat: '⚔', harvest: '⛏', ops: '◈', anomaly: '⚠' }
 function renderEventLog(eventLog) {
   eventLogState = eventLog || { events: [], category_counts: {} };
   const counts = eventLogState.category_counts || {}, all = (eventLogState.events || []).length;
-  setText('eventCountAll', all); setText('eventCountCombat', counts.combat || 0); setText('eventCountHarvest', counts.harvest || 0); setText('eventCountOps', counts.ops || 0); setText('eventCountAnomaly', counts.anomaly || 0);
+  setText('eventCountAll', all); setText('eventCountAllDrawer', all); setText('eventCountCombat', counts.combat || 0); setText('eventCountHarvest', counts.harvest || 0); setText('eventCountOps', counts.ops || 0); setText('eventCountAnomaly', counts.anomaly || 0);
   const filtered = (eventLogState.events || []).filter(item => activeEventCategory === 'ALL' || item.category === activeEventCategory);
   setHtml('eventLogList', rows(filtered, item => {
     const position = Array.isArray(item.position) ? item.position.join(',') : '—';
@@ -742,6 +742,13 @@ $('eventFilters').onclick = event => {
   document.querySelectorAll('[data-event-category]').forEach(item => item.classList.toggle('is-active', item === button));
   renderEventLog(eventLogState);
 };
+const setEventDrawer = open => {
+  const drawer = $('eventDrawer'), toggle = $('eventDrawerToggle');
+  drawer.hidden = !open;
+  toggle.setAttribute('aria-expanded', String(open));
+};
+$('eventDrawerToggle').onclick = () => setEventDrawer($('eventDrawer').hidden);
+$('eventDrawerClose').onclick = () => setEventDrawer(false);
 $('eventLogList').onclick = event => {
   const button = event.target.closest('.event-row');
   const position = button ? cell(button.dataset.cell) : null;
