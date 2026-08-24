@@ -429,7 +429,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     for unit, samples in unit_combat_history.items():
         damage_samples = [{**current, "previous_hp": previous["hp"]} for previous, current in zip(samples, samples[1:]) if current["tick"] == previous["tick"] + 1 and current["hp"] < previous["hp"]]
         for run in _runs(damage_samples, UNANSWERED_DAMAGE_TICKS):
-            attacked = any(sample["action"] in {"ATTACK", "SHOOT"} for sample in run)
+            attacked = any(sample["action"] in {"ATTACK", "SHOOT", "SWEEP"} for sample in run)
             escaped = run[-1]["nearest_enemy"] is not None and run[-1]["nearest_enemy"] > 3
             if not attacked and not escaped:
                 unanswered_damage.append({"unit": unit, "kind": kinds.get(unit), "tick_range": [run[0]["tick"], run[-1]["tick"]], "hp_start": run[0]["previous_hp"], "hp_end": run[-1]["hp"], "nearest_enemy_end": run[-1]["nearest_enemy"], "enemy_visibility": "visible" if run[-1]["nearest_enemy"] is not None else "unknown_or_blind_spot"})

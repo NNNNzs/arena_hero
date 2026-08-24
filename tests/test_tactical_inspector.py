@@ -131,6 +131,19 @@ def test_detects_unanswered_unit_damage(tmp_path, monkeypatch):
     assert finding["evidence"][0]["hp_end"] == 2
 
 
+def test_vanguard_sweep_does_not_trigger_unanswered_damage(tmp_path, monkeypatch):
+    rows = []
+    for tick, hp in enumerate((4, 3, 2), start=20):
+        row = _row(tick, [5, 5], mode="DEFEND")
+        row["state"]["units"][0]["hp"] = hp
+        row["intents"] = [{"actor": "guard", "action": "SWEEP", "reason": "vanguard_sweep"}]
+        row["state"]["visible_enemies"] = [{"id": "enemy", "unit_type": "VANGUARD", "position": [1, 1], "hp": 2}]
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    assert not any(f["code"] == "UNANSWERED_DAMAGE" for f in report["findings"])
+
+
 def test_detects_isolated_beacon_carrier(tmp_path, monkeypatch):
     row = _row(30, [1, 1], mode="BEACON")
     row["state"]["units"][0]["position"] = [8, 0]

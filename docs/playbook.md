@@ -73,6 +73,18 @@
   - 先锋 `13272e4e5024` 立即摆脱 `beacon_route_blocked`，执行航点推进（`[-894, 1577]` → `[-893, 1573]`）；
   - `tactical_inspector` 60 Tick 窗口异常数归 **0**。
 
+### 2026-08-24 Tick 161630~161688 | 先锋横扫技能 (SWEEP) 场景下 UNANSWERED_DAMAGE 误报排查与判定闭环
+- **现象**：战术巡检器在 Tick 161631 触发 CRITICAL 级别 `UNANSWERED_DAMAGE` (单位受击后无反击或规避) 告警（先锋 `e7e2aa8f7976` HP 从 4 下降至 2）。
+- **根因分析**：
+  先锋在外围执行近战扫荡（`SWEEP`），连续受损时一直在使用 `SWEEP` 反击敌人，且在 HP 降至 1 时主动规避脱离射程并成功安全撤回核心。巡检器 `tactical_inspector.py` 的反击判定仅包含了 `{"ATTACK", "SHOOT"}`，遗漏了先锋的范围攻击动作 `SWEEP`，导致将正在近战反击的先锋误判为“受击未反击”。
+- **处置动作**：
+  1. 修复 `scripts/tactical_inspector.py` 中 `UNANSWERED_DAMAGE` 判定逻辑，将反击动作集扩充为 `{"ATTACK", "SHOOT", "SWEEP"}`。
+  2. 在 `tests/test_tactical_inspector.py` 中新增 `test_vanguard_sweep_does_not_trigger_unanswered_damage` 单元测试。
+- **效果验证**：
+  - 352 个自动化测试全量通过（`pytest -q`）。
+  - `scripts/tactical_inspector.py` 60 Tick 与 300 Tick 窗口复检异常数彻底清零（0 项）。
+  - 实时战局中先锋成功完成交战并撤退至核心安全区，核心资源增长至 19/45，人口 9，运行正常。
+
 ## 战术知识库
 
 1. **核心环防与远征接敌解耦准则**：
@@ -86,3 +98,5 @@
 4. **长距离与跨图目标导航分层准则**：
    - 单步 Manhattan 距离 > 30~50 格的长距离回矿或跨图远征，不能依赖单次全图 A* 搜索（易受节点预算耗尽与狭长包围盒截断影响）。
    - 必须采用两级导航架构：首选全路径 A*（配置充足节点伸缩预算 `40 * distance`），当距离过远或受限时，沿目标向量投影局部航点（25 格内局部 A*）进行流式避障推进。
+5. **单位反击与范围技能（SWEEP）识别准则**：
+   - 先锋单位（VANGUARD）的战斗反击与清敌动作为 `SWEEP`（横扫攻击），而非通用 `ATTACK` 或游侠 `SHOOT`。在评估单位交火与反击有效性（`UNANSWERED_DAMAGE`）时，必须将 `SWEEP` 作为有效的主动反击动作纳入判定；低血量（HP≤1）先锋在交战后主动拉开距离撤退属正常战术规避。
