@@ -48,6 +48,15 @@
 - **新坑实录**：payload 字段名是 `task_kind`（不是 `task`），写错返回 `INVALID_TASK: task_kind is not supported`；支持的手动任务集合见 `arena_tactic/command_center.py:_MANUAL_TASKS`（RETREAT_TO_CORE / HOLD_POSITION / HARVEST_VISIBLE / MOVE_TO_CELL）。
 - **效果验证**：40 Tick 复检——该先锋脱离静止列表；期间一次瞬时 `CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 于 Tick 160113 自愈（工人恢复 carrying/MOVE）；仅剩卫兵驻哨已知误报。
 
+### 2026-08-24 Tick 160291~160460 | 核心区多单位容量死锁（第 4 次咽喉位卡死，含 hp=1 安全抢占）Command API 分步干预闭环
+- **现象**：核心格 `[-898,1573]` 被游侠 `1b1da070a55a` 占据（与 CORE 同格 2/2 满），其唯一西出口 `[-899,1573]` 也被游侠 `28f6d638896a`（hp=1，`critical_retreat_blocked` 想回核但核心格满）+ 卫兵 `c662bfdd181c` 占满（2/2）。载货工人 `d93eabd6cdc0`/`9ee929ad2dac` 双双 `no_safe_route_with_cargo`，触发 `CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` CRITICAL。
+- **关键机理**：
+  1. 引擎每格容量为 2（ReservationTable），诊断时必须逐格统计占用数，而不是只看"有没有人"；
+  2. `_manual_safety_preempts` 对 hp≤1 单位直接抢占手动任务——hp=1 游侠无法用 Command API 移动，只能靠先腾出它的目标格让它自己走；
+  3. 手动 `MOVE_TO_CELL` 到达后单位会停在目标格 WAIT（`manual_target_reached`），若目标格选在咽喉位会形成新的堵点。
+- **处置**（顺序敏感）：① 移开唯一可动占位者卫兵 `c662bfdd181c` → `MOVE_TO_CELL [-900,1577]`（APPLIED Tick 160428）；② 游侠 `1b1da070a55a` 立即借空位脱出核心格；③ hp=1 游侠 `28f6d638896a` 自动回核进入 HEAL（`damaged_at_stationary_heal`）；④ 工人恢复入库（核心资源 6→8，`CARGO_DELIVERY_STAGNATION` 清零）；⑤ 收尾把手动停靠的单位取消任务/挪离咽喉位，避免二次堵塞。
+- **遗留**：先锋 `13272e4e5024` 的 `beacon_route_blocked (信标路线受阻)` 第 4 次复发，目标 `[-282,-308]` 距离约 600 格，而 `plan_step` 的 bounded_astar 包围盒上限 ±12 格——远距离信标远征在现导航约束下可能结构性不可达，建议后续评估"远距离目标分段航点路由"，本窗口未改代码。
+
 ## 战术知识库
 
 1. **核心环防与远征接敌解耦准则**：
