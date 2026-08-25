@@ -383,6 +383,7 @@ def _plan_core(
             and mode not in (StrategicMode.DEFEND, StrategicMode.ATTACK)
             and combat_ready
             and _past_early_roster(context, config)
+            and len(context.workers) >= config.mid_workers
         )
         if peacetime_conserve:
             storage_capacity = context.resources + context.resource_space
