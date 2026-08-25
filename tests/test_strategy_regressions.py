@@ -32,7 +32,7 @@ def test_peacetime_buffer_cannot_exceed_core_storage_capacity():
 
     assert intent is not None
     assert intent.action is ActionKind.SPAWN
-    assert intent.unit_type is UnitType.RANGER
+    assert intent.unit_type is UnitType.WORKER
 
 
 def test_stale_migration_recommendation_falls_back_to_best_resource_center():
