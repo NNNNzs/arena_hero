@@ -33,7 +33,7 @@ Agent 的长期目标是 Core 生存、稳定提交、资源增长和机会性�
 
 ## 3. 经济和阵容
 
-早期阵容依次补到 3 Worker、2 Vanguard、1 Ranger。之后以 8/6/6 为成熟目标，按绝对缺口最大的兵种生产；相同缺口按 Worker、Vanguard、Ranger 顺序决定。默认人口上限为 20，因此不会进入第 21 个 Unit 的涨价区间。
+早期阵容严格执行“双工起步”：依次补到 2 Worker、2 Vanguard、1 Ranger。初级防线成型后，中期优先将 Worker 扩充至 5 个（`mid_workers = 5`）打通多路护送采矿；之后以 12/12/16（Worker/Vanguard/Ranger）为成熟期目标，按绝对缺口最大的兵种生产，默认人口上限为 40。详细生命周期与发展时间轴参见 `docs/arena-hero-development-timeline.md`。
 
 生产价格始终调用 SDK `unit_cost(unit_type, population)` 预览。Core 格必须在己方 Unit 动作结算后留出出生槽位。生产安全储备为：
 
