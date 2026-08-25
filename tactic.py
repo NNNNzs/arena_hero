@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import threading
@@ -107,8 +108,18 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self._send(response.status, response.body, "application/json; charset=utf-8", response.headers)
 
     def _send(self, code: HTTPStatus, payload: bytes, content_type: str, extra_headers: tuple[tuple[str, str], ...] = ()) -> None:
+        accept_encoding = self.headers.get("Accept-Encoding", "") if hasattr(self, "headers") and self.headers else ""
+        compressed = False
+        if "gzip" in accept_encoding and len(payload) > 512:
+            try:
+                payload = gzip.compress(payload, compresslevel=6)
+                compressed = True
+            except Exception:
+                pass
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -145,7 +156,38 @@ def _http_response(
             event_limit = 200
         payload = json.dumps(dashboard.payload(status.snapshot, event_limit=event_limit), ensure_ascii=False).encode()
         return HTTPStatus.OK, payload, "application/json; charset=utf-8"
-    if clean_path == "/api/replay":
+    if clean_path == "/api/events":
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except (ValueError, TypeError, IndexError):
+            limit = 50
+        from_tick_raw = params.get("from_tick", [None])[0]
+        try:
+            from_tick = int(from_tick_raw) if from_tick_raw is not None else None
+        except (ValueError, TypeError):
+            from_tick = None
+        to_tick_raw = params.get("to_tick", [None])[0]
+        try:
+            to_tick = int(to_tick_raw) if to_tick_raw is not None else None
+        except (ValueError, TypeError):
+            to_tick = None
+        category = params.get("category", [None])[0]
+        payload = json.dumps(
+            dashboard.event_log_payload(limit=limit, from_tick=from_tick, to_tick=to_tick, category=category),
+            ensure_ascii=False,
+        ).encode()
+        return HTTPStatus.OK, payload, "application/json; charset=utf-8"
+    if clean_path == "/api/replay/timeline":
+        try:
+            limit = int(params.get("limit", ["64"])[0])
+        except (ValueError, TypeError):
+            limit = 64
+        payload = json.dumps(
+            dashboard.replay_timeline_payload(status.snapshot, limit=limit),
+            ensure_ascii=False,
+        ).encode()
+        return HTTPStatus.OK, payload, "application/json; charset=utf-8"
+    if clean_path in {"/api/replay", "/api/replay/frames"}:
         try:
             limit = int(params.get("limit", ["32"])[0])
         except (ValueError, TypeError):
@@ -155,8 +197,13 @@ def _http_response(
             from_tick = int(from_tick_raw) if from_tick_raw is not None else None
         except (ValueError, TypeError):
             from_tick = None
+        to_tick_raw = params.get("to_tick", [None])[0]
+        try:
+            to_tick = int(to_tick_raw) if to_tick_raw is not None else None
+        except (ValueError, TypeError):
+            to_tick = None
         payload = json.dumps(
-            dashboard.replay_payload(status.snapshot, limit=limit, from_tick=from_tick),
+            dashboard.replay_payload(status.snapshot, limit=limit, from_tick=from_tick, to_tick=to_tick),
             ensure_ascii=False,
         ).encode()
         return HTTPStatus.OK, payload, "application/json; charset=utf-8"

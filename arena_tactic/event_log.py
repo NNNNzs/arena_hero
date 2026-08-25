@@ -182,11 +182,45 @@ class EventLogCollector:
         except (OSError, json.JSONDecodeError): return []
         return [row for row in rows if isinstance(row, dict)][-max(0, limit):]
 
-    def payload(self, *, limit: int = 200) -> dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         self.collect()
-        rows = list(reversed(self.read(limit=max(0, min(limit, self.max_events)))))
+        rows = self.read(limit=self.max_events)
         return {
-            "events": rows,
+            "total": len(rows),
             "counts": dict(Counter(item.get("type") for item in rows if item.get("type"))),
             "category_counts": dict(Counter(item.get("category") for item in rows if item.get("category"))),
+        }
+
+    def payload(
+        self,
+        *,
+        limit: int = 50,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        self.collect()
+        rows = self.read(limit=self.max_events)
+        total = len(rows)
+        all_category_counts = dict(Counter(item.get("category") for item in rows if item.get("category")))
+        all_type_counts = dict(Counter(item.get("type") for item in rows if item.get("type")))
+
+        filtered = rows
+        if category and category.upper() != "ALL":
+            cat_norm = category.strip().lower()
+            filtered = [item for item in filtered if (item.get("category") or "").lower() == cat_norm]
+        if from_tick is not None:
+            filtered = [item for item in filtered if (item.get("tick") or 0) >= from_tick]
+        if to_tick is not None:
+            filtered = [item for item in filtered if (item.get("tick") or 0) <= to_tick]
+
+        effective_limit = max(0, min(limit, self.max_events))
+        result_rows = list(reversed(filtered[-effective_limit:])) if effective_limit > 0 else []
+
+        return {
+            "events": result_rows,
+            "counts": dict(Counter(item.get("type") for item in result_rows if item.get("type"))),
+            "category_counts": dict(Counter(item.get("category") for item in result_rows if item.get("category"))),
+            "total": total,
+            "matched": len(filtered),
         }

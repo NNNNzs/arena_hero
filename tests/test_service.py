@@ -383,3 +383,54 @@ def test_dashboard_api_no_longer_contains_replay_or_recent_keys(tmp_path: Path):
     assert "service" in payload
     assert "current" in payload
     assert "command_center" in payload
+
+
+def test_events_endpoint_pagination_and_filter(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join([
+        json.dumps({"tick": 10, "events": [{"type": "CORE_DAMAGED", "position": [1, 1], "target": "core"}]}),
+        json.dumps({"tick": 15, "events": [{"type": "HARVEST_SUCCEEDED", "position": [2, 2], "values": {"source": "RESOURCE_NODE"}}]}),
+        json.dumps({"tick": 20, "events": [{"type": "DEPOSIT_FAILED", "position": [1, 1], "reason": "FULL"}]}),
+    ]) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+
+    # All events
+    res = _http_response("/api/events?limit=50", ServiceStatus(), store)
+    assert res is not None
+    _, body, _ = res
+    payload = json.loads(body)
+    assert payload["total"] >= 3
+    assert len(payload["events"]) >= 3
+
+    # Filter by category
+    res_combat = _http_response("/api/events?category=combat", ServiceStatus(), store)
+    assert res_combat is not None
+    payload_combat = json.loads(res_combat[1])
+    assert payload_combat["matched"] == 1
+    assert payload_combat["events"][0]["type"] == "CORE_DAMAGED"
+
+    # Filter by from_tick and to_tick
+    res_range = _http_response("/api/events?from_tick=12&to_tick=18", ServiceStatus(), store)
+    assert res_range is not None
+    payload_range = json.loads(res_range[1])
+    assert payload_range["matched"] == 2
+    assert any(item["type"] == "HARVEST_SUCCEEDED" for item in payload_range["events"])
+
+
+def test_replay_timeline_endpoint(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("\n".join(
+        json.dumps({"tick": tick, "state": {"units": []}, "intents": [], "events": [{"type": "CORE_DAMAGED"}] if tick % 5 == 0 else []})
+        for tick in range(1, 11)
+    ) + "\n", encoding="utf-8")
+    store = DashboardDataStore(replay, cache_seconds=0)
+    res = _http_response("/api/replay/timeline?limit=10", ServiceStatus(), store)
+    assert res is not None
+    _, body, _ = res
+    payload = json.loads(body)
+    assert payload["ticks"] == list(range(1, 11))
+    assert payload["latest_tick"] == 10
+    assert len(payload["timeline"]) == 10
+    markers_at_5 = next(item["markers"] for item in payload["timeline"] if item["tick"] == 5)
+    assert any(m["kind"] == "DAMAGE" for m in markers_at_5)
+

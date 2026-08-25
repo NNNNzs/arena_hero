@@ -24,7 +24,9 @@ let lastReplayTick = -1;
 let replayPollTimer = 0;
 let historyLoaded = false;
 let activeEventCategory = 'ALL';
-let eventLogState = { events: [], category_counts: {} };
+let eventLogState = { events: [], category_counts: {}, total: 0 };
+let eventInFlight = false;
+let replayTimelineTicks = [];
 let knownMemoryVersion = 0;
 let memoryInFlight = false;
 
@@ -227,16 +229,49 @@ function renderResourceInfo(view, force = false) {
 }
 
 const eventIcons = { combat: '⚔', harvest: '⛏', ops: '◈', anomaly: '⚠' };
-function renderEventLog(eventLog) {
-  eventLogState = eventLog || { events: [], category_counts: {} };
-  const counts = eventLogState.category_counts || {}, all = (eventLogState.events || []).length;
-  setText('eventCountAll', all); setText('eventCountAllDrawer', all); setText('eventCountCombat', counts.combat || 0); setText('eventCountHarvest', counts.harvest || 0); setText('eventCountOps', counts.ops || 0); setText('eventCountAnomaly', counts.anomaly || 0);
-  const filtered = (eventLogState.events || []).filter(item => activeEventCategory === 'ALL' || item.category === activeEventCategory);
+function renderEventLog(eventLog, { isSummaryOnly = false } = {}) {
+  if (!eventLog) return;
+  const counts = eventLog.category_counts || {};
+  const total = eventLog.total ?? eventLog.matched ?? (eventLog.events || []).length;
+  setText('eventCountAll', total);
+  setText('eventCountAllDrawer', total);
+  setText('eventCountCombat', counts.combat || 0);
+  setText('eventCountHarvest', counts.harvest || 0);
+  setText('eventCountOps', counts.ops || 0);
+  setText('eventCountAnomaly', counts.anomaly || 0);
+
+  if (isSummaryOnly && (!eventLog.events || eventLog.events.length === 0)) {
+    return;
+  }
+
+  if (eventLog.events) {
+    eventLogState.events = eventLog.events;
+  }
+  eventLogState.category_counts = counts;
+  eventLogState.total = total;
+
+  const filtered = (eventLogState.events || []).filter(item => activeEventCategory === 'ALL' || (item.category || '').toLowerCase() === activeEventCategory.toLowerCase());
   setHtml('eventLogList', rows(filtered, item => {
     const position = Array.isArray(item.position) ? item.position.join(',') : '—';
     const clickable = Array.isArray(item.position) ? ` data-cell="${esc(position)}"` : '';
     return `<button class="event-row event-${esc(item.category || 'ops')}"${clickable}><span class="event-tick">#${esc(item.tick)}</span><span class="event-icon">${eventIcons[item.category] || '•'}</span><span class="event-description">${esc(item.description)}${item.count > 1 ? ` × ${esc(item.count)}` : ''}</span><span class="event-position">${esc(position)}</span></button>`;
   }, '没有符合筛选条件的事件'));
+}
+
+async function fetchEvents({ limit = 50, category = activeEventCategory, from_tick = null } = {}) {
+  if (eventInFlight) return;
+  eventInFlight = true;
+  try {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (category && category !== 'ALL') params.set('category', category);
+    if (from_tick != null && from_tick > 0) params.set('from_tick', String(from_tick));
+    const response = await fetch(`/api/events?${params.toString()}`, { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json();
+    renderEventLog(data, { isSummaryOnly: false });
+  } catch (_) { /* silent */ }
+  finally { eventInFlight = false; }
 }
 
 function render(view) {
@@ -245,7 +280,7 @@ function render(view) {
   const commandCenter = view?.command_center || {};
   currentRenderedView = view;
   version = Number(commandCenter.command_version ?? version);
-  renderEventLog(view?.event_log);
+  renderEventLog(view?.event_log, { isSummaryOnly: true });
 
   const metricsKey = signature([
     service.running, service.connected, service.last_tick, current.tick, current.resources,
@@ -672,7 +707,7 @@ async function refreshReplay() {
   if (document.hidden || !lastPayload) return;
   try {
     const url = replayLive
-      ? `/api/replay?limit=32&from_tick=${lastReplayTick}`
+      ? `/api/replay?limit=8&from_tick=${lastReplayTick}`
       : null;
     if (!url) return;
     const r = await fetch(url, { cache: 'no-store' });
@@ -682,9 +717,18 @@ async function refreshReplay() {
   } catch (_) {}
 }
 
+async function fetchReplayTimeline() {
+  try {
+    const r = await fetch('/api/replay/timeline?limit=64', { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    replayTimelineTicks = data.ticks || [];
+  } catch (_) {}
+}
+
 async function fetchReplayHistory() {
   try {
-    const r = await fetch('/api/replay?limit=64', { cache: 'no-store' });
+    const r = await fetch('/api/replay?limit=32', { cache: 'no-store' });
     if (!r.ok) return;
     const data = await r.json();
     mergeReplayFrames(data.frames || []);
@@ -697,10 +741,11 @@ function startPolling() {
   if (replayPollTimer) window.clearInterval(replayPollTimer);
   replayPollTimer = 0;
   if (document.hidden) return;
-  // Initial parallel fetch: dashboard + static memory in parallel for fast first paint.
+  // Initial parallel fetch: dashboard + static memory + timeline + initial frames
   refresh();
   fetchMapMemory();
-  refreshReplay();
+  fetchReplayTimeline();
+  fetchReplayHistory();
   refreshTimer = window.setInterval(refresh, 3000);
   replayPollTimer = window.setInterval(refreshReplay, 3000);
 }
@@ -763,12 +808,16 @@ $('eventFilters').onclick = event => {
   if (!button) return;
   activeEventCategory = button.dataset.eventCategory || 'ALL';
   document.querySelectorAll('[data-event-category]').forEach(item => item.classList.toggle('is-active', item === button));
-  renderEventLog(eventLogState);
+  renderEventLog(eventLogState, { isSummaryOnly: false });
+  fetchEvents({ limit: 50, category: activeEventCategory });
 };
 const setEventDrawer = open => {
   const drawer = $('eventDrawer'), toggle = $('eventDrawerToggle');
   drawer.hidden = !open;
   toggle.setAttribute('aria-expanded', String(open));
+  if (open) {
+    fetchEvents({ limit: 50, category: activeEventCategory });
+  }
 };
 $('eventDrawerToggle').onclick = () => setEventDrawer($('eventDrawer').hidden);
 $('eventDrawerClose').onclick = () => setEventDrawer(false);

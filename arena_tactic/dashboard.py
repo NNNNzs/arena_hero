@@ -603,7 +603,11 @@ class DashboardDataStore:
                         if k not in ("version", "posture", "effective_tick") and type(v) is int
                     },
                 },
-                "event_log": self.event_log.payload(limit=max(1, min(event_limit, 5_000))),
+                "event_log": (
+                    self.event_log.payload(limit=event_limit)
+                    if event_limit > 0 and event_limit != 200
+                    else {"events": [], **self.event_log.summary()}
+                ),
             }
         return {
             "schema_version": 1,
@@ -615,7 +619,56 @@ class DashboardDataStore:
             "migration_recommendation": {},
             "chunk_saturation": {},
             "policy_config": {"posture": "BALANCED", "effective_tick": 0, "overrides": {}},
-            "event_log": self.event_log.payload(limit=max(1, min(event_limit, 5_000))),
+            "event_log": (
+                self.event_log.payload(limit=event_limit)
+                if event_limit > 0 and event_limit != 200
+                else {"events": [], **self.event_log.summary()}
+            ),
+        }
+
+    def event_log_payload(
+        self,
+        *,
+        limit: int = 50,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Return dedicated event log data for the /api/events endpoint."""
+        return self.event_log.payload(
+            limit=limit,
+            from_tick=from_tick,
+            to_tick=to_tick,
+            category=category,
+        )
+
+    def replay_timeline_payload(
+        self,
+        status_snapshot: Callable[[], dict[str, object]],
+        *,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        """Return light-weight timeline ticks and markers without bulky frames."""
+        limit = max(1, min(limit, 200))
+        scale = max(1, limit // self.recent_limit + 1)
+        raw_records = _bounded_jsonl_tail(
+            self.replay_path,
+            max_bytes=self.max_bytes * scale,
+            limit=limit,
+        )
+        timeline_items: list[dict[str, Any]] = []
+        ticks: list[int] = []
+        for record in raw_records:
+            tick = record.get("tick")
+            if type(tick) is not int:
+                continue
+            ticks.append(tick)
+            markers = _replay_markers(record)
+            timeline_items.append({"tick": tick, "markers": markers})
+        return {
+            "ticks": ticks,
+            "latest_tick": ticks[-1] if ticks else None,
+            "timeline": timeline_items,
         }
 
     def replay_payload(
@@ -624,15 +677,16 @@ class DashboardDataStore:
         *,
         limit: int = 32,
         from_tick: int | None = None,
+        to_tick: int | None = None,
     ) -> dict[str, Any]:
-        """Return replay frames only, for the /api/replay endpoint."""
+        """Return replay frames only, for the /api/replay and /api/replay/frames endpoints."""
         limit = max(1, min(limit, 200))
         # Read more data to satisfy larger limits.
         scale = max(1, limit // self.recent_limit + 1)
         raw_records = _bounded_jsonl_tail(
             self.replay_path,
             max_bytes=self.max_bytes * scale,
-            limit=limit * 2 if from_tick is not None else limit,
+            limit=limit * 2 if (from_tick is not None or to_tick is not None) else limit,
         )
         try:
             recent = [_project_record(record) for record in raw_records]
@@ -645,7 +699,7 @@ class DashboardDataStore:
             raw_traces = _bounded_jsonl_tail(
                 self.trace_path,
                 max_bytes=self.max_bytes * scale,
-                limit=limit * 2 if from_tick is not None else limit,
+                limit=limit * 2 if (from_tick is not None or to_tick is not None) else limit,
             )
             traces = [item for record in raw_traces if (item := _project_trace_record(record))]
         except Exception:
@@ -689,6 +743,8 @@ class DashboardDataStore:
         for snapshot in recent:
             tick = snapshot.get("tick")
             if from_tick is not None and tick is not None and tick <= from_tick:
+                continue
+            if to_tick is not None and tick is not None and tick > to_tick:
                 continue
             trace = trace_by_tick.get(tick)
             center = _merge_entity_state({**trace, "timeline": timeline}, snapshot) if trace else None
