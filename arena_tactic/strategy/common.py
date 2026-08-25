@@ -95,6 +95,7 @@ def _record_unit_task(
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})
+    task["prev_cell"] = list(unit.position)
     if intent is not None and intent.action is ActionKind.MOVE:
         task["step"] = list(intent.reserved_cell) if intent.reserved_cell else None
         task["attempt_tick"] = context.tick
@@ -365,12 +366,7 @@ def _return_to_core_sidestep(
     *,
     minimum_distance: int,
 ) -> ActionIntent | None:
-    """Reserve a local approach cell after the direct return step is contested.
-
-    This is deliberately local: a failed bounded route still waits for the next
-    authoritative Turn, while a congested first step can yield to an equally
-    useful neighboring approach cell without creating a new long-lived route.
-    """
+    """Reserve a local approach cell after the direct return step is contested."""
     current_distance = distance(unit.position, target)
     if current_distance <= minimum_distance:
         return None
@@ -379,18 +375,25 @@ def _return_to_core_sidestep(
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
     )
-    candidates = sorted(
-        (
-            (distance(destination(unit.position, direction), target), direction)
-            for direction in DIRECTIONS
-            if destination(unit.position, direction) not in blocked
-            and distance(destination(unit.position, direction), target)
-            <= current_distance
-        ),
-        key=lambda candidate: (candidate[0], candidate[1].value),
-    )
-    for _, direction in candidates:
-        cell = destination(unit.position, direction)
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
+    scored_candidates = []
+    for direction in DIRECTIONS:
+        cand = destination(unit.position, direction)
+        if cand in blocked:
+            continue
+        dist = distance(cand, target)
+        if dist > current_distance:
+            continue
+        score = dist * 10
+        if prev_cell is not None and cand == prev_cell:
+            score += 5000  # heavy penalty to prevent 2-cell ping-pong oscillation
+        scored_candidates.append((score, direction, cand))
+
+    scored_candidates.sort(key=lambda x: (x[0], x[1].value))
+    for _, direction, cell in scored_candidates:
         if reservations.reserve(cell):
             return ActionIntent(
                 unit.id,
@@ -423,6 +426,12 @@ def _deploy_sidestep(
     current_dist_to_target = distance(unit.position, target)
     current_dist_to_core = distance(unit.position, core_position) if core_position is not None else 0
 
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
+    has_carrying_workers = any(w.cargo for w in context.workers)
+
     candidates = []
     for direction in DIRECTIONS:
         cand = destination(unit.position, direction)
@@ -432,10 +441,20 @@ def _deploy_sidestep(
         dist_to_core = distance(cand, core_position) if core_position is not None else 0
         if dist_to_target <= current_dist_to_target:
             score = dist_to_target * 10 - dist_to_core
-            candidates.append((score, direction, cand))
         elif core_position is not None and dist_to_core >= current_dist_to_core:
             score = 1000 + dist_to_target * 10 - dist_to_core
-            candidates.append((score, direction, cand))
+        else:
+            score = 2000 + dist_to_target * 10
+
+        # Prioritize outward movement to clear doorstep for workers with cargo
+        if has_carrying_workers and current_dist_to_core <= 2 and dist_to_core > current_dist_to_core:
+            score -= 500
+
+        # Prevent immediate 2-cell ping-pong oscillation
+        if prev_cell is not None and cand == prev_cell:
+            score += 5000
+
+        candidates.append((score, direction, cand))
 
     candidates.sort(key=lambda x: (x[0], x[1].value))
     for _, direction, cand in candidates:

@@ -110,3 +110,29 @@ def test_empty_worker_on_core_vacates_when_resource_route_blocked():
     w1_intent = next((i for i in intents if i.actor_id == w_empty.id), None)
     assert w1_intent is not None
 
+
+def test_deploy_sidestep_penalizes_immediate_return_to_previous_cell():
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.common import _deploy_sidestep
+
+    ranger = unit(1, UnitType.RANGER, (0, 0))
+    context = DecisionContext.from_turn(turn(owned_core=core(position=(0, 0)), units=(ranger,)))
+    memory = AgentMemory()
+    # Record that ranger was at (0, 1) in previous tick
+    memory.unit_tasks[str(ranger.id)] = {"prev_cell": [0, 1]}
+
+    reservations = ReservationTable(occupancy={})
+    intent = _deploy_sidestep(
+        ranger,
+        target=(10, 0),
+        context=context,
+        memory=memory,
+        reservations=reservations,
+        reason="test_deploy",
+        core_position=(0, 0),
+    )
+    assert intent is not None
+    # Must NOT choose (0, 1) since it was the previous cell
+    assert intent.reserved_cell != (0, 1)
+
+

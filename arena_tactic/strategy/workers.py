@@ -206,6 +206,7 @@ def _frontier_assignments(
                         )
                     )
                 candidates: list[tuple[int, int, int, Position]] = []
+                fallback_candidates: list[tuple[int, int, int, Position]] = []
                 for _, lateral, negative_projection, cell in sorted(
                     geometric_candidates
                 )[:32]:
@@ -218,18 +219,20 @@ def _frontier_assignments(
                     )
                     if path_cost is None:
                         continue
+                    item = (path_cost + lateral, lateral, negative_projection, cell)
+                    fallback_candidates.append(item)
                     # Reachability pre-filter: skip targets whose path cost
                     # clearly exceeds the remaining sector hold window so we
                     # never pick a destination the worker cannot reach.
-                    if path_cost > remaining_hold:
-                        continue
-                    candidates.append(
-                        (path_cost + lateral, lateral, negative_projection, cell)
-                    )
+                    if path_cost <= remaining_hold:
+                        candidates.append(item)
                 if candidates:
                     target = min(candidates)[-1]
                     selected_sector = candidate_sector
                     break
+                elif fallback_candidates and target is None:
+                    target = min(fallback_candidates)[-1]
+                    selected_sector = candidate_sector
             if target is None:
                 continue
             if selected_sector != sector:
@@ -422,10 +425,20 @@ def _plan_workers(
                     elif (
                         distance(worker.position, return_target) == 1
                         and len(context.friendly_occupancy.get(worker.position, ())) >= 2
+                        and worker.id
+                        == sorted(
+                            context.friendly_occupancy.get(worker.position, ()),
+                            key=lambda u: str(u),
+                        )[0]
                     ):
                         # Doorstep is full (2 units occupying the entrance cell) and Core cannot be entered.
-                        # Step aside to an adjacent passable non-core tile to relieve the chokepoint so
-                        # empty workers trapped inside Core can vacate and deposit traffic can flow.
+                        # Only ONE worker steps aside to relieve the chokepoint so empty workers trapped
+                        # inside Core can vacate, while avoiding symmetric multi-worker ping-pong oscillation.
+                        existing_task = memory.unit_tasks.get(str(worker.id), {})
+                        prev_cell_raw = existing_task.get("prev_cell")
+                        prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
+                        cand_dirs = []
                         for d in DIRECTIONS:
                             side_cell = destination(worker.position, d)
                             if (
@@ -433,8 +446,12 @@ def _plan_workers(
                                 and side_cell not in memory.obstacles
                                 and side_cell not in memory.active_temporary_blocks(context.tick)
                                 and side_cell not in context.enemy_occupancy
-                                and reservations.reserve(side_cell)
                             ):
+                                pen = 5000 if (prev_cell is not None and side_cell == prev_cell) else 0
+                                cand_dirs.append((pen, d, side_cell))
+                        cand_dirs.sort(key=lambda x: x[0])
+                        for _, d, side_cell in cand_dirs:
+                            if reservations.reserve(side_cell):
                                 intent = ActionIntent(
                                     actor_id=worker.id,
                                     is_core=False,
@@ -594,6 +611,25 @@ def _plan_workers(
                     continue
             intents.append(_wait(worker, "core_cell_vacate_blocked"))
             continue
+        # ── doorstep idle override ──
+        # When frontier is empty, _frontier_assignments still projects synthetic
+        # exploration targets to keep workers moving.  However, a worker standing
+        # on the doorstep (adjacent to core, no cargo) should yield instead of
+        # chasing a synthetic target – it would block deposit traffic.
+        if (
+            not cargo
+            and target is not None
+            and reason == "explore_sector_frontier"
+            and context.core is not None
+            and distance(worker.position, context.core.position) <= 1
+        ):
+            frontier_cells = memory.frontier() - (
+                memory.obstacles
+                | memory.active_temporary_blocks(context.tick)
+                | set(context.enemy_occupancy)
+            )
+            if not frontier_cells:
+                target = None  # fall through to yield_core_doorstep_idle
         if target is not None:
             task_kind = (
                 "recon" if reconnaissance.get(str(worker.id)) else "explore"
@@ -620,6 +656,40 @@ def _plan_workers(
             )
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue
+
+        if (
+            target is None
+            and context.core is not None
+            and distance(worker.position, context.core.position) <= 1
+        ):
+            # Idle empty worker on or adjacent to Core: do not loiter on the doorstep blocking deposit traffic.
+            # Step away to an adjacent passable non-core tile.
+            yielded = False
+            for d in DIRECTIONS:
+                step_cell = destination(worker.position, d)
+                if (
+                    step_cell != context.core.position
+                    and step_cell not in memory.obstacles
+                    and step_cell not in memory.active_temporary_blocks(context.tick)
+                    and step_cell not in context.enemy_occupancy
+                    and reservations.reserve(step_cell)
+                ):
+                    intents.append(
+                        ActionIntent(
+                            actor_id=worker.id,
+                            is_core=False,
+                            action=ActionKind.MOVE,
+                            score=350,
+                            reason="yield_core_doorstep_idle",
+                            direction=d,
+                            target_cell=step_cell,
+                            reserved_cell=step_cell,
+                        )
+                    )
+                    yielded = True
+                    break
+            if yielded:
+                continue
 
         intents.append(_wait(worker, "no_resource_or_frontier"))
     return intents
