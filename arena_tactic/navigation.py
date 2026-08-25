@@ -14,6 +14,13 @@ from .models import AgentConfig, Position, ReservationTable
 
 
 DIRECTIONS = (Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT)
+DIRECTION_OFFSETS = ((0, -1), (0, 1), (-1, 0), (1, 0))
+DELTA_TO_DIRECTION = {
+    (0, -1): Direction.UP,
+    (0, 1): Direction.DOWN,
+    (-1, 0): Direction.LEFT,
+    (1, 0): Direction.RIGHT,
+}
 
 
 def distance(a: Position, b: Position) -> int:
@@ -26,8 +33,7 @@ def destination(origin: Position, direction: Direction) -> Position:
 
 
 def adjacent_direction(origin: Position, target: Position) -> Direction | None:
-    delta = target[0] - origin[0], target[1] - origin[1]
-    return next((direction for direction in DIRECTIONS if direction.delta == delta), None)
+    return DELTA_TO_DIRECTION.get((target[0] - origin[0], target[1] - origin[1]))
 
 
 def shot_range(
@@ -89,12 +95,13 @@ def bounded_astar(
     """Return only the current safe first step; unknown distant cells may replan."""
     if start == goal:
         return None
-    margin = min(12, max(4, distance(start, goal) // 3 + 2))
-    min_x, max_x = min(start[0], goal[0]) - margin, max(start[0], goal[0]) + margin
-    min_y, max_y = min(start[1], goal[1]) - margin, max(start[1], goal[1]) + margin
+    gx, gy = goal
+    margin = min(12, max(4, (abs(start[0] - gx) + abs(start[1] - gy)) // 3 + 2))
+    min_x, max_x = min(start[0], gx) - margin, max(start[0], gx) + margin
+    min_y, max_y = min(start[1], gy) - margin, max(start[1], gy) + margin
 
     queue: list[tuple[int, int, Position]] = []
-    heappush(queue, (distance(start, goal), 0, start))
+    heappush(queue, (abs(start[0] - gx) + abs(start[1] - gy), 0, start))
     came_from: dict[Position, Position] = {}
     cost = {start: 0}
     visited = 0
@@ -108,14 +115,17 @@ def bounded_astar(
                 if previous is None:
                     return None
                 step = previous
-            return adjacent_direction(start, step)
+            return DELTA_TO_DIRECTION.get((step[0] - start[0], step[1] - start[1]))
         if current_cost != cost.get(current):
             continue
         visited += 1
-        for direction in DIRECTIONS:
-            neighbor = destination(current, direction)
-            if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
+        cx, cy = current
+        for dx, dy in DIRECTION_OFFSETS:
+            nx = cx + dx
+            ny = cy + dy
+            if not (min_x <= nx <= max_x and min_y <= ny <= max_y):
                 continue
+            neighbor = (nx, ny)
             if neighbor in blocked and neighbor != goal:
                 continue
             new_cost = current_cost + 1
@@ -125,7 +135,7 @@ def bounded_astar(
             came_from[neighbor] = current
             heappush(
                 queue,
-                (new_cost + distance(neighbor, goal), new_cost, neighbor),
+                (new_cost + abs(nx - gx) + abs(ny - gy), new_cost, neighbor),
             )
     return None
 
@@ -141,10 +151,13 @@ def bounded_path_cost(
     """Return an obstacle-aware shortest-path cost within a bounded search."""
     if start == goal:
         return 0
-    margin = min(12, max(4, distance(start, goal) // 3 + 2))
-    min_x, max_x = min(start[0], goal[0]) - margin, max(start[0], goal[0]) + margin
-    min_y, max_y = min(start[1], goal[1]) - margin, max(start[1], goal[1]) + margin
-    queue: list[tuple[int, int, Position]] = [(distance(start, goal), 0, start)]
+    gx, gy = goal
+    margin = min(12, max(4, (abs(start[0] - gx) + abs(start[1] - gy)) // 3 + 2))
+    min_x, max_x = min(start[0], gx) - margin, max(start[0], gx) + margin
+    min_y, max_y = min(start[1], gy) - margin, max(start[1], gy) + margin
+    queue: list[tuple[int, int, Position]] = [
+        (abs(start[0] - gx) + abs(start[1] - gy), 0, start)
+    ]
     costs = {start: 0}
     visited = 0
     while queue and visited < node_limit and perf_counter() < deadline:
@@ -154,10 +167,13 @@ def bounded_path_cost(
         if current_cost != costs.get(current):
             continue
         visited += 1
-        for direction in DIRECTIONS:
-            neighbor = destination(current, direction)
-            if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
+        cx, cy = current
+        for dx, dy in DIRECTION_OFFSETS:
+            nx = cx + dx
+            ny = cy + dy
+            if not (min_x <= nx <= max_x and min_y <= ny <= max_y):
                 continue
+            neighbor = (nx, ny)
             if neighbor in blocked and neighbor != goal:
                 continue
             candidate_cost = current_cost + 1
@@ -167,7 +183,7 @@ def bounded_path_cost(
             heappush(
                 queue,
                 (
-                    candidate_cost + distance(neighbor, goal),
+                    candidate_cost + abs(nx - gx) + abs(ny - gy),
                     candidate_cost,
                     neighbor,
                 ),
@@ -213,11 +229,9 @@ def plan_step(
 ) -> Direction | None:
     if start == goal:
         return None
-    blocked = set(persistent_obstacles) | set(context.enemy_occupancy)
-    # Newly visible obstacles exist in the authoritative context before the
-    # memory layer absorbs them; without this union the planner proposes a
-    # first step the validator immediately rejects as destination_blocked.
-    blocked |= set(context.obstacle_cells)
+    blocked = set(persistent_obstacles)
+    blocked.update(context.enemy_occupancy)
+    blocked.update(context.obstacle_cells)
     blocked.discard(goal)
     if avoid_threats:
         blocked.update(enemy_threat_cells(context))

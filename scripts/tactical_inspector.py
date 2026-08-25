@@ -162,16 +162,39 @@ def _oscillation(positions: list[tuple[int, tuple[int, int]]]) -> dict[str, Any]
     if len(positions) < 12:
         return None
     coords = [p for _, p in positions]
-    unique_cells = set(coords[-16:])
-    # If the unit is exploring across more than 3 distinct cells, it's normal navigation/turning, not a trapped oscillation.
-    if len(unique_cells) > 3 or len(unique_cells) < 2:
-        return None
-    reversals = sum(coords[i] == coords[i - 2] and coords[i] != coords[i - 1] for i in range(2, len(coords)))
-    # Require sustained high-frequency back-and-forth trapped in 2~3 cells
-    if reversals < max(8, len(coords) // 3):
-        return None
-    period = next((p for p in (2, 3, 4) if len(coords) >= p * 3 and sum(coords[i] == coords[i-p] for i in range(p, len(coords))) >= len(coords) * 0.6), None)
-    return {"period": period or 2, "reversals": reversals, "samples": len(coords), "cells": [list(p) for p in dict.fromkeys(coords[-12:])], "tick_range": [positions[0][0], positions[-1][0]]}
+    # Check both full-window and recent-tail window to catch both sustained
+    # and newly-emerging oscillations without being diluted by earlier normal movement.
+    for check_coords in (coords, coords[-32:] if len(coords) >= 16 else coords):
+        if len(check_coords) < 12:
+            continue
+        unique_cells = set(check_coords)
+        # If the unit is exploring across more than 3 distinct cells, it's normal navigation/turning, not a trapped oscillation.
+        if len(unique_cells) > 3 or len(unique_cells) < 2:
+            continue
+        reversals = sum(
+            check_coords[i] == check_coords[i - 2] and check_coords[i] != check_coords[i - 1]
+            for i in range(2, len(check_coords))
+        )
+        # Require sustained high-frequency back-and-forth trapped in 2~3 cells
+        if reversals >= max(8, len(check_coords) // 3):
+            period = next(
+                (
+                    p
+                    for p in (2, 3, 4)
+                    if len(check_coords) >= p * 3
+                    and sum(check_coords[i] == check_coords[i - p] for i in range(p, len(check_coords)))
+                    >= len(check_coords) * 0.6
+                ),
+                None,
+            )
+            return {
+                "period": period or 2,
+                "reversals": reversals,
+                "samples": len(check_coords),
+                "cells": [list(p) for p in dict.fromkeys(check_coords[-12:])],
+                "tick_range": [positions[0][0], positions[-1][0]],
+            }
+    return None
 
 
 def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_timeout: float) -> dict[str, Any]:
