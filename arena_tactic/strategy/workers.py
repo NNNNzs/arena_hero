@@ -408,6 +408,44 @@ def _plan_workers(
                     and context.core.destination
                     else context.core.position
                 )
+                if intent is None:
+                    if distance(worker.position, return_target) > 1:
+                        intent = _return_to_core_sidestep(
+                            worker,
+                            return_target,
+                            context,
+                            memory,
+                            reservations,
+                            "return_cargo_to_core",
+                            minimum_distance=1,
+                        )
+                    elif (
+                        distance(worker.position, return_target) == 1
+                        and len(context.friendly_occupancy.get(worker.position, ())) >= 2
+                    ):
+                        # Doorstep is full (2 units occupying the entrance cell) and Core cannot be entered.
+                        # Step aside to an adjacent passable non-core tile to relieve the chokepoint so
+                        # empty workers trapped inside Core can vacate and deposit traffic can flow.
+                        for d in DIRECTIONS:
+                            side_cell = destination(worker.position, d)
+                            if (
+                                side_cell != return_target
+                                and side_cell not in memory.obstacles
+                                and side_cell not in memory.active_temporary_blocks(context.tick)
+                                and side_cell not in context.enemy_occupancy
+                                and reservations.reserve(side_cell)
+                            ):
+                                intent = ActionIntent(
+                                    actor_id=worker.id,
+                                    is_core=False,
+                                    action=ActionKind.MOVE,
+                                    score=400,
+                                    reason="yield_doorstep_congestion",
+                                    direction=d,
+                                    target_cell=side_cell,
+                                    reserved_cell=side_cell,
+                                )
+                                break
                 _record_unit_task(
                     memory,
                     context,
@@ -490,8 +528,12 @@ def _plan_workers(
                 target=target,
                 intent=intent,
             )
-            intents.append(intent or _wait(worker, "resource_route_blocked"))
-            continue
+            if intent is not None:
+                intents.append(intent)
+                continue
+            if not (_at_normal_core(worker, context) and not cargo):
+                intents.append(_wait(worker, "resource_route_blocked"))
+                continue
 
         target = reconnaissance.get(str(worker.id))
         reason = "reobserve_remembered_resource"

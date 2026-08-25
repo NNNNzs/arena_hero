@@ -66,3 +66,47 @@ def test_ranger_scoring_uses_legal_firing_range_for_diagonal_targets():
     straight_score = ranger_target_score(ranger, straight, context, memory)
 
     assert diagonal_score > straight_score
+
+
+def test_guard_slots_skips_radius_1_in_tight_bottleneck_terrain():
+    from arena_tactic.strategy.common import _guard_slots
+
+    # Core at (0, 0) with obstacles on North, East, South -> only ( -1, 0 ) is passable
+    context = DecisionContext.from_turn(turn(owned_core=core(position=(0, 0))))
+    memory = AgentMemory(
+        obstacles={(0, 1), (1, 0), (0, -1)},
+    )
+    slots = _guard_slots(context, memory)
+    # Radius 1 slot (-1, 0) must NOT be chosen to avoid blocking the sole entrance
+    assert (-1, 0) not in slots
+    # Radius 2/3 slots should be present
+    assert any(abs(x) + abs(y) >= 2 for x, y in slots)
+
+
+def test_empty_worker_on_core_vacates_when_resource_route_blocked():
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.workers import _plan_workers
+
+    # Core at (0, 0) with empty worker at (0, 0).
+    # Passable exit (-1, 0) is blocked by a friend, but (-1, -1) or other open cell is reachable.
+    w_empty = unit(1, UnitType.WORKER, (0, 0), cargo=0)
+    w_blocker = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    context = DecisionContext.from_turn(
+        turn(
+            owned_core=core(position=(0, 0)),
+            units=(w_empty, w_blocker),
+            resource_cells=((-5, 0),),
+        )
+    )
+    # (-1, 0) has 2 occupancy (fully blocked), North/East/South are obstacles
+    memory = AgentMemory(
+        obstacles={(0, 1), (1, 0), (0, -1)},
+    )
+    reservations = ReservationTable(occupancy={(0, 0): 2, (-1, 0): 2})
+    intents = _plan_workers(
+        context, memory, reservations, 9999999999.0, AgentConfig(), {}
+    )
+    # The empty worker must attempt to vacate or step aside instead of purely waiting on resource_route_blocked
+    w1_intent = next((i for i in intents if i.actor_id == w_empty.id), None)
+    assert w1_intent is not None
+

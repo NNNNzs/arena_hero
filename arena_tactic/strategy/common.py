@@ -108,9 +108,16 @@ def _guard_slots(context: DecisionContext, memory: AgentMemory) -> list[Position
     if context.core is None:
         return []
     x, y = context.core.position
+    passable_r1 = [
+        (x + dx, y + dy)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+        if (x + dx, y + dy) not in memory.obstacles
+        and (x + dx, y + dy) not in context.enemy_occupancy
+    ]
+    radii = (2, 3) if len(passable_r1) <= 2 else (1, 2, 3)
     candidates = [
         (x + dx, y + dy)
-        for radius in (1, 2, 3)
+        for radius in radii
         for dx in range(-radius, radius + 1)
         for dy in range(-radius, radius + 1)
         if abs(dx) + abs(dy) == radius
