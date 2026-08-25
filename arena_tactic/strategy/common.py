@@ -396,3 +396,51 @@ def _return_to_core_sidestep(
                 reserved_cell=cell,
             )
     return None
+
+
+def _deploy_sidestep(
+    unit: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+    core_position: Position | None,
+) -> ActionIntent | None:
+    """Reserve a lateral or outward step when direct deployment route is congested near Core."""
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+    )
+    current_dist_to_target = distance(unit.position, target)
+    current_dist_to_core = distance(unit.position, core_position) if core_position is not None else 0
+
+    candidates = []
+    for direction in DIRECTIONS:
+        cand = destination(unit.position, direction)
+        if cand in blocked:
+            continue
+        dist_to_target = distance(cand, target)
+        dist_to_core = distance(cand, core_position) if core_position is not None else 0
+        if dist_to_target <= current_dist_to_target:
+            score = dist_to_target * 10 - dist_to_core
+            candidates.append((score, direction, cand))
+        elif core_position is not None and dist_to_core >= current_dist_to_core:
+            score = 1000 + dist_to_target * 10 - dist_to_core
+            candidates.append((score, direction, cand))
+
+    candidates.sort(key=lambda x: (x[0], x[1].value))
+    for _, direction, cand in candidates:
+        if reservations.reserve(cand):
+            return ActionIntent(
+                unit.id,
+                False,
+                ActionKind.MOVE,
+                380,
+                reason + "_sidestep",
+                target_cell=target,
+                direction=direction,
+                reserved_cell=cand,
+            )
+    return None

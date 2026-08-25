@@ -20,6 +20,7 @@ from .combat import (
     ranger_target_score,
 )
 from .common import (
+    _deploy_sidestep,
     UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
@@ -272,6 +273,11 @@ def _plan_rangers(
                     context=context, memory=memory, reservations=reservations,
                     deadline=deadline, config=config,
                 )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        ranger, hunter_target, context, memory,
+                        reservations, "hunter_forward_recon", context.core.position,
+                    )
                 _record_unit_task(memory, context, ranger, kind="hunter", target=hunter_target, intent=intent)
                 intents.append(intent or _wait(ranger, "hunter_route_blocked"))
                 continue

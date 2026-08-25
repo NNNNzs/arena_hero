@@ -21,6 +21,7 @@ from .combat import (
     vanguard_cell_score,
 )
 from .common import (
+    _deploy_sidestep,
     UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
@@ -321,6 +322,11 @@ def _plan_vanguards(
                     context=context, memory=memory, reservations=reservations,
                     deadline=deadline, config=config,
                 )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        vanguard, patrol_target, context, memory,
+                        reservations, "patrol_outer_ring", context.core.position,
+                    )
                 _record_unit_task(memory, context, vanguard, kind="patrol", target=patrol_target, intent=intent)
                 intents.append(intent or _wait(vanguard, "patrol_route_blocked"))
                 continue
