@@ -662,7 +662,7 @@ DASHBOARD_HTML = """<!doctype html>
 <title>Arena Hero · 作战指挥中心</title><link rel="stylesheet" href="/static/command-center.css"><script src="/static/pixi.min.js"></script></head>
 <body><main class="command-center">
 <header class="command-bar">
-  <div class="brand"><span class="eyebrow">ARENA HERO / TACTICAL OPERATIONS</span><h1>作战指挥中心</h1><p>权威回合态势 · 地图下令 · 脱敏数据</p></div>
+  <div class="brand"><span class="eyebrow">ARENA HERO</span><h1>作战指挥中心</h1></div>
   <div class="top-metrics" aria-label="实时作战状态">
     <div class="metric"><span>TICK</span><strong id="tick">—</strong></div>
     <div class="metric"><span>资源 / 容量</span><strong id="resources">—</strong></div>
@@ -710,7 +710,6 @@ DASHBOARD_HTML = """<!doctype html>
   </aside>
 </section>
 
-<button id="eventDrawerToggle" class="event-drawer-toggle" aria-expanded="false" aria-controls="eventDrawer">📜 事件日志 <span id="eventCountAll" class="event-count">0</span></button>
 <section id="eventDrawer" class="panel event-drawer" aria-label="事件日志" hidden>
   <div class="section-head"><div><span class="eyebrow">EVENT LOG / COMBAT · HARVEST · OPERATIONS</span><h2>事件日志</h2></div><button id="eventDrawerClose" class="neutral event-drawer-close" title="收起">✕</button></div>
   <div id="eventFilters" class="event-filters"><button class="filter-btn is-active" data-event-category="ALL">全部 <span id="eventCountAllDrawer" class="event-count">0</span></button><button class="filter-btn" data-event-category="combat">战斗 <span id="eventCountCombat" class="event-count">0</span></button><button class="filter-btn" data-event-category="harvest">采集 <span id="eventCountHarvest" class="event-count">0</span></button><button class="filter-btn" data-event-category="ops">运营 <span id="eventCountOps" class="event-count">0</span></button><button class="filter-btn" data-event-category="anomaly">异常 <span id="eventCountAnomaly" class="event-count">0</span></button></div>
@@ -718,8 +717,8 @@ DASHBOARD_HTML = """<!doctype html>
 </section>
 
 <section class="replay-panel" aria-label="32 Tick 作战时间轴">
-  <div class="replay-heading"><div><span class="eyebrow">REPLAY WINDOW / 32 TICKS</span><h2>作战时间轴</h2></div><div><span id="replayState" class="muted">等待回放快照</span><strong id="replayTick" class="tick">—</strong></div></div>
+  <div class="replay-heading"><h2>作战时间轴</h2><div><span id="replayState" class="muted">等待回放快照</span><strong id="replayTick" class="tick">—</strong></div></div>
   <div class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div></div>
-  <div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮ 首帧</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶ 播放</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button></div>
+  <div class="replay-controls"><button id="replayStart" class="neutral" title="回到起点">⏮</button><button id="replayPrev" class="neutral" title="上一帧">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶ 播放</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button><button id="eventDrawerToggle" class="neutral event-drawer-toggle" aria-expanded="false" aria-controls="eventDrawer">📜 日志 <span id="eventCountAll" class="event-count">0</span></button></div>
 </section>
 </main><script src="/static/command-center.js"></script><script src="/static/tactical-map/layers.js"></script><script src="/static/tactical-map/camera.js"></script><script src="/static/tactical-map/radar.js"></script><script src="/static/tactical-map/renderers.js"></script><script src="/static/tactical-map/input.js"></script><script src="/static/tactical-map/main.js"></script></body></html>"""
