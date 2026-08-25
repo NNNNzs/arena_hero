@@ -1,4 +1,4 @@
-/* Off-screen entity radar, shared by the WebGL and Canvas renderers. */
+/* Off-screen entity edge radar for the WebGL renderer. */
 (() => {
   'use strict';
   const TacticalMap = window.TacticalMap = window.TacticalMap || {};
@@ -33,12 +33,5 @@
       entry.arrow.visible = true; entry.arrow.tint = color; entry.arrow.position.set(point.x, point.y); entry.arrow.rotation = point.angle;
       entry.label.visible = true; entry.label.text = `${marker.label} ${point.distance}格`; entry.label.position.set(clamp(point.x + 8, 6, state.size.w - 74), clamp(point.y + 7, 8, state.size.h - 18));
     });
-  };
-  TacticalMap.drawCanvasRadar = (state, context) => {
-    for (const marker of TacticalMap.farMarkers(state)) {
-      const point = TacticalMap.radarPosition(state, marker.position), color = marker.type === 'enemy' ? COLORS.enemy : (marker.type === 'resource' ? COLORS.resource : COLORS.friendly);
-      context.save(); context.translate(point.x, point.y); context.rotate(point.angle); context.fillStyle = color; context.beginPath(); context.moveTo(9, 0); context.lineTo(-7, -5); context.lineTo(-3, 0); context.lineTo(-7, 5); context.closePath(); context.fill(); context.restore();
-      context.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'; context.fillStyle = COLORS.text; context.fillText(`${marker.label} ${point.distance}格`, clamp(point.x + 8, 6, state.size.w - 74), clamp(point.y + 8, 10, state.size.h - 12));
-    }
   };
 })();

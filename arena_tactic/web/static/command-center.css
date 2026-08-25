@@ -298,8 +298,8 @@ h3 { font: 650 13px/1.25 var(--display); letter-spacing: .04em; }
 .layer-toggle select { width: auto; min-height: 29px; padding: 3px 24px 3px 6px; font-size: 11px; }
 .map-legend { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .legend-unit { display: inline-block; width: 9px; height: 9px; border: 1px solid var(--friendly); }
-.legend-unit.vanguard { clip-path: polygon(50% 0, 100% 100%, 0 100%); background: var(--friendly); }
-.legend-unit.ranger { transform: rotate(45deg) scale(.75); }
+.legend-unit.vanguard { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); background: var(--friendly); }
+.legend-unit.ranger { clip-path: polygon(50% 0, 100% 100%, 0 100%); background: var(--friendly); }
 .legend-resource { display: inline-block; width: 9px; height: 9px; transform: rotate(45deg) scale(.75); background: var(--resource); }
 .map-order { padding: 4px 10px; border-color: #765f32; color: var(--resource); white-space: nowrap; }
 .map-order.is-active { border-color: var(--resource); background: #302713; }
