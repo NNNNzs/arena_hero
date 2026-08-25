@@ -21,6 +21,7 @@ from .combat import (
 )
 from .common import (
     _deploy_sidestep,
+    _yield_cargo_delivery,
     UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
@@ -239,6 +240,19 @@ def _plan_rangers(
                 config=config,
             )
             intents.append(intent or _wait(ranger, "firing_route_blocked"))
+            continue
+
+        cargo_yield = _yield_cargo_delivery(ranger, context, memory, reservations)
+        if cargo_yield is not None:
+            _record_unit_task(
+                memory,
+                context,
+                ranger,
+                kind="yield_cargo_delivery",
+                target=cargo_yield.target_cell or ranger.position,
+                intent=cargo_yield,
+            )
+            intents.append(cargo_yield)
             continue
 
         if ranger.id not in guard_rangers:

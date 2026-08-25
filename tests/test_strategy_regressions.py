@@ -79,8 +79,9 @@ def test_guard_slots_skips_radius_1_in_tight_bottleneck_terrain():
     slots = _guard_slots(context, memory)
     # Radius 1 slot (-1, 0) must NOT be chosen to avoid blocking the sole entrance
     assert (-1, 0) not in slots
-    # Radius 2/3 slots should be present
-    assert any(abs(x) + abs(y) >= 2 for x, y in slots)
+    # Guard posts begin beyond the dedicated 1-3 cell mining corridor.
+    assert slots
+    assert all(abs(x) + abs(y) in (4, 5, 6) for x, y in slots)
 
 
 def test_empty_worker_on_core_vacates_when_resource_route_blocked():
@@ -136,3 +137,39 @@ def test_deploy_sidestep_penalizes_immediate_return_to_previous_cell():
     assert intent.reserved_cell != (0, 1)
 
 
+def test_combat_unit_yields_outward_for_nearby_cargo_delivery():
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.common import _yield_cargo_delivery
+
+    vanguard = unit(1, UnitType.VANGUARD, (-1, 0))
+    cargo_worker = unit(2, UnitType.WORKER, (-2, 0), cargo=1)
+    context = DecisionContext.from_turn(
+        turn(owned_core=core(position=(0, 0)), units=(vanguard, cargo_worker))
+    )
+    intent = _yield_cargo_delivery(
+        vanguard, context, AgentMemory(), ReservationTable(occupancy={})
+    )
+
+    assert intent is not None
+    assert intent.reason == "yield_cargo_delivery_sidestep"
+    assert intent.reserved_cell is not None
+    assert abs(intent.reserved_cell[0]) + abs(intent.reserved_cell[1]) > 1
+
+
+def test_combat_unit_vacates_core_cell_for_cargo_delivery():
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.common import _yield_cargo_delivery
+
+    ranger = unit(1, UnitType.RANGER, (0, 0))
+    cargo_worker = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    context = DecisionContext.from_turn(
+        turn(owned_core=core(position=(0, 0)), units=(ranger, cargo_worker))
+    )
+    intent = _yield_cargo_delivery(
+        ranger, context, AgentMemory(), ReservationTable(occupancy={(0, 0): 2})
+    )
+
+    assert intent is not None
+    assert intent.reserved_cell != (0, 0)
+    assert intent.reserved_cell is not None
+    assert intent.reserved_cell[0] > 0

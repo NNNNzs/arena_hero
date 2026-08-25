@@ -96,14 +96,14 @@ class AgentConfig:
     resource_target_grace_ticks: int = 4
     core_guard_vanguards: int = 1
     core_guard_rangers: int = 1
-    patrol_radius_min: int = 5
-    patrol_radius_max: int = 8
+    patrol_radius_min: int = 8
+    patrol_radius_max: int = 14
     # Four fixed clockwise arcs: east, south, west and north.  Targets advance
     # only on arrival or invalidation; they are never rotated by wall-clock Tick.
     patrol_arc_segments: int = 4
-    patrol_radius_units_per_step: int = 4
-    hunter_radius_min: int = 7
-    hunter_radius_max: int = 10
+    patrol_radius_units_per_step: int = 3
+    hunter_radius_min: int = 10
+    hunter_radius_max: int = 16
     intercept_vanguards: int = 2
     intercept_rangers: int = 1
     intercept_distance: int = 8

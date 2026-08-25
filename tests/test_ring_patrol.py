@@ -31,7 +31,26 @@ def test_ring_patrol_arc_assignment_is_deterministic():
     ]
 
     assert first == second
-    assert first == [(5, 0), (0, 5), (-5, 0), (0, -5)]
+    assert first == [(9, 0), (0, 9), (-9, 0), (0, -9)]
+
+
+def test_default_outer_rings_are_not_limited_by_core_visibility():
+    owned_core = core()
+    actor = unit(1, UnitType.RANGER, (0, 0))
+    config = AgentConfig()
+
+    assert (
+        config.patrol_radius_min,
+        config.patrol_radius_max,
+        config.hunter_radius_min,
+        config.hunter_radius_max,
+        config.patrol_radius_units_per_step,
+    ) == (8, 14, 10, 16, 3)
+    # A sufficiently large hunter roster reaches the configured maximum (16),
+    # rather than the retired Core-vision coverage ceiling.
+    assert _combat_target(
+        owned_core, actor, 0, 19, AgentMemory(), config, role="hunter"
+    ) == (16, 0)
 
 
 def test_ring_patrol_target_lock_does_not_rotate_with_tick():

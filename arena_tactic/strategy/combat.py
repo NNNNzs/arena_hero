@@ -31,10 +31,11 @@ def _combat_target(
     task = memory.unit_tasks.get(str(unit.id), {})
     minimum_radius = config.patrol_radius_min if role == "patrol" else config.hunter_radius_min
     configured_max = config.patrol_radius_max if role == "patrol" else config.hunter_radius_max
-    # Four cardinal sentries have diagonal separation r*sqrt(2).  Ranger vision
-    # is five, so radius seven is the largest integer with no >10-cell gap.
-    visibility_max = 7 * max(1, config.patrol_arc_segments) // 4
-    maximum_radius = max(minimum_radius, min(configured_max, visibility_max))
+    # Peripheral patrols deliberately operate beyond Core vision.  Mobile
+    # intercept rosters react to threats that enter current friendly vision;
+    # constraining this ring to overlap Core vision makes guards clog a narrow
+    # mining exit.
+    maximum_radius = max(minimum_radius, configured_max)
     radius = min(
         maximum_radius,
         minimum_radius + max(0, roster_size - 1) // max(1, config.patrol_radius_units_per_step),

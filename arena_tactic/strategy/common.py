@@ -115,7 +115,10 @@ def _guard_slots(context: DecisionContext, memory: AgentMemory) -> list[Position
         if (x + dx, y + dy) not in memory.obstacles
         and (x + dx, y + dy) not in context.enemy_occupancy
     ]
-    radii = (2, 3) if len(passable_r1) <= 2 else (1, 2, 3)
+    # A Core with at most two exits is a chokepoint.  Reserve its first three
+    # rings exclusively for Workers entering with cargo and leaving to mine;
+    # guard posts begin on the outer defensive ring instead.
+    radii = (4, 5, 6) if len(passable_r1) <= 2 else (1, 2, 3)
     candidates = [
         (x + dx, y + dy)
         for radius in radii
@@ -470,3 +473,55 @@ def _deploy_sidestep(
                 reserved_cell=cand,
             )
     return None
+
+
+def _yield_cargo_delivery(
+    unit: UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+) -> ActionIntent | None:
+    """Move a nearby combat Unit outward before a cargo route is blocked.
+
+    Workers are planned first, so their reservations expose the immediate
+    delivery pressure.  This deliberately applies only outside an urgent
+    combat/intercept branch and only within the Core's three-cell throat.
+    """
+    if context.core is None:
+        return None
+    core_position = context.core.position
+    unit_distance = distance(unit.position, core_position)
+    if not 0 <= unit_distance <= 3:
+        return None
+    cargo_workers = tuple(
+        worker for worker in context.workers
+        if worker.cargo and distance(worker.position, core_position) <= 3
+    )
+    if not cargo_workers:
+        return None
+
+    x, y = unit.position
+    core_x, core_y = core_position
+    if unit_distance == 0:
+        # A combat Unit sharing the Core occupies its only extra slot.  Move in
+        # the direction opposite the nearest returning Worker so that worker
+        # can enter and deposit on the following Tick.
+        nearest_cargo = min(
+            cargo_workers,
+            key=lambda worker: (distance(worker.position, core_position), worker.id.bytes),
+        )
+        cargo_x, cargo_y = nearest_cargo.position
+        x, y = core_x * 2 - cargo_x, core_y * 2 - cargo_y
+    outward_target = (
+        core_x + (1 if x > core_x else -1 if x < core_x else 0) * 6,
+        core_y + (1 if y > core_y else -1 if y < core_y else 0) * 6,
+    )
+    return _deploy_sidestep(
+        unit,
+        outward_target,
+        context,
+        memory,
+        reservations,
+        "yield_cargo_delivery",
+        core_position,
+    )

@@ -32,3 +32,58 @@ def test_cargo_worker_prioritized_before_empty_worker():
         key=lambda item: (0 if item[1] else 1, item[0]),
     )
     assert workers_sorted[0] == ("a", 2)
+
+
+def test_doorstep_congestion_only_one_cargo_worker_yields():
+    """门口拥堵时只有一名载货工人退让，避免两名工人同周期往返振荡死锁。"""
+    c = core(position=(0, 0))
+    # 核心格已被占满（容量 2），门口 (-1, 0) 有两名载货工人
+    w1 = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    w2 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    # 核心上站一个空载工人使得核心格满员
+    w_core = unit(3, UnitType.WORKER, (0, 0), cargo=0)
+    
+    # 周边开阔
+    memory = AgentMemory()
+    result = choose_actions(turn(owned_core=c, units=(w1, w2, w_core)), memory=memory)
+    
+    intents = {i.actor_id: i for i in result.intents}
+    reasons = [intents[w1.id].reason, intents[w2.id].reason]
+    
+    # 应该有且仅有一名工人触发 yield_doorstep_congestion
+    yield_count = sum(1 for r in reasons if r == "yield_doorstep_congestion")
+    assert yield_count == 1, f"Expected exactly 1 yielding worker, got: {reasons}"
+
+
+def test_idle_worker_yields_doorstep_when_no_frontier():
+    """空载且无探索目标的工人停留在门口时，应主动让开门口避免阻断运矿。"""
+    c = core(position=(0, 0))
+    # 空载工人在门口 (-1, 0)
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    # 全图已探索，无 frontier
+    explored = {(x, y) for x in range(-5, 6) for y in range(-5, 6)}
+    obstacles = {
+        (x, y) for x in range(-6, 7) for y in range(-6, 7)
+        if not (-5 <= x <= 5 and -5 <= y <= 5)
+    }
+    memory = AgentMemory(explored=explored, obstacles=obstacles)
+    result = choose_actions(turn(owned_core=c, units=(w,)), memory=memory)
+    
+    intent = next(i for i in result.intents if i.actor_id == w.id)
+    assert intent.reason == "yield_core_doorstep_idle"
+
+
+def test_combat_guard_vacates_core_for_returning_cargo_worker():
+    """守卫占核心格时，返矿工人进入咽喉后应优先让位。"""
+    c = core(position=(0, 0))
+    cargo_worker = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    guard = unit(2, UnitType.VANGUARD, (0, 0))
+
+    result = choose_actions(
+        turn(owned_core=c, units=(cargo_worker, guard)), memory=AgentMemory()
+    )
+
+    intent = next(intent for intent in result.intents if intent.actor_id == guard.id)
+    assert intent.reason == "yield_cargo_delivery_sidestep"
+    assert intent.reserved_cell is not None
+    assert intent.reserved_cell[0] > 0
