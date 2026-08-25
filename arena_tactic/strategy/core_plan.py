@@ -61,6 +61,17 @@ def _spawn_target(
         for unit_type, target in early:
             if counts[unit_type] < target:
                 return unit_type
+    # Mid-game economic expansion: once the baseline defense line is established
+    # (Vanguard >= early_vanguards and Ranger >= early_rangers), scale up workers
+    # to mid_workers (default 5) in peacetime to support multi-line harvesting and escorting.
+    if (
+        not wartime
+        and counts[UnitType.VANGUARD] >= config.early_vanguards
+        and counts[UnitType.RANGER] >= config.early_rangers
+        and counts[UnitType.WORKER] < config.mid_workers
+    ):
+        return UnitType.WORKER
+
     mature = (
         (UnitType.WORKER, config.mature_workers),
         (UnitType.VANGUARD, config.mature_vanguards),

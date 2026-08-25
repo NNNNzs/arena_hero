@@ -1124,3 +1124,24 @@ def test_zero_combat_units_evades_threat_when_resources_insufficient():
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert core_intent.action is ActionKind.START_MOVE
     assert core_intent.reason == "evade_threat_without_combat_roster"
+
+
+def test_spawn_target_prioritizes_mid_workers_after_early_defense():
+    """Verify that once early combat units are present, mid_workers (5) takes priority over mature combat units."""
+    from arena_tactic.models import AgentConfig, StrategicMode
+    from arena_tactic.context import DecisionContext
+    from arena_tactic.strategy.core_plan import _spawn_target
+
+    config = AgentConfig(early_workers=2, early_vanguards=2, early_rangers=1, mid_workers=5)
+    c = core(position=(0, 0))
+    # 2 workers, 2 vanguards, 1 ranger (early targets met)
+    units = (
+        unit(1, UnitType.WORKER, (1, 0)),
+        unit(2, UnitType.WORKER, (2, 0)),
+        unit(3, UnitType.VANGUARD, (0, 1)),
+        unit(4, UnitType.VANGUARD, (0, -1)),
+        unit(5, UnitType.RANGER, (1, 1)),
+    )
+    context = DecisionContext.from_turn(turn(tick=10, owned_core=c, units=units))
+    target = _spawn_target(context, config, StrategicMode.ECONOMY)
+    assert target is UnitType.WORKER, f"Expected WORKER for mid-game economy expansion, got {target}"

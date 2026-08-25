@@ -73,6 +73,7 @@ class AgentConfig:
     spawn_eval_worker_max: int = 2
     early_vanguards: int = 2
     early_rangers: int = 1
+    mid_workers: int = 5
     mature_workers: int = 12
     mature_vanguards: int = 12
     mature_rangers: int = 16
