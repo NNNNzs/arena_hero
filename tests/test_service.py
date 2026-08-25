@@ -286,12 +286,21 @@ def test_dashboard_payload_injects_known_resources_from_memory(tmp_path: Path):
         "/api/dashboard", ServiceStatus(connected=True, last_tick=5), store,
     )
     payload = json.loads(body)
-    kr = payload["current"]["map"]["known_resources"]
+    assert payload["current"]["map"]["memory_version"] != 0
+    assert payload["map_memory_version"] != 0
+
+    # Static memory endpoint verifies compressed segments and full memory
+    res = _http_response("/api/map/memory", ServiceStatus(), store)
+    assert res is not None
+    _, mem_body, _ = res
+    mem_payload = json.loads(mem_body)
+    assert mem_payload["version"] == payload["current"]["map"]["memory_version"]
+    assert mem_payload["explored_segments"] == [[0, 2, 0]]
+    assert mem_payload["mined"] == [[2, 0]]
+    kr = mem_payload["known_resources"]
     assert [2, 0] in kr
     assert [10, 20] in kr
     assert [-1, 3] in kr
-    assert payload["current"]["map"]["mined"] == [[2, 0]]
-    assert payload["current"]["map"]["explored"] == [[0, 0], [1, 0], [2, 0]]
 
 
 def test_replay_endpoint_returns_default_32_frames(tmp_path: Path):

@@ -160,6 +160,9 @@ def _http_response(
             ensure_ascii=False,
         ).encode()
         return HTTPStatus.OK, payload, "application/json; charset=utf-8"
+    if clean_path == "/api/map/memory":
+        payload = json.dumps(dashboard.map_memory_payload(), ensure_ascii=False).encode()
+        return HTTPStatus.OK, payload, "application/json; charset=utf-8"
     if clean_path not in {"/livez", "/healthz", "/status"}:
         return None
     snapshot = status.snapshot()

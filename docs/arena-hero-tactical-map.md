@@ -8,7 +8,7 @@
 
 ## 2. 定位与数据边界
 
-地图展示指挥中心 `/api/dashboard` 提供的当前或已选回放帧。浏览器只消费已投影的 `current.map` 和同一帧的指挥中心实体摘要；它不读取运行状态文件原文，不接触 SDK `Turn`、控制器、API Key、Cookie、原始 UUID 或未批准字段。
+地图展示指挥中心 `/api/dashboard` 提供的当前或已选回放帧，以及 `/api/map/memory` 提供的扫描线压缩静态记忆图层（`explored_segments`, `mined`, `obstacles`, `known_resources`）。浏览器只消费已投影的 `current.map` 和同一帧的指挥中心实体摘要；它不读取运行状态文件原文，不接触 SDK `Turn`、控制器、API Key、Cookie、原始 UUID 或未批准字段。
 
 | 主题 | 设计约束 |
 | --- | --- |

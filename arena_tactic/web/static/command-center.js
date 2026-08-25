@@ -25,6 +25,8 @@ let replayPollTimer = 0;
 let historyLoaded = false;
 let activeEventCategory = 'ALL';
 let eventLogState = { events: [], category_counts: {} };
+let knownMemoryVersion = 0;
+let memoryInFlight = false;
 
 const renderCache = {
   metrics: '',
@@ -637,14 +639,33 @@ async function refresh() {
   refreshInFlight = true;
   try {
     const response = await fetch('/api/dashboard', { cache: 'no-store' });
-    if (!response.ok) throw Error(`HTTP ${response.status}`);
-    setLive(await response.json());
+    if (!response.ok) throw Error('HTTP ' + response.status);
+    var payload = await response.json();
+    setLive(payload);
     await refreshPolicy();
+    // Version-gated memory fetch: only refetch when backend signals a change.
+    var memVer = Number(payload.map_memory_version || (payload.current && payload.current.map && payload.current.map.memory_version) || 0);
+    if (memVer && memVer !== knownMemoryVersion && !memoryInFlight) {
+      fetchMapMemory();
+    }
   } catch (_) {
-    const statusNode = $('status');
+    var statusNode = $('status');
     if (statusNode) statusNode.className = 'status';
     setText('status', '状态获取失败 · 将自动重试');
   } finally { refreshInFlight = false; }
+}
+
+async function fetchMapMemory() {
+  if (memoryInFlight) return;
+  memoryInFlight = true;
+  try {
+    var response = await fetch('/api/map/memory', { cache: 'no-store' });
+    if (!response.ok) return;
+    var data = await response.json();
+    knownMemoryVersion = Number(data.version || 0);
+    window.TacticalMap && window.TacticalMap.updateMemory && window.TacticalMap.updateMemory(data);
+  } catch (_) { /* silent */ }
+  finally { memoryInFlight = false; }
 }
 
 async function refreshReplay() {
@@ -676,7 +697,9 @@ function startPolling() {
   if (replayPollTimer) window.clearInterval(replayPollTimer);
   replayPollTimer = 0;
   if (document.hidden) return;
+  // Initial parallel fetch: dashboard + static memory in parallel for fast first paint.
   refresh();
+  fetchMapMemory();
   refreshReplay();
   refreshTimer = window.setInterval(refresh, 3000);
   replayPollTimer = window.setInterval(refreshReplay, 3000);

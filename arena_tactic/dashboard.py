@@ -212,7 +212,6 @@ def _project_record(record: dict[str, Any]) -> dict[str, Any]:
             "friendly": [item for value in ([state.get("core")] + raw_units[:100]) if (item := _map_object(value))],
             "enemies": [item for value in raw_enemies[:100] if (item := _map_object(value, enemy=True))],
             "resources": [item for cell in raw_resources[:200] if (item := _cell(cell))],
-            "obstacles": [item for cell in raw_obstacles[:200] if (item := _cell(cell))],
             "observed": observed,
             "beacon": {"position": list(beacon.get("position")) if isinstance(beacon.get("position"), list) and len(beacon["position"]) == 2 else None,
                        "status": _safe_text(beacon.get("status"), maximum=24)},
@@ -434,6 +433,85 @@ class DashboardDataStore:
         current_tick = int(latest.get("tick", 0)) if latest else 0
         return compute_chunk_saturation(resource_cells, mined_cells, resource_observations, current_tick)
 
+    @staticmethod
+    def _compress_explored_segments(explored: list[list[int]]) -> list[list[int]]:
+        """Scanline-compress explored cells into horizontal segments.
+
+        Converts a list of [x, y] cells into [startX, endX, y] segments
+        where consecutive cells on the same row are merged.  This typically
+        reduces payload size by ~95 % for large explored maps.
+        """
+        if not explored:
+            return []
+        rows: dict[int, list[int]] = {}
+        for cell in explored:
+            if not isinstance(cell, list) or len(cell) != 2:
+                continue
+            if not all(type(v) is int for v in cell):
+                continue
+            rows.setdefault(cell[1], []).append(cell[0])
+        segments: list[list[int]] = []
+        for y in sorted(rows):
+            xs = sorted(set(rows[y]))
+            if not xs:
+                continue
+            start = xs[0]
+            end = xs[0]
+            for x in xs[1:]:
+                if x == end + 1:
+                    end = x
+                else:
+                    segments.append([start, end, y])
+                    start = x
+                    end = x
+            segments.append([start, end, y])
+        return segments
+
+    def map_memory_payload(self) -> dict[str, Any]:
+        """Return the static memory layer for /api/map/memory.
+
+        Payload contains explored (scanline-compressed), mined, obstacles
+        and known_resources, plus a version fingerprint for change detection.
+        """
+        memory_data = self._memory()
+
+        def _parse_cell_set(raw: Any) -> list[list[int]]:
+            if not isinstance(raw, list):
+                return []
+            return [list(item) for item in raw
+                    if isinstance(item, list) and len(item) == 2
+                    and all(type(v) is int for v in item)]
+
+        explored_cells = _parse_cell_set(memory_data.get("explored", []))
+        mined_cells = _parse_cell_set(memory_data.get("mined_cells", []))
+        obstacles = _parse_cell_set(memory_data.get("obstacle_cells", []))
+        known_resources = _parse_cell_set(memory_data.get("known_resources", []))
+        # Fall back to extracting known_resources from resource_observations
+        if not known_resources:
+            raw_resource_obs = memory_data.get("resource_observations", {})
+            if isinstance(raw_resource_obs, dict):
+                for key in raw_resource_obs:
+                    try:
+                        x_str, y_str = str(key).split(",", 1)
+                        known_resources.append([int(x_str), int(y_str)])
+                    except (ValueError, AttributeError):
+                        continue
+        explored_segments = self._compress_explored_segments(explored_cells)
+        version = hash((
+            len(explored_cells), len(mined_cells), len(known_resources),
+            explored_cells[0][0] if explored_cells else 0,
+            explored_cells[-1][0] if explored_cells else 0,
+            mined_cells[0][0] if mined_cells else 0,
+            known_resources[0][0] if known_resources else 0,
+        )) & 0xFFFFFFFF
+        return {
+            "version": version,
+            "explored_segments": explored_segments,
+            "mined": mined_cells,
+            "obstacles": obstacles,
+            "known_resources": known_resources,
+        }
+
     def payload(self, status_snapshot: Callable[[], dict[str, object]], *, event_limit: int = 200) -> dict[str, Any]:
         raw_status = status_snapshot()
         status = {
@@ -485,10 +563,19 @@ class DashboardDataStore:
                         known_resources.append([int(x_str), int(y_str)])
                     except (ValueError, AttributeError):
                         continue
+            # Compute a simple hash-based memory version so the frontend
+            # can detect when the static memory layer has changed.
+            memory_version = hash((
+                len(explored_cells), len(mined_cells), len(known_resources),
+                explored_cells[0][0] if explored_cells else 0,
+                explored_cells[-1][0] if explored_cells else 0,
+                mined_cells[0][0] if mined_cells else 0,
+                known_resources[0][0] if known_resources else 0,
+            ))
+            # Use a positive 32-bit fingerprint to avoid JSON negatives.
+            memory_version = memory_version & 0xFFFFFFFF
             if latest and isinstance(latest.get("map"), dict):
-                latest["map"]["explored"] = explored_cells
-                latest["map"]["mined"] = mined_cells
-                latest["map"]["known_resources"] = known_resources
+                latest["map"]["memory_version"] = memory_version
 
             # 注入迁移分析数据（推荐中心 + top-3 候选）
             migration_rec = memory_data.get("migration_recommendation", {})
@@ -505,6 +592,7 @@ class DashboardDataStore:
                 "service": status,
                 "current": latest,
                 "command_center": command_center,
+                "map_memory_version": memory_version,
                 "migration_recommendation": migration_rec,
                 "chunk_saturation": chunk_saturation,
                 "policy_config": {
@@ -523,6 +611,7 @@ class DashboardDataStore:
             "service": status,
             "current": latest,
             "command_center": command_center,
+            "map_memory_version": 0,
             "migration_recommendation": {},
             "chunk_saturation": {},
             "policy_config": {"posture": "BALANCED", "effective_tick": 0, "overrides": {}},
@@ -563,29 +652,31 @@ class DashboardDataStore:
             traces = []
         trace_by_tick = {item["tick"]: item for item in traces}
 
-        # Inject memory into latest snapshot.
+        # Inject memory version into latest snapshot (heavy data lives
+        # in /api/map/memory; the replay frame only carries the version).
         memory_data = self._memory()
         if memory_data and latest and isinstance(latest.get("map"), dict):
-            def _parse_cell_set(raw: Any) -> list[list[int]]:
-                if not isinstance(raw, list):
-                    return []
-                return [list(item) for item in raw
-                        if isinstance(item, list) and len(item) == 2
-                        and all(type(v) is int for v in item)]
-            explored_cells = _parse_cell_set(memory_data.get("explored", []))
-            mined_cells = _parse_cell_set(memory_data.get("mined_cells", []))
+            explored_cells = []
+            raw_explored = memory_data.get("explored", [])
+            if isinstance(raw_explored, list):
+                for item in raw_explored:
+                    if isinstance(item, list) and len(item) == 2 and all(type(v) is int for v in item):
+                        explored_cells.append(item)
+            mined_cells_count = 0
+            raw_mined = memory_data.get("mined_cells", [])
+            if isinstance(raw_mined, list):
+                mined_cells_count = sum(1 for item in raw_mined
+                    if isinstance(item, list) and len(item) == 2 and all(type(v) is int for v in item))
+            known_count = 0
             raw_resource_obs = memory_data.get("resource_observations", {})
-            known_resources: list[list[int]] = []
             if isinstance(raw_resource_obs, dict):
-                for key in raw_resource_obs:
-                    try:
-                        x_str, y_str = str(key).split(",", 1)
-                        known_resources.append([int(x_str), int(y_str)])
-                    except (ValueError, AttributeError):
-                        continue
-            latest["map"]["explored"] = explored_cells
-            latest["map"]["mined"] = mined_cells
-            latest["map"]["known_resources"] = known_resources
+                known_count = len(raw_resource_obs)
+            memory_version = hash((
+                len(explored_cells), mined_cells_count, known_count,
+                explored_cells[0][0] if explored_cells else 0,
+                explored_cells[-1][0] if explored_cells else 0,
+            )) & 0xFFFFFFFF
+            latest["map"]["memory_version"] = memory_version
 
         # Compute timeline from traces.
         timeline = [
