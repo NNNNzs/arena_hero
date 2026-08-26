@@ -107,8 +107,6 @@ def _frontier_assignments(
     sector_offset: int = 0,
 ) -> dict[str, Position]:
     units = tuple(sorted(units, key=lambda unit: unit.id.bytes))
-    # Target selection uses the same threat model as the eventual MOVE. This
-    # prevents choosing a frontier that navigation will immediately refuse.
     blocked = (
         memory.obstacles
         | memory.active_temporary_blocks(context.tick)
@@ -133,7 +131,18 @@ def _frontier_assignments(
                 (unit.position[0] + dx, unit.position[1] + dy),
             )
             target = next(
-                (cell for cell in candidates if cell not in blocked and cell not in assigned),
+                (
+                    cell for cell in candidates
+                    if cell not in blocked
+                    and cell not in assigned
+                    and bounded_path_cost(
+                        unit.position,
+                        cell,
+                        blocked=blocked,
+                        deadline=deadline,
+                        node_limit=config.astar_node_limit,
+                    ) is not None
+                ),
                 None,
             )
             if target is None:
@@ -312,12 +321,11 @@ def _plan_workers(
     locked_resource_assignments = _locked_resource_targets(
         economic_workers, memory, context, config
     )
-    # Drop stale locks whose route is no longer safe under the same blocked set
-    # used by MOVE planning; otherwise a Worker can lock→WAIT forever.
     locked_resource_assignments = {
         unit_id: target
         for unit_id, target in locked_resource_assignments.items()
-        if (worker := worker_by_id.get(unit_id)) is not None
+        if target not in worker_blocks
+        and (worker := worker_by_id.get(unit_id)) is not None
         and bounded_path_cost(
             worker.position,
             target,
@@ -359,9 +367,8 @@ def _plan_workers(
     still_unassigned = [
         worker for worker in unassigned if str(worker.id) not in reconnaissance
     ]
-    exploration_units = tuple(still_unassigned) + scout_workers
     exploration = _frontier_assignments(
-        exploration_units,
+        tuple(still_unassigned) + scout_workers,
         memory,
         context,
         deadline,
@@ -465,9 +472,9 @@ def _plan_workers(
             intents.append(intent or _wait(worker, "unit_retreat_to_core_heal_blocked"))
             continue
 
-        # Manual/squad role behavior happens only after safety and cargo rules.
         if worker.id in base_worker_ids:
             if worker.position == core.position:
+                _record_unit_task(memory, context, worker, kind="squad_base_defense", target=core.position, intent=None)
                 intents.append(_wait(worker, "squad_base_defense_worker_hold"))
             else:
                 intent = _move(
@@ -475,6 +482,7 @@ def _plan_workers(
                     context=context, memory=memory, reservations=reservations,
                     deadline=deadline, config=config, avoid_threats=True,
                 )
+                _record_unit_task(memory, context, worker, kind="squad_base_defense", target=core.position, intent=intent)
                 intents.append(intent or _wait(worker, "squad_base_defense_worker_blocked"))
             continue
         if worker.id in expedition_worker_ids:
@@ -483,6 +491,7 @@ def _plan_workers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config, avoid_threats=True,
             )
+            _record_unit_task(memory, context, worker, kind="expedition_beacon", target=context.beacon.position, intent=intent)
             intents.append(intent or _wait(worker, "squad_expedition_worker_blocked"))
             continue
 
@@ -596,6 +605,7 @@ def _plan_workers(
 
         if context.core is not None and distance(worker.position, context.core.position) <= 1:
             yielded = False
+            threats = enemy_threat_cells(context)
             for direction in DIRECTIONS:
                 step_cell = destination(worker.position, direction)
                 if (
@@ -603,7 +613,7 @@ def _plan_workers(
                     and step_cell not in memory.obstacles
                     and step_cell not in memory.active_temporary_blocks(context.tick)
                     and step_cell not in context.enemy_occupancy
-                    and step_cell not in enemy_threat_cells(context)
+                    and step_cell not in threats
                     and reservations.reserve(step_cell, source=worker.position)
                 ):
                     intents.append(ActionIntent(
