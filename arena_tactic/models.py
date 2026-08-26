@@ -166,14 +166,21 @@ class ReservationTable:
 
     occupancy: dict[Position, int]
     incoming: dict[Position, int] = field(default_factory=dict)
+    departures: dict[Position, int] = field(default_factory=dict)
+
+    def effective(self, destination: Position) -> int:
+        occ = self.occupancy.get(destination, 0)
+        dep = self.departures.get(destination, 0)
+        inc = self.incoming.get(destination, 0)
+        return max(0, occ - dep) + inc
 
     def can_reserve(self, destination: Position) -> bool:
-        return self.occupancy.get(destination, 0) + self.incoming.get(
-            destination, 0
-        ) < 2
+        return self.effective(destination) < 2
 
-    def reserve(self, destination: Position) -> bool:
+    def reserve(self, destination: Position, *, source: Position | None = None) -> bool:
         if not self.can_reserve(destination):
             return False
         self.incoming[destination] = self.incoming.get(destination, 0) + 1
+        if source is not None:
+            self.departures[source] = self.departures.get(source, 0) + 1
         return True

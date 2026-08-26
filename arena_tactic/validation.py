@@ -157,7 +157,7 @@ def validate_intents(
         actor = context.current_objects[actor_id]
         assert isinstance(actor, UnitView)
         cell = destination(actor.position, intent.direction)  # type: ignore[arg-type]
-        if not reservations.reserve(cell):
+        if not reservations.reserve(cell, source=actor.position):
             if config.planner_canary:
                 selected[actor_id] = _capacity_repair(intent, actor, context, reservations)
                 continue
@@ -210,7 +210,7 @@ def _capacity_repair(
         cell = destination(actor.position, direction)
         if cell in context.obstacle_cells or cell in context.enemy_occupancy:
             continue
-        if reservations.reserve(cell):
+        if reservations.reserve(cell, source=actor.position):
             return ActionIntent(
                 actor.id, False, ActionKind.MOVE, intent.score,
                 "arbitrator_capacity_reroute", direction=direction,

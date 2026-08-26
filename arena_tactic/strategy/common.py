@@ -230,7 +230,7 @@ def _retreat_shelter_intent(
             item[1].value,
         ),
     )
-    if not reservations.reserve(cell):
+    if not reservations.reserve(cell, source=unit.position):
         return _wait(unit, "unit_retreat_to_core_heal_shelter")
     return ActionIntent(
         actor_id=unit.id,
@@ -397,7 +397,7 @@ def _return_to_core_sidestep(
 
     scored_candidates.sort(key=lambda x: (x[0], x[1].value))
     for _, direction, cell in scored_candidates:
-        if reservations.reserve(cell):
+        if reservations.reserve(cell, source=unit.position):
             return ActionIntent(
                 unit.id,
                 False,
@@ -461,7 +461,7 @@ def _deploy_sidestep(
 
     candidates.sort(key=lambda x: (x[0], x[1].value))
     for _, direction, cand in candidates:
-        if reservations.reserve(cand):
+        if reservations.reserve(cand, source=unit.position):
             return ActionIntent(
                 unit.id,
                 False,

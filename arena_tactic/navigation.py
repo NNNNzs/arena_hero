@@ -273,7 +273,7 @@ def plan_step(
     if direction is None:
         return None
     cell = destination(start, direction)
-    if cell in blocked or not reservations.reserve(cell):
+    if cell in blocked or not reservations.reserve(cell, source=start):
         # Do not sidestep an occupied/contested first step.  The next
         # authoritative Turn will replan with fresh occupancy and memory.
         return None

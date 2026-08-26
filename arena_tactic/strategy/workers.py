@@ -368,12 +368,27 @@ def _plan_workers(
         task_kind="explore",
     )
 
-    # 载货工人优先决策：先为有货的工人预约核心格与路径，
-    # 避免空载探索工人占满核心入口导致返航死锁（拥堵互堵）。
-    for worker in sorted(
-        context.workers,
-        key=lambda unit: (0 if (unit.cargo or 0) else 1, str(unit.id)),
-    ):
+    # 工人决策优先级：
+    # 1. 核心门口已就绪的载货工人（distance <= 1）：先入库或在门口满时避让；
+    # 2. 停留在核心格上的空载工人（at_core）：最高让位优先级，尽快腾出核心仓位；
+    # 3. 远距离载货工人（distance > 1）：寻路返航；
+    # 4. 其他空载探索/采矿工人。
+    core_pos = context.core.position if context.core is not None else None
+
+    def _worker_order(unit: UnitView) -> tuple[int, int, str]:
+        u_cargo = unit.cargo or 0
+        at_core = _at_normal_core(unit, context)
+        dist = distance(unit.position, core_pos) if core_pos is not None else 0
+        if u_cargo and dist <= 1:
+            return (0, 0, str(unit.id))
+        elif not u_cargo and at_core:
+            return (1, 0, str(unit.id))
+        elif u_cargo:
+            return (2, dist, str(unit.id))
+        else:
+            return (3, dist, str(unit.id))
+
+    for worker in sorted(context.workers, key=_worker_order):
         cargo = worker.cargo or 0
         if (
             cargo
@@ -451,7 +466,7 @@ def _plan_workers(
                                 cand_dirs.append((pen, d, side_cell))
                         cand_dirs.sort(key=lambda x: x[0])
                         for _, d, side_cell in cand_dirs:
-                            if reservations.reserve(side_cell):
+                            if reservations.reserve(side_cell, source=worker.position):
                                 intent = ActionIntent(
                                     actor_id=worker.id,
                                     is_core=False,
@@ -564,25 +579,9 @@ def _plan_workers(
         ):
             # 空载工人滞留核心格：核心格容量只有 2（核心+1），
             # 停在这里会堵死载货工人的存矿入口。主动让位到最近的
-            # 非核心相邻空格，把入口让给返航的载货同伴。
-            # 此分支优先于探索目标：站在核心格上时让位是第一优先级，
-            # 让完位后下一 Tick 自然接续正常探索/复查任务。
-            # 让位候选格用引擎容量语义（ReservationTable：每格至多 2 人）
-            # 判定，而不是"必须完全无人"。此前只要格上有 1 个友军就
-            # 被排除，导致核心格唯一的近出口（站了 1 个游侠、还剩 1 个
-            # 空位）被白白丢弃，空载工让不出去、门口的载货工进不来，
-            # 双方在核心门口互相等死（core_cell_vacate_blocked /
-            # no_safe_route_with_cargo 同时持续）。
+            # 非核心相邻可用格，把入口让给返航的载货同伴。
+            # 直接使用传入的动态 reservations（已包含本 Tick 其他单位移动让出的容量）。
             occupied = dict(context.enemy_occupancy)
-            reservations = ReservationTable(
-                {
-                    cell: len(ids) - 1  # 扣掉自己：自己即将离开当前格
-                    if cell == worker.position
-                    else len(ids)
-                    for cell, ids in context.friendly_occupancy.items()
-                    if cell != context.core.position  # 核心自身不算让位障碍
-                }
-            )
             vacate = next(
                 (
                     cell
@@ -672,7 +671,7 @@ def _plan_workers(
                     and step_cell not in memory.obstacles
                     and step_cell not in memory.active_temporary_blocks(context.tick)
                     and step_cell not in context.enemy_occupancy
-                    and reservations.reserve(step_cell)
+                    and reservations.reserve(step_cell, source=worker.position)
                 ):
                     intents.append(
                         ActionIntent(
