@@ -23,13 +23,19 @@ from .analysis_scheduler import (
 )
 
 
-MEMORY_VERSION = 6
+MEMORY_VERSION = 7
 _CARDINAL = ((0, -1), (0, 1), (-1, 0), (1, 0))
 _SENSITIVE = ("credential", "controller", "authorization", "cookie", "token", "secret")
 _UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 _EVENT_COUNT_RE = re.compile(r"^[A-Z0-9_]+$")
 _EVENT_ID_RE = re.compile(r"^(?:entity_[0-9a-f]{4,64}|event_[A-Za-z0-9_-]{1,96}|legacy-[A-Za-z0-9_-]{1,64})$")
 _MANUAL_TASKS = frozenset({"RETREAT_TO_CORE", "HOLD_POSITION", "HARVEST_VISIBLE", "MOVE_TO_CELL"})
+_SQUAD_IDS = frozenset({
+    "squad_base_defense",
+    "squad_expedition_beacon",
+    "squad_mining_escort",
+    "squad_scout_recon",
+})
 
 
 def _safe_event_id(value: Any) -> str:
@@ -188,6 +194,20 @@ def _safe_manual_assignments(value: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _safe_squad_assignments(value: Any) -> dict[str, str]:
+    """Persist only canonical alias → stable squad-id membership."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        alias: squad_id
+        for alias, squad_id in value.items()
+        if isinstance(alias, str)
+        and _EVENT_ID_RE.fullmatch(alias)
+        and isinstance(squad_id, str)
+        and squad_id in _SQUAD_IDS
+    }
+
+
 def _safe_scheduler_assignments(value: Any) -> dict[str, dict[str, Any]]:
     """Persist only alias-keyed scheduler outputs and their bounded lease."""
     if not isinstance(value, dict):
@@ -222,9 +242,11 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
     if posture not in {"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"}:
         return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
     result: dict[str, Any] = {"version": version, "posture": posture, "effective_tick": effective}
-    # 保留白名单内的数值字段覆盖（与 command_center._POLICY_NUMERIC_FIELDS 对齐）
     _NUMERIC_WHITELIST = {
         "core_guard_vanguards", "core_guard_rangers",
+        "expedition_vanguards", "expedition_rangers",
+        "mining_escort_vanguards", "mining_escort_rangers",
+        "scout_vanguards", "scout_rangers",
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_arc_segments",
         "patrol_radius_units_per_step",
@@ -248,9 +270,6 @@ class AgentMemory:
     migration_cooldown_until_tick: int = 0
     last_core_id: str | None = None
     last_core_position: Position | None = None
-    # The spawn evaluation is deliberately tied to a Core generation, never
-    # to a position or remembered resource.  Only current visible cells can
-    # mark a start viable.
     spawn_eval_core_id: str | None = None
     spawn_eval_started_tick: int = 0
     spawn_eval_status: str = "PENDING"
@@ -265,11 +284,10 @@ class AgentMemory:
     resource_recheck_cooldowns: dict[Position, int] = field(default_factory=dict)
     enemy_tracks: dict[str, dict[str, Any]] = field(default_factory=dict)
     temporary_blocks: dict[Position, int] = field(default_factory=dict)
-    # Runtime UUIDs are only retained while their Units are present in the
-    # current authoritative Turn.  Persistence redacts them to entity aliases.
     retreating_unit_ids: set[str] = field(default_factory=set)
     unit_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     manual_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    manual_squad_assignments: dict[str, str] = field(default_factory=dict)
     scheduler_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
     policy_state: dict[str, Any] = field(default_factory=lambda: {"version": 0, "posture": "BALANCED", "effective_tick": 0})
     objective_states: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -293,24 +311,14 @@ class AgentMemory:
         return result
 
     def active_temporary_blocks(self, tick: int) -> set[Position]:
-        return {
-            cell for cell, blocked_until in self.temporary_blocks.items()
-            if blocked_until >= tick
-        }
+        return {cell for cell, blocked_until in self.temporary_blocks.items() if blocked_until >= tick}
 
     def active_resource_recheck_cooldowns(self, tick: int) -> set[Position]:
-        return {
-            cell for cell, blocked_until in self.resource_recheck_cooldowns.items()
-            if blocked_until >= tick
-        }
+        return {cell for cell, blocked_until in self.resource_recheck_cooldowns.items() if blocked_until >= tick}
 
-    def advance(
-        self, context: DecisionContext, config: AgentConfig
-    ) -> "AgentMemory":
+    def advance(self, context: DecisionContext, config: AgentConfig) -> "AgentMemory":
         next_memory = self.clone()
         next_memory.version = MEMORY_VERSION
-        # Persisted v3 aliases are rebound only to objects in this authoritative
-        # Turn; no controller or stale runtime identifier is retained.
         for unit in context.units:
             alias = entity_alias(unit.id)
             if alias in next_memory.unit_tasks and str(unit.id) not in next_memory.unit_tasks:
@@ -321,18 +329,14 @@ class AgentMemory:
         next_memory.obstacles.update(context.obstacle_cells)
         next_memory.explored.update(context.observed_cells - context.obstacle_cells)
         next_memory.temporary_blocks = {
-            cell: blocked_until
-            for cell, blocked_until in next_memory.temporary_blocks.items()
+            cell: blocked_until for cell, blocked_until in next_memory.temporary_blocks.items()
             if blocked_until >= context.tick
         }
         next_memory.resource_recheck_cooldowns = {
-            cell: blocked_until
-            for cell, blocked_until in next_memory.resource_recheck_cooldowns.items()
+            cell: blocked_until for cell, blocked_until in next_memory.resource_recheck_cooldowns.items()
             if blocked_until >= context.tick
         }
         if context.core is None:
-            # A missing Core means respawn admission/retry: neither old Unit
-            # roles nor enemy approach history applies to the next generation.
             next_memory.unit_tasks.clear()
             next_memory.enemy_tracks.clear()
             next_memory.core_damage_streak = 0
@@ -345,10 +349,7 @@ class AgentMemory:
             respawned = any(event.event_type == "CORE_RESPAWNED" for event in context.events)
             new_core_generation = (
                 respawned
-                or (
-                    next_memory.last_core_id is not None
-                    and next_memory.last_core_id != core_id
-                )
+                or (next_memory.last_core_id is not None and next_memory.last_core_id != core_id)
                 or next_memory.last_tick == 0
             )
             if new_core_generation:
@@ -356,17 +357,13 @@ class AgentMemory:
                 next_memory.spawn_eval_started_tick = context.tick
                 next_memory.spawn_eval_status = "PENDING"
             elif next_memory.spawn_eval_core_id != core_id:
-                # A pre-reroll persisted state may have no generation marker
-                # despite already tracking prior Ticks.  Do not reinterpret
-                # that established Core as a brand-new spawn after upgrade.
                 next_memory.spawn_eval_core_id = core_id
                 next_memory.spawn_eval_started_tick = context.tick
                 next_memory.spawn_eval_status = "PASSED"
             if (
                 next_memory.spawn_eval_status == "PENDING"
                 and any(
-                    abs(cell[0] - context.core.position[0])
-                    + abs(cell[1] - context.core.position[1])
+                    abs(cell[0] - context.core.position[0]) + abs(cell[1] - context.core.position[1])
                     <= config.spawn_eval_mine_max_dist
                     for cell in context.resource_cells
                 )
@@ -401,14 +398,16 @@ class AgentMemory:
             alias: task for alias, task in next_memory.manual_assignments.items()
             if alias in current_aliases and int(task.get("until_tick", -1)) >= context.tick
         }
+        next_memory.manual_squad_assignments = {
+            alias: squad_id for alias, squad_id in next_memory.manual_squad_assignments.items()
+            if alias in current_aliases and squad_id in _SQUAD_IDS
+        }
         next_memory.scheduler_assignments = {
             alias: task for alias, task in next_memory.scheduler_assignments.items()
             if alias in current_aliases and int(task.get("lease_until_tick", -1)) >= context.tick
         }
 
         if len(next_memory.explored) > config.explored_history_limit:
-            # Deterministic trimming favors cells closest to current friendly
-            # positions while retaining a bounded JSON state file.
             origins = [unit.position for unit in context.units]
             if context.core is not None:
                 origins.append(context.core.position)
@@ -417,19 +416,12 @@ class AgentMemory:
                     sorted(
                         next_memory.explored,
                         key=lambda cell: (
-                            min(
-                                abs(cell[0] - origin[0])
-                                + abs(cell[1] - origin[1])
-                                for origin in origins
-                            ),
+                            min(abs(cell[0] - origin[0]) + abs(cell[1] - origin[1]) for origin in origins),
                             cell,
                         ),
                     )[: config.explored_history_limit]
                 )
 
-        # Current visible facts overwrite remembered resource observations.
-        # A stale hint gets two authoritative empty rechecks before it is
-        # cooled, avoiding both one-frame churn and indefinite pursuit.
         for cell in context.resource_cells:
             next_memory.resource_observations[cell] = context.tick
             next_memory.resource_recheck_failures.pop(cell, None)
@@ -444,9 +436,7 @@ class AgentMemory:
             if failures >= config.resource_recheck_failure_threshold:
                 next_memory.resource_observations.pop(cell, None)
                 next_memory.resource_recheck_failures.pop(cell, None)
-                next_memory.resource_recheck_cooldowns[cell] = (
-                    context.tick + config.resource_recheck_cooldown_ticks
-                )
+                next_memory.resource_recheck_cooldowns[cell] = context.tick + config.resource_recheck_cooldown_ticks
             else:
                 next_memory.resource_recheck_failures[cell] = failures
 
@@ -476,9 +466,7 @@ class AgentMemory:
                         next_memory.obstacles.add(attempted_cell)
                         next_memory.explored.discard(attempted_cell)
                     else:
-                        next_memory.temporary_blocks[attempted_cell] = (
-                            context.tick + config.movement_failure_cooldown_ticks
-                        )
+                        next_memory.temporary_blocks[attempted_cell] = context.tick + config.movement_failure_cooldown_ticks
                 if task is not None and task.get("kind") in {"explore", "scout", "resource", "recon"}:
                     rotated = dict(task)
                     rotated["sector"] = (int(rotated.get("sector", 0)) + 1) % 4
@@ -487,9 +475,6 @@ class AgentMemory:
                     rotated.pop("target", None)
                     rotated.pop("step", None)
                     rotated.pop("attempt_tick", None)
-                    # The failed target is dropped and the sector rotates so
-                    # the next decision cannot immediately retry the same
-                    # local route.
                     next_memory.unit_tasks[unit_id] = rotated
                 else:
                     next_memory.unit_tasks.pop(unit_id, None)
@@ -501,34 +486,18 @@ class AgentMemory:
                     task["failures"] = 0
             elif event.actor_id is not None and event.event_type == "DEPOSIT_FAILED":
                 if event.reason_code == "CORE_MOVING":
-                    next_memory.unit_tasks[str(event.actor_id)] = {
-                        "kind": "await_core_stationary",
-                        "since_tick": context.tick,
-                    }
+                    next_memory.unit_tasks[str(event.actor_id)] = {"kind": "await_core_stationary", "since_tick": context.tick}
                 else:
                     next_memory.unit_tasks.pop(str(event.actor_id), None)
             if event.event_type == "CORE_MOVE_SUCCEEDED":
                 core_move_succeeded = True
-                if (
-                    self.last_core_position is not None
-                    and context.core is not None
-                    and self.last_core_position != context.core.position
-                ):
+                if self.last_core_position is not None and context.core is not None and self.last_core_position != context.core.position:
                     next_memory.previous_migration_position = self.last_core_position
-                next_memory.migration_cooldown_until_tick = (
-                    context.tick + config.migration_cooldown_ticks
-                )
-                # A successful relocation is fresh exploration progress; the
-                # old empty-resource streak must not immediately trigger the
-                # opposite leg.
+                next_memory.migration_cooldown_until_tick = context.tick + config.migration_cooldown_ticks
                 next_memory.no_resource_ticks = 0
             if (
                 event.event_type == "CORE_RESPAWNED"
-                or (
-                    context.core is not None
-                    and self.last_core_id is not None
-                    and str(context.core.id) != self.last_core_id
-                )
+                or (context.core is not None and self.last_core_id is not None and str(context.core.id) != self.last_core_id)
                 or (
                     context.core is not None
                     and self.last_core_position is not None
@@ -536,11 +505,9 @@ class AgentMemory:
                     and (abs(context.core.position[0] - self.last_core_position[0]) > 1 or abs(context.core.position[1] - self.last_core_position[1]) > 1)
                 )
             ):
-                # A respawn starts a new map/session generation.  Previous
-                # resource coordinates belong to the destroyed Core's world
-                # and must not send the new Worker on a long stale recheck.
                 next_memory.unit_tasks.clear()
                 next_memory.enemy_tracks.clear()
+                next_memory.manual_squad_assignments.clear()
                 next_memory.explored.clear()
                 next_memory.mined_cells.clear()
                 next_memory.resource_observations.clear()
@@ -552,10 +519,7 @@ class AgentMemory:
                 next_memory.last_core_damage_tick = 0
                 next_memory.migration_cooldown_until_tick = 0
                 next_memory.previous_migration_position = None
-                # Analysis tasks survive respawn (keep definitions), but
-                # cached results are map-specific and must be cleared.
                 next_memory.migration_recommendation = {}
-                # Reset last_run_tick so tasks re-fire promptly on new map.
                 for task_data in next_memory.analysis_tasks:
                     task_data["last_run_tick"] = None
             if event.position is not None and (
@@ -567,36 +531,25 @@ class AgentMemory:
                 next_memory.resource_observations.pop(event.position, None)
                 next_memory.resource_recheck_failures.pop(event.position, None)
         next_memory.event_counts = dict(counts)
-        next_memory.processed_event_ids = next_memory.processed_event_ids[
-            -config.event_history_limit :
-        ]
+        next_memory.processed_event_ids = next_memory.processed_event_ids[-config.event_history_limit:]
 
         current_unit_ids = {str(unit.id) for unit in context.units}
         next_memory.retreating_unit_ids.intersection_update(current_unit_ids)
         next_memory.unit_tasks = {
-            unit_id: task
-            for unit_id, task in next_memory.unit_tasks.items()
-            if unit_id in current_unit_ids
+            unit_id: task for unit_id, task in next_memory.unit_tasks.items() if unit_id in current_unit_ids
         }
 
         if context.tick > next_memory.last_tick:
             if core_damaged:
                 next_memory.core_damage_streak = (
                     next_memory.core_damage_streak + 1
-                    if next_memory.last_core_damage_tick == context.tick - 1
-                    else 1
+                    if next_memory.last_core_damage_tick == context.tick - 1 else 1
                 )
                 next_memory.last_core_damage_tick = context.tick
             elif next_memory.last_core_damage_tick < context.tick - 1:
                 next_memory.core_damage_streak = 0
             next_memory.no_resource_ticks = (
-                0
-                if core_move_succeeded
-                else (
-                    next_memory.no_resource_ticks + 1
-                    if not context.resource_cells
-                    else 0
-                )
+                0 if core_move_succeeded else (next_memory.no_resource_ticks + 1 if not context.resource_cells else 0)
             )
             next_memory.last_tick = context.tick
         if context.core is not None:
@@ -622,51 +575,29 @@ class AgentMemory:
             "spawn_eval_core_id": self.spawn_eval_core_id,
             "spawn_eval_started_tick": self.spawn_eval_started_tick,
             "spawn_eval_status": self.spawn_eval_status,
-            "previous_migration_position": (
-                list(self.previous_migration_position)
-                if self.previous_migration_position else None
-            ),
+            "previous_migration_position": list(self.previous_migration_position) if self.previous_migration_position else None,
             "core_damage_streak": self.core_damage_streak,
             "last_core_damage_tick": self.last_core_damage_tick,
             "obstacles": [list(cell) for cell in sorted(self.obstacles)],
             "explored": [list(cell) for cell in sorted(self.explored)],
             "mined_cells": [list(cell) for cell in sorted(self.mined_cells)],
-            "resource_observations": {
-                _cell_key(cell): tick
-                for cell, tick in sorted(self.resource_observations.items())
-            },
-            "resource_recheck_failures": {
-                _cell_key(cell): failures
-                for cell, failures in sorted(self.resource_recheck_failures.items())
-            },
-            "resource_recheck_cooldowns": {
-                _cell_key(cell): blocked_until
-                for cell, blocked_until in sorted(self.resource_recheck_cooldowns.items())
-            },
+            "resource_observations": {_cell_key(cell): tick for cell, tick in sorted(self.resource_observations.items())},
+            "resource_recheck_failures": {_cell_key(cell): failures for cell, failures in sorted(self.resource_recheck_failures.items())},
+            "resource_recheck_cooldowns": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.resource_recheck_cooldowns.items())},
             "enemy_tracks": _safe_enemy_tracks(self.enemy_tracks),
-            "temporary_blocks": {
-                _cell_key(cell): blocked_until
-                for cell, blocked_until in sorted(self.temporary_blocks.items())
-            },
-            "retreating_unit_ids": [
-                alias
-                for unit_id in sorted(self.retreating_unit_ids)
-                if (alias := _persisted_task_key(unit_id))
-            ],
+            "temporary_blocks": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.temporary_blocks.items())},
+            "retreating_unit_ids": [alias for unit_id in sorted(self.retreating_unit_ids) if (alias := _persisted_task_key(unit_id))],
             "unit_tasks": {
                 alias: _safe_task(task)
                 for unit_id, task in self.unit_tasks.items()
                 if (alias := _persisted_task_key(unit_id))
             },
             "manual_assignments": _safe_manual_assignments(self.manual_assignments),
+            "manual_squad_assignments": _safe_squad_assignments(self.manual_squad_assignments),
             "scheduler_assignments": _safe_scheduler_assignments(self.scheduler_assignments),
             "policy_state": _safe_policy_state(self.policy_state),
             "objective_states": _safe_objective_states(self.objective_states),
-            "processed_event_ids": [
-                safe
-                for value in self.processed_event_ids
-                if (safe := _safe_event_id(value))
-            ],
+            "processed_event_ids": [safe for value in self.processed_event_ids if (safe := _safe_event_id(value))],
             "event_counts": _safe_event_counts(self.event_counts),
             "submitted_ticks": self.submitted_ticks,
             "accepted_ticks": self.accepted_ticks,
@@ -678,7 +609,7 @@ class AgentMemory:
     def from_dict(cls, data: dict[str, Any]) -> "AgentMemory":
         if not isinstance(data, dict):
             return cls()
-        if data.get("version") not in (1, 2, 3, 4, 5, MEMORY_VERSION):
+        if data.get("version") not in (1, 2, 3, 4, 5, 6, MEMORY_VERSION):
             return cls()
         def integer(name: str, default: int = 0) -> int:
             try:
@@ -694,68 +625,50 @@ class AgentMemory:
         counts = data.get("event_counts", {})
         retreating = data.get("retreating_unit_ids", [])
         retreating_ids = {
-            alias
-            for value in (retreating if isinstance(retreating, list) else [])
+            alias for value in (retreating if isinstance(retreating, list) else [])
             if (alias := _persisted_task_key(str(value)))
         }
         return cls(
-                version=MEMORY_VERSION,
-                last_tick=integer("last_tick"),
-                last_mode=mode,
-                mode_since_tick=integer("mode_since_tick"),
-                no_resource_ticks=integer("no_resource_ticks"),
-                migration_cooldown_until_tick=integer("migration_cooldown_until_tick"),
-                last_core_id=str(data["last_core_id"]) if data.get("last_core_id") else None,
-                last_core_position=next(iter(_safe_cells([data.get("last_core_position")])), None),
-                spawn_eval_core_id=str(data["spawn_eval_core_id"]) if data.get("spawn_eval_core_id") else None,
-                spawn_eval_started_tick=integer("spawn_eval_started_tick"),
-                spawn_eval_status=(
-                    str(data.get("spawn_eval_status"))
-                    if data.get("spawn_eval_status") in {"PENDING", "PASSED"}
-                    else "PENDING"
-                ),
-                previous_migration_position=next(
-                    iter(_safe_cells([data.get("previous_migration_position")])), None
-                ),
-                core_damage_streak=integer("core_damage_streak"),
-                last_core_damage_tick=integer("last_core_damage_tick"),
-                obstacles=_safe_cells(data.get("obstacles", [])),
-                explored=_safe_cells(data.get("explored", [])),
-                mined_cells=_safe_cells(data.get("mined_cells", [])),
-                resource_observations=_safe_cell_map(data.get("resource_observations", {})),
-                resource_recheck_failures=_safe_cell_map(data.get("resource_recheck_failures", {})),
-                resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
-                enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
-                temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
-                retreating_unit_ids=retreating_ids,
-                unit_tasks={
-                    alias: _safe_task(task)
-                    for unit_id, task in (tasks.items() if isinstance(tasks, dict) else ())
-                    if (alias := _persisted_task_key(str(unit_id)))
-                },
-                manual_assignments=_safe_manual_assignments(data.get("manual_assignments", {})),
-                scheduler_assignments=_safe_scheduler_assignments(data.get("scheduler_assignments", {})),
-                policy_state=_safe_policy_state(data.get("policy_state", {})),
-                objective_states=_safe_objective_states(data.get("objective_states", {})),
-                processed_event_ids=[
-                    safe
-                    for value in (events if isinstance(events, list) else [])
-                    if (safe := _safe_event_id(value))
-                ],
-                event_counts=_safe_event_counts(counts),
-                submitted_ticks=integer("submitted_ticks"),
-                accepted_ticks=integer("accepted_ticks"),
-                analysis_tasks=(
-                    data["analysis_tasks"]
-                    if isinstance(data.get("analysis_tasks"), list)
-                    else []
-                ),
-                migration_recommendation=(
-                    data["migration_recommendation"]
-                    if isinstance(data.get("migration_recommendation"), dict)
-                    else {}
-                ),
-            )
+            version=MEMORY_VERSION,
+            last_tick=integer("last_tick"),
+            last_mode=mode,
+            mode_since_tick=integer("mode_since_tick"),
+            no_resource_ticks=integer("no_resource_ticks"),
+            migration_cooldown_until_tick=integer("migration_cooldown_until_tick"),
+            last_core_id=str(data["last_core_id"]) if data.get("last_core_id") else None,
+            last_core_position=next(iter(_safe_cells([data.get("last_core_position")])), None),
+            spawn_eval_core_id=str(data["spawn_eval_core_id"]) if data.get("spawn_eval_core_id") else None,
+            spawn_eval_started_tick=integer("spawn_eval_started_tick"),
+            spawn_eval_status=(str(data.get("spawn_eval_status")) if data.get("spawn_eval_status") in {"PENDING", "PASSED"} else "PENDING"),
+            previous_migration_position=next(iter(_safe_cells([data.get("previous_migration_position")])), None),
+            core_damage_streak=integer("core_damage_streak"),
+            last_core_damage_tick=integer("last_core_damage_tick"),
+            obstacles=_safe_cells(data.get("obstacles", [])),
+            explored=_safe_cells(data.get("explored", [])),
+            mined_cells=_safe_cells(data.get("mined_cells", [])),
+            resource_observations=_safe_cell_map(data.get("resource_observations", {})),
+            resource_recheck_failures=_safe_cell_map(data.get("resource_recheck_failures", {})),
+            resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
+            enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
+            temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
+            retreating_unit_ids=retreating_ids,
+            unit_tasks={
+                alias: _safe_task(task)
+                for unit_id, task in (tasks.items() if isinstance(tasks, dict) else ())
+                if (alias := _persisted_task_key(str(unit_id)))
+            },
+            manual_assignments=_safe_manual_assignments(data.get("manual_assignments", {})),
+            manual_squad_assignments=_safe_squad_assignments(data.get("manual_squad_assignments", {})),
+            scheduler_assignments=_safe_scheduler_assignments(data.get("scheduler_assignments", {})),
+            policy_state=_safe_policy_state(data.get("policy_state", {})),
+            objective_states=_safe_objective_states(data.get("objective_states", {})),
+            processed_event_ids=[safe for value in (events if isinstance(events, list) else []) if (safe := _safe_event_id(value))],
+            event_counts=_safe_event_counts(counts),
+            submitted_ticks=integer("submitted_ticks"),
+            accepted_ticks=integer("accepted_ticks"),
+            analysis_tasks=data["analysis_tasks"] if isinstance(data.get("analysis_tasks"), list) else [],
+            migration_recommendation=data["migration_recommendation"] if isinstance(data.get("migration_recommendation"), dict) else {},
+        )
 
 
 class MemoryStore:
@@ -797,8 +710,6 @@ class MemoryStore:
     def save(self, memory: AgentMemory) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        payload = json.dumps(
-            memory.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+        payload = json.dumps(memory.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         temporary.write_text(payload + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
