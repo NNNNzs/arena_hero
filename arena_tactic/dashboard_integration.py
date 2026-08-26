@@ -7,6 +7,7 @@ import zlib
 from typing import Any, Callable
 
 from .dashboard import DashboardDataStore as _BaseDashboardDataStore
+from .dashboard import dashboard_static_asset as _base_dashboard_static_asset
 
 
 _SQUADS = (
@@ -33,6 +34,68 @@ def _cell_list(value: Any) -> list[list[int]]:
         and len(item) == 2
         and all(type(axis) is int for axis in item)
     ]
+
+
+def _integrated_command_center_js(source: str) -> str:
+    """Upgrade the packaged UI without duplicating the large generated asset."""
+    source = source.replace(
+        "START_CORE_MIGRATION: '开始核心迁移', CANCEL_CORE_MIGRATION: '取消核心迁移', UPDATE_POLICY: '更新策略',",
+        "START_CORE_MIGRATION: '开始核心迁移', CANCEL_CORE_MIGRATION: '取消核心迁移', UPDATE_POLICY: '更新策略', ASSIGN_SQUAD: '调整编组',",
+    )
+    source = source.replace(
+        "  intercept_vanguards: '远征编组·先锋编制',\n"
+        "  intercept_rangers: '远征编组·游侠编制',\n"
+        "  resource_recheck_worker_limit: '矿区护航·工兵编制',\n",
+        "  expedition_vanguards: '远征编组·先锋编制',\n"
+        "  expedition_rangers: '远征编组·游侠编制',\n"
+        "  mining_escort_vanguards: '矿区护航·先锋编制',\n"
+        "  mining_escort_rangers: '矿区护航·游侠编制',\n"
+        "  scout_vanguards: '侦察巡逻·先锋编制',\n"
+        "  scout_rangers: '侦察巡逻·游侠编制',\n",
+    )
+    start_marker = "$('squadList').onchange = async event => {"
+    end_marker = "\n$('unitFilters').onclick = event => {"
+    start = source.find(start_marker)
+    end = source.find(end_marker, start + 1) if start >= 0 else -1
+    if start >= 0 and end > start:
+        replacement = """$('squadList').onchange = async event => {
+  const select = event.target.closest('.squad-switch-select');
+  if (!select) return;
+  const alias = select.dataset.alias;
+  const targetSquadId = select.value;
+  if (!alias || !targetSquadId) return;
+  if (!csrf) {
+    alert('请先在右下方“人工任务”面板中输入管理员口令完成认证。');
+    if (activeRosterTab === 'squads') renderSquadList();
+    return;
+  }
+  try {
+    await api('/api/v1/commands', 'POST', {
+      type: 'ASSIGN_SQUAD',
+      payload: { entity_alias: alias, squad_id: targetSquadId },
+    });
+    if (squadAssignmentsState) squadAssignmentsState[alias] = targetSquadId;
+    setText('taskState', '编组调整已排队，下一次成功提交后持久生效。');
+    if (activeRosterTab === 'squads') renderSquadList();
+  } catch (err) {
+    alert(`切换编组失败: ${err.message}`);
+    if (activeRosterTab === 'squads') renderSquadList();
+  }
+};"""
+        source = source[:start] + replacement + source[end:]
+    return source
+
+
+def dashboard_static_asset(path: str) -> tuple[bytes, str] | None:
+    asset = _base_dashboard_static_asset(path)
+    if asset is None or path != "/static/command-center.js":
+        return asset
+    payload, content_type = asset
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return asset
+    return _integrated_command_center_js(text).encode("utf-8"), content_type
 
 
 class DashboardDataStore(_BaseDashboardDataStore):
