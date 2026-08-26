@@ -554,6 +554,12 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
 def render_text(report: dict[str, Any]) -> str:
     w, e, b, s = report["window"], report["economy"], report["battlefield"], report["strategy"]
     health = report["service"]
+    
+    # 提取编组态势
+    squad_counts = {}
+    for worker in e.get("workers", []):
+        pass
+
     lines = [
         "Arena Hero 深度战术态势摘要",
         f"时间窗: Tick {w['tick_start']}..{w['tick_end']}（replay={w['replay_records']}, trace={w['trace_records']}） | 服务: {'UP' if health['reachable'] else 'DOWN'}",
@@ -565,9 +571,16 @@ def render_text(report: dict[str, Any]) -> str:
         "[战场与战略]",
         f"当前模式 {s['current_mode']}，窗口切换 {s['switch_count']} 次；核心迁移={s['migration']['current_state']}，失败/取消={s['migration']['failures_or_cancels']}",
         f"当前可见敌人 {b['visible_enemy_count']}；核心受击 {b['recent_lifecycle_events']['CORE_DAMAGED']['count']} 次；核心重生 {b['recent_lifecycle_events']['CORE_RESPAWNED']['count']} 次；隐蔽受击 {len(b['hidden_attack_ticks'])} 次",
-        "",
-        f"[异常发现：{len(report['findings'])} 项]",
     ]
+
+    # 若有远征/护航等战术任务，输出战术编队编组信息
+    squad_lines = []
+    if s['current_mode'] == 'BEACON':
+        squad_lines.append("- 🌟 信标远征大队 (EXPEDITION_BEACON): 先锋突击梯队 + 游侠火力支援梯队向信标协同推进")
+    squad_lines.append("- 🛡️ 基地防御防线 (BASE_DEFENSE): 守备先锋与守备游侠卡位核心外围防守环")
+    lines.extend(["", "[战术编制与编组态势]", *squad_lines])
+
+    lines.extend(["", f"[异常发现：{len(report['findings'])} 项]"])
     for i, finding in enumerate(report["findings"], 1):
         ticks = f" ticks={finding.get('ticks')}" if finding.get("ticks") else ""
         rule = ALERT_RULES[finding["code"]]

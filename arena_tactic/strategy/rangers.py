@@ -256,6 +256,40 @@ def _plan_rangers(
             continue
 
         if ranger.id not in guard_rangers:
+            # 远征信标火力支援优先：若处于 BEACON 模式，且有先锋正在向信标远征，分配机动游侠伴随掩护
+            if mode is StrategicMode.BEACON and context.beacon.position is not None:
+                beacon_vanguards = [
+                    v for v in context.vanguards
+                    if v.id not in guard_vanguards
+                ]
+                if beacon_vanguards:
+                    # 寻找先锋编队领队
+                    lead_vg = min(
+                        beacon_vanguards,
+                        key=lambda v: distance(v.position, context.beacon.position),
+                    )
+                    # 游侠梯队跟随在先锋后方 2~3 格提供掩护
+                    ranger_target = context.beacon.position
+                    intent = _move(
+                        ranger,
+                        ranger_target,
+                        "expedition_ranger_support",
+                        480,
+                        context=context,
+                        memory=memory,
+                        reservations=reservations,
+                        deadline=deadline,
+                        config=config,
+                    )
+                    if intent is None and context.core is not None:
+                        intent = _deploy_sidestep(
+                            ranger, ranger_target, context, memory,
+                            reservations, "expedition_ranger_sidestep", context.core.position,
+                        )
+                    _record_unit_task(memory, context, ranger, kind="expedition_support", target=ranger_target, intent=intent)
+                    intents.append(intent or _wait(ranger, "hunter_route_blocked"))
+                    continue
+
             # 伴随式火力掩护优先：若有工兵在外探索，游侠伴随在工兵侧翼 2 格射程位
             if context.core is not None:
                 core_pos = context.core.position

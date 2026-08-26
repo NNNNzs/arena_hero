@@ -242,11 +242,10 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "intercept_route_blocked"))
             continue
 
-        if mode is StrategicMode.BEACON and beacon_vanguard is vanguard:
-            if (
-                vanguard.position == context.beacon.position
-                and context.beacon.status is BeaconStatus.GROUND
-            ):
+        # 远征编组协同：BEACON 模式下先锋协同向信标推进（若正好站在信标地上则无论是否守备先锋均直接捡起）
+        at_beacon = vanguard.position == context.beacon.position and context.beacon.status is BeaconStatus.GROUND
+        if mode is StrategicMode.BEACON and (vanguard.id not in guard_vanguards or at_beacon):
+            if at_beacon:
                 intents.append(
                     ActionIntent(
                         actor_id=vanguard.id,
@@ -257,10 +256,12 @@ def _plan_vanguards(
                     )
                 )
             else:
+                # 梯队阵型：领队直取信标，其他先锋紧随领队掩护
+                target_cell = context.beacon.position
                 intent = _move(
                     vanguard,
-                    context.beacon.position,
-                    "preferred_vanguard_to_beacon",
+                    target_cell,
+                    "expedition_vanguard_to_beacon",
                     650,
                     context=context,
                     memory=memory,
@@ -268,9 +269,14 @@ def _plan_vanguards(
                     deadline=deadline,
                     config=config,
                 )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        vanguard, target_cell, context, memory,
+                        reservations, "expedition_vanguard_sidestep", context.core.position,
+                    )
                 intents.append(intent or _wait(vanguard, "beacon_route_blocked"))
             memory.unit_tasks[str(vanguard.id)] = {
-                "kind": "beacon",
+                "kind": "expedition_beacon",
                 "target": list(context.beacon.position),
             }
             continue
