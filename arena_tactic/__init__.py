@@ -21,8 +21,12 @@ _runtime_module.AgentRuntime = AgentRuntime
 _runtime_module.choose_actions = choose_actions
 
 from . import dashboard as _dashboard_module
-from .dashboard_integration import DashboardDataStore as _IntegratedDashboardDataStore
+from .dashboard_integration import (
+    DashboardDataStore as _IntegratedDashboardDataStore,
+    dashboard_static_asset as _integrated_dashboard_static_asset,
+)
 _dashboard_module.DashboardDataStore = _IntegratedDashboardDataStore
+_dashboard_module.dashboard_static_asset = _integrated_dashboard_static_asset
 
 __all__ = [
     "ActionIntent",
