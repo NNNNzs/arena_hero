@@ -9,6 +9,7 @@ from .values import freeze_mapping, freeze_optional_text, freeze_text
 
 class CommandType(StrEnum):
     ASSIGN_TASK = "ASSIGN_TASK"
+    ASSIGN_SQUAD = "ASSIGN_SQUAD"
     UPDATE_POLICY = "UPDATE_POLICY"
     CANCEL = "CANCEL"
     EMERGENCY_STOP = "EMERGENCY_STOP"

@@ -10,7 +10,8 @@ from arena_hero import CoreState, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
-from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance
+from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells
+from ..squads import SquadPlan, SquadType
 from .common import (
     UNIT_MAX_HP,
     _EXPLORATION_SECTORS,
@@ -26,6 +27,7 @@ from .common import (
     _wait,
 )
 from .mode import _core_emergency_defense
+
 
 def _assign_unique_targets(
     units: Iterable[UnitView],
@@ -109,6 +111,7 @@ def _frontier_assignments(
         memory.obstacles
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
+        | enemy_threat_cells(context)
     )
     frontier = memory.frontier() - blocked
     assigned: set[Position] = set()
@@ -116,9 +119,6 @@ def _frontier_assignments(
     if not units:
         return result
 
-    # When the remembered frontier is exhausted, keep reconnaissance moving
-    # by projecting a bounded target three cells into each unit's assigned
-    # sector. The target is still validated by navigation before submission.
     if not frontier:
         for index, unit in enumerate(units):
             sector = (
@@ -128,12 +128,21 @@ def _frontier_assignments(
             candidates = (
                 (unit.position[0] + dx * 3, unit.position[1] + dy * 3),
                 (unit.position[0] + dx * 4, unit.position[1] + dy * 4),
-                # 滞留核心格的空载工人：优先把让位格作为探索投影目标，
-                # 避免原地等待堵死核心入口（拥堵死锁）。
                 (unit.position[0] + dx, unit.position[1] + dy),
             )
             target = next(
-                (cell for cell in candidates if cell not in blocked and cell not in assigned),
+                (
+                    cell for cell in candidates
+                    if cell not in blocked
+                    and cell not in assigned
+                    and bounded_path_cost(
+                        unit.position,
+                        cell,
+                        blocked=blocked,
+                        deadline=deadline,
+                        node_limit=config.astar_node_limit,
+                    ) is not None
+                ),
                 None,
             )
             if target is None:
@@ -157,34 +166,25 @@ def _frontier_assignments(
             sector_since = int(previous.get("sector_since", context.tick))
         else:
             sector = (
-                (index * len(_EXPLORATION_SECTORS)) // len(units)
-                + sector_offset
+                (index * len(_EXPLORATION_SECTORS)) // len(units) + sector_offset
             ) % len(_EXPLORATION_SECTORS)
             sector_since = context.tick
 
         previous_target: Position | None = None
-        if previous.get("kind") == task_kind and isinstance(
-            previous.get("target"), list
-        ):
+        if previous.get("kind") == task_kind and isinstance(previous.get("target"), list):
             raw_target = previous["target"]
             if len(raw_target) == 2:
                 previous_target = int(raw_target[0]), int(raw_target[1])
 
-        # ── target lock: keep previous target as long as it is still on the
-        # frontier and unassigned.  The sector timer no longer forces rotation;
-        # the worker only re-picks when the target disappears / is taken.
         if previous_target in frontier and previous_target not in assigned:
             target = previous_target
         else:
-            # Target lost → consider sector rotation (minimum-hold semantics).
             if context.tick - sector_since >= config.exploration_sector_ticks:
                 sector = (sector + 1) % len(_EXPLORATION_SECTORS)
                 sector_since = context.tick
-
             remaining_hold = max(
                 1, config.exploration_sector_ticks - (context.tick - sector_since)
             )
-
             target = None
             selected_sector = sector
             for rotation in range(len(_EXPLORATION_SECTORS)):
@@ -198,19 +198,15 @@ def _frontier_assignments(
                     if projection <= 0:
                         continue
                     lateral = abs(delta_x * vector_y - delta_y * vector_x)
-                    geometric_candidates.append(
-                        (
-                            distance(unit.position, cell) + lateral,
-                            lateral,
-                            -projection,
-                            cell,
-                        )
-                    )
+                    geometric_candidates.append((
+                        distance(unit.position, cell) + lateral,
+                        lateral,
+                        -projection,
+                        cell,
+                    ))
                 candidates: list[tuple[int, int, int, Position]] = []
                 fallback_candidates: list[tuple[int, int, int, Position]] = []
-                for _, lateral, negative_projection, cell in sorted(
-                    geometric_candidates
-                )[:32]:
+                for _, lateral, negative_projection, cell in sorted(geometric_candidates)[:32]:
                     path_cost = bounded_path_cost(
                         unit.position,
                         cell,
@@ -222,16 +218,13 @@ def _frontier_assignments(
                         continue
                     item = (path_cost + lateral, lateral, negative_projection, cell)
                     fallback_candidates.append(item)
-                    # Reachability pre-filter: skip targets whose path cost
-                    # clearly exceeds the remaining sector hold window so we
-                    # never pick a destination the worker cannot reach.
                     if path_cost <= remaining_hold:
                         candidates.append(item)
                 if candidates:
                     target = min(candidates)[-1]
                     selected_sector = candidate_sector
                     break
-                elif fallback_candidates and target is None:
+                if fallback_candidates and target is None:
                     target = min(fallback_candidates)[-1]
                     selected_sector = candidate_sector
             if target is None:
@@ -252,7 +245,6 @@ def _frontier_assignments(
     return result
 
 
-
 def _plan_workers(
     context: DecisionContext,
     memory: AgentMemory,
@@ -260,8 +252,8 @@ def _plan_workers(
     deadline: float,
     config: AgentConfig,
     heal_allowances: dict[UUID, int],
+    squad_plan: SquadPlan | None = None,
 ) -> list[ActionIntent]:
-    # Resolve via the compatibility package to preserve legacy monkeypatching.
     from . import _return_to_core as return_to_core
 
     intents: list[ActionIntent] = []
@@ -270,15 +262,11 @@ def _plan_workers(
         return intents
     combat_ready = len(context.vanguards) >= 1 and len(context.rangers) >= 1
     if memory.last_mode is StrategicMode.DEFEND or _core_emergency_defense(context):
-        # When combat ready, workers rally to Core to shelter behind combat units.
-        # When NOT combat ready (0 combat units), empty workers MUST keep gathering resources,
-        # only cargo workers return to deposit so we can fund combat unit production.
         for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
             if (
                 worker.cargo
                 and core.state is CoreState.MOVING
-                and memory.unit_tasks.get(str(worker.id), {}).get("kind")
-                == "await_core_stationary"
+                and memory.unit_tasks.get(str(worker.id), {}).get("kind") == "await_core_stationary"
             ):
                 intents.append(_wait(worker, "deposit_waits_for_core_migration"))
                 continue
@@ -290,18 +278,10 @@ def _plan_workers(
                     worker, context, memory, reservations, deadline, config,
                     "emergency_worker_rally_to_core",
                 )
-                target = (
-                    core.destination
-                    if core.state is CoreState.MOVING and core.destination
-                    else core.position
-                )
+                target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
                 if intent is None:
                     intent = _return_to_core_sidestep(
-                        worker,
-                        target,
-                        context,
-                        memory,
-                        reservations,
+                        worker, target, context, memory, reservations,
                         "emergency_worker_rally_to_core",
                         minimum_distance=1 if worker.cargo else 2,
                     )
@@ -318,18 +298,45 @@ def _plan_workers(
             return intents
 
     empty_workers = tuple(worker for worker in context.workers if not (worker.cargo or 0))
+    if squad_plan is not None:
+        mining_worker_ids = squad_plan.ids_for(SquadType.MINING_ESCORT, UnitType.WORKER)
+        scout_worker_ids = squad_plan.ids_for(SquadType.SCOUT_RECON, UnitType.WORKER)
+        base_worker_ids = squad_plan.ids_for(SquadType.BASE_DEFENSE, UnitType.WORKER)
+        expedition_worker_ids = squad_plan.ids_for(SquadType.EXPEDITION_BEACON, UnitType.WORKER)
+    else:
+        mining_worker_ids = {worker.id for worker in empty_workers}
+        scout_worker_ids = set()
+        base_worker_ids = set()
+        expedition_worker_ids = set()
+
+    economic_workers = tuple(worker for worker in empty_workers if worker.id in mining_worker_ids)
+    scout_workers = tuple(worker for worker in empty_workers if worker.id in scout_worker_ids)
     worker_blocks = (
         memory.obstacles
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
+        | enemy_threat_cells(context)
     )
+    worker_by_id = {str(worker.id): worker for worker in economic_workers}
     locked_resource_assignments = _locked_resource_targets(
-        empty_workers, memory, context, config
+        economic_workers, memory, context, config
     )
+    locked_resource_assignments = {
+        unit_id: target
+        for unit_id, target in locked_resource_assignments.items()
+        if target not in worker_blocks
+        and (worker := worker_by_id.get(unit_id)) is not None
+        and bounded_path_cost(
+            worker.position,
+            target,
+            blocked=worker_blocks,
+            deadline=deadline,
+            node_limit=config.astar_node_limit,
+        ) is not None
+    }
     resource_assignments = _assign_unique_targets(
         (
-            worker
-            for worker in empty_workers
+            worker for worker in economic_workers
             if str(worker.id) not in locked_resource_assignments
         ),
         set(context.resource_cells) - set(locked_resource_assignments.values()),
@@ -340,7 +347,7 @@ def _plan_workers(
     resource_assignments = locked_resource_assignments | resource_assignments
 
     unassigned = [
-        worker for worker in empty_workers if str(worker.id) not in resource_assignments
+        worker for worker in economic_workers if str(worker.id) not in resource_assignments
     ]
     remembered_targets = (
         set(memory.resource_observations)
@@ -361,7 +368,7 @@ def _plan_workers(
         worker for worker in unassigned if str(worker.id) not in reconnaissance
     ]
     exploration = _frontier_assignments(
-        still_unassigned,
+        tuple(still_unassigned) + scout_workers,
         memory,
         context,
         deadline,
@@ -369,182 +376,143 @@ def _plan_workers(
         task_kind="explore",
     )
 
-    # 工人决策优先级：
-    # 1. 核心门口已就绪的载货工人（distance <= 1）：先入库或在门口满时避让；
-    # 2. 停留在核心格上的空载工人（at_core）：最高让位优先级，尽快腾出核心仓位；
-    # 3. 远距离载货工人（distance > 1）：寻路返航；
-    # 4. 其他空载探索/采矿工人。
-    core_pos = context.core.position if context.core is not None else None
+    core_pos = context.core.position
 
     def _worker_order(unit: UnitView) -> tuple[int, int, str]:
         u_cargo = unit.cargo or 0
         at_core = _at_normal_core(unit, context)
-        dist = distance(unit.position, core_pos) if core_pos is not None else 0
+        dist = distance(unit.position, core_pos)
         if u_cargo and dist <= 1:
             return (0, 0, str(unit.id))
-        elif not u_cargo and at_core:
+        if not u_cargo and at_core:
             return (1, 0, str(unit.id))
-        elif u_cargo:
+        if u_cargo:
             return (2, dist, str(unit.id))
-        else:
-            return (3, dist, str(unit.id))
+        return (3, dist, str(unit.id))
 
     for worker in sorted(context.workers, key=_worker_order):
         cargo = worker.cargo or 0
         if (
             cargo
             and core.state is CoreState.MOVING
-            and memory.unit_tasks.get(str(worker.id), {}).get("kind")
-            == "await_core_stationary"
+            and memory.unit_tasks.get(str(worker.id), {}).get("kind") == "await_core_stationary"
         ):
             intents.append(_wait(worker, "deposit_waits_for_core_migration"))
             continue
         if cargo and _at_normal_core(worker, context):
-            intents.append(
-                ActionIntent(
-                    actor_id=worker.id,
-                    is_core=False,
-                    action=ActionKind.DEPOSIT,
-                    score=950,
-                    reason="preserve_worker_cargo",
-                )
-            )
+            intents.append(ActionIntent(
+                actor_id=worker.id,
+                is_core=False,
+                action=ActionKind.DEPOSIT,
+                score=950,
+                reason="preserve_worker_cargo",
+            ))
             continue
         if cargo:
             intent = return_to_core(
-                worker,
-                context,
-                memory,
-                reservations,
-                deadline,
-                config,
+                worker, context, memory, reservations, deadline, config,
                 "return_cargo_to_core",
             )
-            if context.core is not None:
-                return_target = (
-                    context.core.destination
-                    if context.core.state is CoreState.MOVING
-                    and context.core.destination
-                    else context.core.position
-                )
-                if intent is None:
-                    if distance(worker.position, return_target) > 1:
-                        intent = _return_to_core_sidestep(
-                            worker,
-                            return_target,
-                            context,
-                            memory,
-                            reservations,
-                            "return_cargo_to_core",
-                            minimum_distance=1,
-                        )
-                    elif (
-                        distance(worker.position, return_target) == 1
-                        and len(context.friendly_occupancy.get(worker.position, ())) >= 2
-                        and worker.id
-                        == sorted(
-                            context.friendly_occupancy.get(worker.position, ()),
-                            key=lambda u: str(u),
-                        )[0]
-                    ):
-                        # Doorstep is full (2 units occupying the entrance cell) and Core cannot be entered.
-                        # Only ONE worker steps aside to relieve the chokepoint so empty workers trapped
-                        # inside Core can vacate, while avoiding symmetric multi-worker ping-pong oscillation.
-                        existing_task = memory.unit_tasks.get(str(worker.id), {})
-                        prev_cell_raw = existing_task.get("prev_cell")
-                        prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
-
-                        cand_dirs = []
-                        for d in DIRECTIONS:
-                            side_cell = destination(worker.position, d)
-                            if (
-                                side_cell != return_target
-                                and side_cell not in memory.obstacles
-                                and side_cell not in memory.active_temporary_blocks(context.tick)
-                                and side_cell not in context.enemy_occupancy
-                            ):
-                                pen = 5000 if (prev_cell is not None and side_cell == prev_cell) else 0
-                                cand_dirs.append((pen, d, side_cell))
-                        cand_dirs.sort(key=lambda x: x[0])
-                        for _, d, side_cell in cand_dirs:
-                            if reservations.reserve(side_cell, source=worker.position):
-                                intent = ActionIntent(
-                                    actor_id=worker.id,
-                                    is_core=False,
-                                    action=ActionKind.MOVE,
-                                    score=400,
-                                    reason="yield_doorstep_congestion",
-                                    direction=d,
-                                    target_cell=side_cell,
-                                    reserved_cell=side_cell,
-                                )
-                                break
-                _record_unit_task(
-                    memory,
-                    context,
-                    worker,
-                    kind="return",
-                    target=return_target,
-                    intent=intent,
-                )
+            return_target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
+            if intent is None:
+                if distance(worker.position, return_target) > 1:
+                    intent = _return_to_core_sidestep(
+                        worker, return_target, context, memory, reservations,
+                        "return_cargo_to_core", minimum_distance=1,
+                    )
+                elif (
+                    distance(worker.position, return_target) == 1
+                    and len(context.friendly_occupancy.get(worker.position, ())) >= 2
+                    and worker.id == sorted(
+                        context.friendly_occupancy.get(worker.position, ()), key=lambda unit_id: str(unit_id)
+                    )[0]
+                ):
+                    existing_task = memory.unit_tasks.get(str(worker.id), {})
+                    prev_cell_raw = existing_task.get("prev_cell")
+                    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+                    candidates = []
+                    for direction in DIRECTIONS:
+                        side_cell = destination(worker.position, direction)
+                        if (
+                            side_cell != return_target
+                            and side_cell not in memory.obstacles
+                            and side_cell not in memory.active_temporary_blocks(context.tick)
+                            and side_cell not in context.enemy_occupancy
+                        ):
+                            penalty = 5000 if prev_cell is not None and side_cell == prev_cell else 0
+                            candidates.append((penalty, direction, side_cell))
+                    candidates.sort(key=lambda item: (item[0], item[1].value))
+                    for _, direction, side_cell in candidates:
+                        if reservations.reserve(side_cell, source=worker.position):
+                            intent = ActionIntent(
+                                actor_id=worker.id,
+                                is_core=False,
+                                action=ActionKind.MOVE,
+                                score=400,
+                                reason="yield_doorstep_congestion",
+                                direction=direction,
+                                target_cell=side_cell,
+                                reserved_cell=side_cell,
+                            )
+                            break
+            _record_unit_task(memory, context, worker, kind="return", target=return_target, intent=intent)
             intents.append(intent or _wait(worker, "no_safe_route_with_cargo"))
             continue
 
-        if worker.hp < UNIT_MAX_HP[UnitType.WORKER] and _at_normal_core(
-            worker, context
-        ):
+        if worker.hp < UNIT_MAX_HP[UnitType.WORKER] and _at_normal_core(worker, context):
             heal_cost = heal_allowances.get(worker.id, 0)
-            intents.append(
-                _unit_heal_intent(worker, heal_cost)
-                if heal_cost > 0
-                else _wait(worker, "healing_waits_for_resources")
-            )
+            intents.append(_unit_heal_intent(worker, heal_cost) if heal_cost > 0 else _wait(worker, "healing_waits_for_resources"))
             continue
 
-        # The zero-combat-roster defense rule deliberately keeps empty Workers
-        # mining; it takes precedence over a defensive rally, including this
-        # general healing-retreat rule.
         if (
             _unit_needs_retreat_heal(worker, memory, config)
             and not (_core_emergency_defense(context) and not combat_ready and not cargo)
         ):
-            intent = _unit_retreat_to_core(
-                worker, context, memory, reservations, deadline, config
-            )
+            intent = _unit_retreat_to_core(worker, context, memory, reservations, deadline, config)
             intents.append(intent or _wait(worker, "unit_retreat_to_core_heal_blocked"))
+            continue
+
+        if worker.id in base_worker_ids:
+            if worker.position == core.position:
+                _record_unit_task(memory, context, worker, kind="squad_base_defense", target=core.position, intent=None)
+                intents.append(_wait(worker, "squad_base_defense_worker_hold"))
+            else:
+                intent = _move(
+                    worker, core.position, "squad_base_defense_worker_return", 520,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config, avoid_threats=True,
+                )
+                _record_unit_task(memory, context, worker, kind="squad_base_defense", target=core.position, intent=intent)
+                intents.append(intent or _wait(worker, "squad_base_defense_worker_blocked"))
+            continue
+        if worker.id in expedition_worker_ids:
+            intent = _move(
+                worker, context.beacon.position, "squad_expedition_worker_advance", 500,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config, avoid_threats=True,
+            )
+            _record_unit_task(memory, context, worker, kind="expedition_beacon", target=context.beacon.position, intent=intent)
+            intents.append(intent or _wait(worker, "squad_expedition_worker_blocked"))
             continue
 
         target = resource_assignments.get(str(worker.id))
         if target is not None and worker.position == target:
-            intents.append(
-                ActionIntent(
-                    actor_id=worker.id,
-                    is_core=False,
-                    action=ActionKind.HARVEST,
-                    score=900,
-                    reason="assigned_visible_resource",
-                    target_cell=target,
-                )
-            )
-            _record_unit_task(
-                memory,
-                context,
-                worker,
-                kind="resource",
-                target=target,
-                intent=None,
-            )
+            intents.append(ActionIntent(
+                actor_id=worker.id,
+                is_core=False,
+                action=ActionKind.HARVEST,
+                score=900,
+                reason="assigned_visible_resource",
+                target_cell=target,
+            ))
+            _record_unit_task(memory, context, worker, kind="resource", target=target, intent=None)
             continue
         if target is not None:
             target_is_visible = target in context.resource_cells
             intent = _move(
                 worker,
                 target,
-                (
-                    "move_to_unique_resource"
-                    if target_is_visible
-                    else "continue_locked_resource_route"
-                ),
+                "move_to_unique_resource" if target_is_visible else "continue_locked_resource_route",
                 750,
                 context=context,
                 memory=memory,
@@ -553,41 +521,21 @@ def _plan_workers(
                 config=config,
                 avoid_threats=True,
             )
-            _record_unit_task(
-                memory,
-                context,
-                worker,
-                kind="resource",
-                target=target,
-                intent=intent,
-            )
+            _record_unit_task(memory, context, worker, kind="resource", target=target, intent=intent)
             if intent is not None:
                 intents.append(intent)
                 continue
             if (
-                intent is None
-                and context.core is not None
+                context.core is not None
                 and distance(worker.position, context.core.position) <= 1
                 and distance(worker.position, target) > 1
             ):
                 intent = _deploy_sidestep(
-                    worker,
-                    target,
-                    context,
-                    memory,
-                    reservations,
-                    "resource_route_sidestep",
-                    context.core.position,
+                    worker, target, context, memory, reservations,
+                    "resource_route_sidestep", context.core.position,
                 )
                 if intent is not None:
-                    _record_unit_task(
-                        memory,
-                        context,
-                        worker,
-                        kind="resource",
-                        target=target,
-                        intent=intent,
-                    )
+                    _record_unit_task(memory, context, worker, kind="resource", target=target, intent=intent)
                     intents.append(intent)
                     continue
             if not (_at_normal_core(worker, context) and not cargo):
@@ -599,23 +547,12 @@ def _plan_workers(
         if target is None:
             target = exploration.get(str(worker.id))
             reason = "explore_sector_frontier"
-        if (
-            context.core is not None
-            and _at_normal_core(worker, context)
-            and not cargo
-        ):
-            # 空载工人滞留核心格：核心格容量只有 2（核心+1），
-            # 停在这里会堵死载货工人的存矿入口。主动让位到最近的
-            # 非核心相邻可用格，把入口让给返航的载货同伴。
-            # 直接使用传入的动态 reservations（已包含本 Tick 其他单位移动让出的容量）。
+        if context.core is not None and _at_normal_core(worker, context) and not cargo:
             occupied = dict(context.enemy_occupancy)
             vacate = next(
                 (
                     cell
-                    for cell in sorted(
-                        destination(worker.position, d)
-                        for d in DIRECTIONS
-                    )
+                    for cell in sorted(destination(worker.position, direction) for direction in DIRECTIONS)
                     if cell not in memory.obstacles
                     and cell not in occupied
                     and reservations.can_reserve(cell)
@@ -625,23 +562,16 @@ def _plan_workers(
             if vacate is not None:
                 intent = _move(
                     worker, vacate, "vacate_core_cell_for_delivery", 420,
-                    context=context, memory=memory,
-                    reservations=reservations, deadline=deadline, config=config,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
                 )
                 if intent is not None:
-                    _record_unit_task(
-                        memory, context, worker, kind="vacate",
-                        target=vacate, intent=intent,
-                    )
+                    _record_unit_task(memory, context, worker, kind="vacate", target=vacate, intent=intent)
                     intents.append(intent)
                     continue
             intents.append(_wait(worker, "core_cell_vacate_blocked"))
             continue
-        # ── doorstep idle override ──
-        # When frontier is empty, _frontier_assignments still projects synthetic
-        # exploration targets to keep workers moving.  However, a worker standing
-        # on the doorstep (adjacent to core, no cargo) should yield instead of
-        # chasing a synthetic target – it would block deposit traffic.
+
         if (
             not cargo
             and target is not None
@@ -649,28 +579,15 @@ def _plan_workers(
             and context.core is not None
             and distance(worker.position, context.core.position) <= 1
         ):
-            frontier_cells = memory.frontier() - (
-                memory.obstacles
-                | memory.active_temporary_blocks(context.tick)
-                | set(context.enemy_occupancy)
-            )
+            frontier_cells = memory.frontier() - worker_blocks
             if not frontier_cells:
-                target = None  # fall through to yield_core_doorstep_idle
+                target = None
         if target is not None:
-            task_kind = (
-                "recon" if reconnaissance.get(str(worker.id)) else "explore"
-            )
+            task_kind = "recon" if reconnaissance.get(str(worker.id)) else "explore"
             intent = _move(
-                worker,
-                target,
-                reason,
-                400,
-                context=context,
-                memory=memory,
-                reservations=reservations,
-                deadline=deadline,
-                config=config,
-                avoid_threats=True,
+                worker, target, reason, 400,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config, avoid_threats=True,
             )
             if (
                 intent is None
@@ -679,54 +596,36 @@ def _plan_workers(
                 and distance(worker.position, target) > 1
             ):
                 intent = _deploy_sidestep(
-                    worker,
-                    target,
-                    context,
-                    memory,
-                    reservations,
-                    reason + "_sidestep",
-                    context.core.position,
+                    worker, target, context, memory, reservations,
+                    reason + "_sidestep", context.core.position,
                 )
-            _record_unit_task(
-                memory,
-                context,
-                worker,
-                kind=task_kind,
-                target=target,
-                intent=intent,
-            )
+            _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue
 
-        if (
-            target is None
-            and context.core is not None
-            and distance(worker.position, context.core.position) <= 1
-        ):
-            # Idle empty worker on or adjacent to Core: do not loiter on the doorstep blocking deposit traffic.
-            # Step away to an adjacent passable non-core tile.
+        if context.core is not None and distance(worker.position, context.core.position) <= 1:
             yielded = False
-            for d in DIRECTIONS:
-                step_cell = destination(worker.position, d)
+            threats = enemy_threat_cells(context)
+            for direction in DIRECTIONS:
+                step_cell = destination(worker.position, direction)
                 if (
                     step_cell != context.core.position
                     and step_cell not in memory.obstacles
                     and step_cell not in memory.active_temporary_blocks(context.tick)
                     and step_cell not in context.enemy_occupancy
+                    and step_cell not in threats
                     and reservations.reserve(step_cell, source=worker.position)
                 ):
-                    intents.append(
-                        ActionIntent(
-                            actor_id=worker.id,
-                            is_core=False,
-                            action=ActionKind.MOVE,
-                            score=350,
-                            reason="yield_core_doorstep_idle",
-                            direction=d,
-                            target_cell=step_cell,
-                            reserved_cell=step_cell,
-                        )
-                    )
+                    intents.append(ActionIntent(
+                        actor_id=worker.id,
+                        is_core=False,
+                        action=ActionKind.MOVE,
+                        score=350,
+                        reason="yield_core_doorstep_idle",
+                        direction=direction,
+                        target_cell=step_cell,
+                        reserved_cell=step_cell,
+                    ))
                     yielded = True
                     break
             if yielded:

@@ -102,9 +102,9 @@ def test_planner_canary_capacity_conflict_is_rerouted_without_a_rejected_intent(
     assert not rejected
     assert len(accepted) == len(context.current_objects)
     assert sum(intent.action is ActionKind.MOVE for intent in accepted) == 3
-    rerouted = next(intent for intent in accepted if intent.actor_id == workers[2].id)
-    assert rerouted.reason == "arbitrator_capacity_reroute"
-    assert rerouted.reserved_cell != (0, 0)
+    rerouted = [intent for intent in accepted if intent.reason == "arbitrator_capacity_reroute"]
+    assert len(rerouted) == 1
+    assert rerouted[0].reserved_cell != (0, 0)
 
 
 def test_validator_rejects_stale_ranger_target():
@@ -132,7 +132,6 @@ def test_plan_step_waypoint_fallback_for_distant_goal():
     context = DecisionContext.from_turn(
         turn(owned_core=core(), units=(unit(1, UnitType.WORKER, (0, 0)),))
     )
-    # Goal is 500 tiles away, unblocked open terrain
     direction = plan_step(
         actor_id=uuid(1),
         start=(0, 0),
@@ -144,4 +143,3 @@ def test_plan_step_waypoint_fallback_for_distant_goal():
         config=AgentConfig(),
     )
     assert direction is Direction.RIGHT
-
