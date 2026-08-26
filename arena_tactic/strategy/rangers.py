@@ -27,6 +27,7 @@ from .common import (
     _best_visible_enemy,
     _guard_slots,
     _move,
+    _record_unit_task,
     _return_to_core,
     _unit_heal_intent,
     _unit_needs_retreat_heal,
@@ -100,7 +101,6 @@ def _plan_rangers(
         guard_vanguards = squad_plan.ids_for(SquadType.BASE_DEFENSE, UnitType.VANGUARD)
         guard_rangers = squad_plan.ids_for(SquadType.BASE_DEFENSE, UnitType.RANGER)
         expedition_rangers = squad_plan.ids_for(SquadType.EXPEDITION_BEACON, UnitType.RANGER)
-        expedition_vanguards = squad_plan.ids_for(SquadType.EXPEDITION_BEACON, UnitType.VANGUARD)
         mining_vanguards = squad_plan.ids_for(SquadType.MINING_ESCORT, UnitType.VANGUARD)
         mining_rangers = squad_plan.ids_for(SquadType.MINING_ESCORT, UnitType.RANGER)
         scout_rangers = squad_plan.ids_for(SquadType.SCOUT_RECON, UnitType.RANGER)
@@ -109,7 +109,6 @@ def _plan_rangers(
         guard_vanguards = legacy_guard_vanguards
         guard_rangers = legacy_guard_rangers
         expedition_rangers = {unit.id for unit in context.rangers if unit.id not in guard_rangers}
-        expedition_vanguards = {unit.id for unit in context.vanguards if unit.id not in guard_vanguards}
         mining_vanguards = set()
         mining_rangers = set()
         scout_rangers = set(expedition_rangers)
@@ -197,6 +196,7 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            _record_unit_task(memory, context, ranger, kind="defense_search", target=search_cell, intent=intent)
             intents.append(intent or _wait(ranger, "hidden_attacker_search_blocked"))
             continue
 
@@ -207,6 +207,7 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            _record_unit_task(memory, context, ranger, kind="intercept", target=staging, intent=intent)
             intents.append(intent or _wait(ranger, "intercept_firing_route_blocked"))
             continue
 
@@ -223,11 +224,17 @@ def _plan_rangers(
 
         cargo_yield = _yield_cargo_delivery(ranger, context, memory, reservations)
         if cargo_yield is not None:
+            _record_unit_task(
+                memory,
+                context,
+                ranger,
+                kind="yield_cargo_delivery",
+                target=cargo_yield.target_cell or ranger.position,
+                intent=cargo_yield,
+            )
             intents.append(cargo_yield)
             continue
 
-        # Expedition is now a real squad role rather than every non-guard
-        # Ranger following the global BEACON mode.
         if ranger.id in expedition_rangers:
             target_cell = context.beacon.position
             intent = _move(
@@ -240,6 +247,7 @@ def _plan_rangers(
                     ranger, target_cell, context, memory,
                     reservations, "expedition_ranger_sidestep", context.core.position,
                 )
+            _record_unit_task(memory, context, ranger, kind="expedition_support", target=target_cell, intent=intent)
             intents.append(intent or _wait(ranger, "hunter_route_blocked"))
             continue
 
@@ -259,6 +267,7 @@ def _plan_rangers(
                             deadline=deadline, config=config,
                         )
                         if intent is not None:
+                            _record_unit_task(memory, context, ranger, kind="recon_escort", target=escort_slot, intent=intent)
                             intents.append(intent)
                             continue
 
@@ -278,6 +287,7 @@ def _plan_rangers(
                         ranger, hunter_target, context, memory,
                         reservations, "hunter_forward_recon", context.core.position,
                     )
+                _record_unit_task(memory, context, ranger, kind="hunter", target=hunter_target, intent=intent)
                 intents.append(intent or _wait(ranger, "hunter_route_blocked"))
                 continue
 
@@ -290,7 +300,10 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(ranger, "guard_route_blocked"))
         else:
+            if guard_target is not None:
+                _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=None)
             intents.append(_wait(ranger, "holding_defense_ring"))
     return intents
