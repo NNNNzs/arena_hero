@@ -11,8 +11,14 @@ from .models import (
     StrategicMode,
 )
 from .navigation import adjacent_direction, distance, shot_range
-from .runtime import AgentRuntime, choose_actions
+from .integrated_runtime import AgentRuntime, choose_actions
 from .strategy import choose_mode, ranger_target_score, vanguard_cell_score
+
+# Keep callers importing arena_tactic.runtime after package initialization on
+# the same integrated implementation used by the service/public API.
+from . import runtime as _runtime_module
+_runtime_module.AgentRuntime = AgentRuntime
+_runtime_module.choose_actions = choose_actions
 
 __all__ = [
     "ActionIntent",
