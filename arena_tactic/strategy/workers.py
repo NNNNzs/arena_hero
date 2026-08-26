@@ -15,6 +15,7 @@ from .common import (
     UNIT_MAX_HP,
     _EXPLORATION_SECTORS,
     _at_normal_core,
+    _deploy_sidestep,
     _move,
     _record_unit_task,
     _return_to_core,
@@ -563,6 +564,32 @@ def _plan_workers(
             if intent is not None:
                 intents.append(intent)
                 continue
+            if (
+                intent is None
+                and context.core is not None
+                and distance(worker.position, context.core.position) <= 1
+                and distance(worker.position, target) > 1
+            ):
+                intent = _deploy_sidestep(
+                    worker,
+                    target,
+                    context,
+                    memory,
+                    reservations,
+                    "resource_route_sidestep",
+                    context.core.position,
+                )
+                if intent is not None:
+                    _record_unit_task(
+                        memory,
+                        context,
+                        worker,
+                        kind="resource",
+                        target=target,
+                        intent=intent,
+                    )
+                    intents.append(intent)
+                    continue
             if not (_at_normal_core(worker, context) and not cargo):
                 intents.append(_wait(worker, "resource_route_blocked"))
                 continue
@@ -645,6 +672,21 @@ def _plan_workers(
                 config=config,
                 avoid_threats=True,
             )
+            if (
+                intent is None
+                and context.core is not None
+                and distance(worker.position, context.core.position) <= 1
+                and distance(worker.position, target) > 1
+            ):
+                intent = _deploy_sidestep(
+                    worker,
+                    target,
+                    context,
+                    memory,
+                    reservations,
+                    reason + "_sidestep",
+                    context.core.position,
+                )
             _record_unit_task(
                 memory,
                 context,
