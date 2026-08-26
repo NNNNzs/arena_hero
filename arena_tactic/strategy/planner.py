@@ -10,12 +10,14 @@ from arena_hero import CoreState
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, ReservationTable, StrategicMode
+from ..squads import build_squad_plan
 from .common import CORE_MAX_HP, UNIT_MAX_HP, _anticipated_resources, _at_normal_core
 from .core_plan import _plan_core
 from .mode import choose_mode
 from .rangers import _plan_rangers
 from .vanguards import _plan_vanguards
 from .workers import _plan_workers
+
 
 def propose_intents(
     context: DecisionContext,
@@ -28,9 +30,12 @@ def propose_intents(
     if context.core is None:
         return mode, (), perf_counter() >= deadline
 
+    # One authoritative squad plan is shared by all role planners so the
+    # Dashboard roster, persistent manual membership and actual behavior agree.
+    squad_plan = build_squad_plan(context, memory, config)
+
     occupancy = {cell: len(ids) for cell, ids in context.friendly_occupancy.items()}
     if context.core.state is CoreState.MOVING and context.core.destination:
-        # The migrating Core will occupy one slot at its public destination.
         occupancy[context.core.destination] = occupancy.get(context.core.destination, 0) + 1
     reservations = ReservationTable(occupancy=occupancy)
 
@@ -50,7 +55,7 @@ def propose_intents(
             remaining_heal_budget -= allowance
 
     intents = _plan_workers(
-        context, memory, reservations, deadline, config, heal_allowances
+        context, memory, reservations, deadline, config, heal_allowances, squad_plan
     )
     intents.extend(
         _plan_vanguards(
@@ -61,6 +66,7 @@ def propose_intents(
             deadline,
             config,
             heal_allowances,
+            squad_plan,
         )
     )
     intents.extend(
@@ -72,6 +78,7 @@ def propose_intents(
             deadline,
             config,
             heal_allowances,
+            squad_plan,
         )
     )
     planned_unit_heals = sum(
@@ -85,5 +92,3 @@ def propose_intents(
     if core_intent is not None:
         intents.append(core_intent)
     return mode, tuple(intents), perf_counter() >= deadline
-
-
