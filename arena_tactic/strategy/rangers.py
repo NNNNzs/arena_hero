@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from arena_hero import BeaconStatus, CoreView, UnitType, UnitView
+from arena_hero import CoreView, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
-from ..navigation import DIRECTIONS, destination, distance, shot_range
+from ..navigation import distance, shot_range
+from ..squads import SquadPlan, SquadType
 from ..tactical_geometry import shadow_fire_advantage
 from .combat import (
     _combat_rosters,
@@ -22,23 +23,18 @@ from .combat import (
 from .common import (
     _deploy_sidestep,
     _yield_cargo_delivery,
-    UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
     _guard_slots,
     _move,
-    _record_unit_task,
     _return_to_core,
     _unit_heal_intent,
     _unit_needs_retreat_heal,
     _unit_retreat_to_core,
     _wait,
 )
-from .mode import (
-    _hidden_attack_pressure,
-    _hidden_attack_search_cell,
-)
-from .workers import _frontier_assignments
+from .mode import _hidden_attack_pressure, _hidden_attack_search_cell
+
 
 def _ranger_attack_is_urgent(
     enemy: CoreView | UnitView,
@@ -93,21 +89,44 @@ def _plan_rangers(
     deadline: float,
     config: AgentConfig,
     heal_allowances: dict[UUID, int],
+    squad_plan: SquadPlan | None = None,
 ) -> list[ActionIntent]:
     intents: list[ActionIntent] = []
     guard_slots = _guard_slots(context, memory)
-    guard_vanguards, guard_rangers, _, intercept_rangers = _combat_rosters(context, memory, config)
+    legacy_guard_vanguards, legacy_guard_rangers, _, intercept_rangers = _combat_rosters(
+        context, memory, config
+    )
+    if squad_plan is not None:
+        guard_vanguards = squad_plan.ids_for(SquadType.BASE_DEFENSE, UnitType.VANGUARD)
+        guard_rangers = squad_plan.ids_for(SquadType.BASE_DEFENSE, UnitType.RANGER)
+        expedition_rangers = squad_plan.ids_for(SquadType.EXPEDITION_BEACON, UnitType.RANGER)
+        expedition_vanguards = squad_plan.ids_for(SquadType.EXPEDITION_BEACON, UnitType.VANGUARD)
+        mining_vanguards = squad_plan.ids_for(SquadType.MINING_ESCORT, UnitType.VANGUARD)
+        mining_rangers = squad_plan.ids_for(SquadType.MINING_ESCORT, UnitType.RANGER)
+        scout_rangers = squad_plan.ids_for(SquadType.SCOUT_RECON, UnitType.RANGER)
+        intercept_rangers = set(intercept_rangers) - guard_rangers
+    else:
+        guard_vanguards = legacy_guard_vanguards
+        guard_rangers = legacy_guard_rangers
+        expedition_rangers = {unit.id for unit in context.rangers if unit.id not in guard_rangers}
+        expedition_vanguards = {unit.id for unit in context.vanguards if unit.id not in guard_vanguards}
+        mining_vanguards = set()
+        mining_rangers = set()
+        scout_rangers = set(expedition_rangers)
+
     intercept_enemy = _intercept_target(context, memory, config)
     hunter_roster = tuple(
         unit for unit in sorted(context.rangers, key=lambda item: item.id.bytes)
-        if unit.id not in guard_rangers
+        if unit.id in scout_rangers
     )
     escort_combat = tuple(
         unit for unit in (*context.vanguards, *context.rangers)
+        if unit.id in (mining_vanguards | mining_rangers)
+    ) if squad_plan is not None else tuple(
+        unit for unit in (*context.vanguards, *context.rangers)
         if unit.id not in guard_vanguards and unit.id not in guard_rangers
     )
-    
-    # 局部集火与过杀保护统计: 记录本回合敌人已分配受击伤害
+
     targeted_damage: dict[UUID, int] = {}
 
     for index, ranger in enumerate(sorted(context.rangers, key=lambda unit: str(unit.id))):
@@ -116,15 +135,13 @@ def _plan_rangers(
             for enemy in context.enemies
             if shot_range(ranger.position, enemy.position, memory.obstacles) is not None
         ]
-        
-        # 过滤掉已经受到足够致命伤害的目标（过杀保护）
         effective_shootable = []
         for enemy in shootable:
             enemy_hp = enemy.hp + (enemy.shield if isinstance(enemy, CoreView) else 0)
             if targeted_damage.get(enemy.id, 0) < enemy_hp:
                 effective_shootable.append(enemy)
         if not effective_shootable and shootable:
-            effective_shootable = shootable  # 若全都被预定，则允许补刀
+            effective_shootable = shootable
 
         target = min(
             effective_shootable,
@@ -134,23 +151,14 @@ def _plan_rangers(
             ),
             default=None,
         )
-        urgent = target is not None and _ranger_attack_is_urgent(
-            target, context, memory
-        )
+        urgent = target is not None and _ranger_attack_is_urgent(target, context, memory)
+
         if ranger.hp == 1 and not urgent:
-            if _at_normal_core(ranger, context) and heal_allowances.get(
-                ranger.id, 0
-            ) > 0:
-                heal_cost = heal_allowances[ranger.id]
-                intents.append(_unit_heal_intent(ranger, heal_cost))
+            if _at_normal_core(ranger, context) and heal_allowances.get(ranger.id, 0) > 0:
+                intents.append(_unit_heal_intent(ranger, heal_allowances[ranger.id]))
             else:
                 intent = _return_to_core(
-                    ranger,
-                    context,
-                    memory,
-                    reservations,
-                    deadline,
-                    config,
+                    ranger, context, memory, reservations, deadline, config,
                     "critical_ranger_retreat",
                 )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
@@ -170,19 +178,16 @@ def _plan_rangers(
                 intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
             continue
         if target is not None:
-            # 记录集火伤害 (Ranger 单次伤害为 1)
             targeted_damage[target.id] = targeted_damage.get(target.id, 0) + 1
-            intents.append(
-                ActionIntent(
-                    actor_id=ranger.id,
-                    is_core=False,
-                    action=ActionKind.SHOOT,
-                    score=850 + ranger_target_score(ranger, target, context, memory),
-                    reason="highest_scoring_legal_ranger_target",
-                    target_id=target.id,
-                    target_cell=target.position,
-                )
-            )
+            intents.append(ActionIntent(
+                actor_id=ranger.id,
+                is_core=False,
+                action=ActionKind.SHOOT,
+                score=850 + ranger_target_score(ranger, target, context, memory),
+                reason="highest_scoring_legal_ranger_target",
+                target_id=target.id,
+                target_cell=target.position,
+            ))
             continue
 
         if _hidden_attack_pressure(context, memory) and context.core is not None:
@@ -192,129 +197,76 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
-            _record_unit_task(memory, context, ranger, kind="defense_search", target=search_cell, intent=intent)
             intents.append(intent or _wait(ranger, "hidden_attacker_search_blocked"))
             continue
 
         if ranger.id in intercept_rangers and intercept_enemy is not None:
             staging = _ranger_staging_cell(ranger, intercept_enemy, context, memory)
             intent = _move(
-                ranger,
-                staging,
-                "intercept_ranger_firing_line",
-                620,
-                context=context,
-                memory=memory,
-                reservations=reservations,
-                deadline=deadline,
-                config=config,
-            )
-            _record_unit_task(
-                memory,
-                context,
-                ranger,
-                kind="intercept",
-                target=staging,
-                intent=intent,
+                ranger, staging, "intercept_ranger_firing_line", 620,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
             )
             intents.append(intent or _wait(ranger, "intercept_firing_route_blocked"))
             continue
 
         target_enemy = _best_visible_enemy(ranger, context, memory)
-        if target_enemy is not None and mode in (
-            StrategicMode.DEFEND,
-            StrategicMode.ATTACK,
-        ):
-            staging = _ranger_staging_cell(
-                ranger, target_enemy, context, memory
-            )
+        if target_enemy is not None and mode in (StrategicMode.DEFEND, StrategicMode.ATTACK):
+            staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
             intent = _move(
-                ranger,
-                staging,
-                "ranger_seek_legal_firing_line",
-                580,
-                context=context,
-                memory=memory,
-                reservations=reservations,
-                deadline=deadline,
-                config=config,
+                ranger, staging, "ranger_seek_legal_firing_line", 580,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
             )
             intents.append(intent or _wait(ranger, "firing_route_blocked"))
             continue
 
         cargo_yield = _yield_cargo_delivery(ranger, context, memory, reservations)
         if cargo_yield is not None:
-            _record_unit_task(
-                memory,
-                context,
-                ranger,
-                kind="yield_cargo_delivery",
-                target=cargo_yield.target_cell or ranger.position,
-                intent=cargo_yield,
-            )
             intents.append(cargo_yield)
             continue
 
-        if ranger.id not in guard_rangers:
-            # 远征信标火力支援优先：若处于 BEACON 模式，且有先锋正在向信标远征，分配机动游侠伴随掩护
-            if mode is StrategicMode.BEACON and context.beacon.position is not None:
-                beacon_vanguards = [
-                    v for v in context.vanguards
-                    if v.id not in guard_vanguards
-                ]
-                if beacon_vanguards:
-                    # 寻找先锋编队领队
-                    lead_vg = min(
-                        beacon_vanguards,
-                        key=lambda v: distance(v.position, context.beacon.position),
-                    )
-                    # 游侠梯队跟随在先锋后方 2~3 格提供掩护
-                    ranger_target = context.beacon.position
-                    intent = _move(
-                        ranger,
-                        ranger_target,
-                        "expedition_ranger_support",
-                        480,
-                        context=context,
-                        memory=memory,
-                        reservations=reservations,
-                        deadline=deadline,
-                        config=config,
-                    )
-                    if intent is None and context.core is not None:
-                        intent = _deploy_sidestep(
-                            ranger, ranger_target, context, memory,
-                            reservations, "expedition_ranger_sidestep", context.core.position,
-                        )
-                    _record_unit_task(memory, context, ranger, kind="expedition_support", target=ranger_target, intent=intent)
-                    intents.append(intent or _wait(ranger, "hunter_route_blocked"))
-                    continue
+        # Expedition is now a real squad role rather than every non-guard
+        # Ranger following the global BEACON mode.
+        if ranger.id in expedition_rangers:
+            target_cell = context.beacon.position
+            intent = _move(
+                ranger, target_cell, "expedition_ranger_support", 480,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
+            )
+            if intent is None and context.core is not None:
+                intent = _deploy_sidestep(
+                    ranger, target_cell, context, memory,
+                    reservations, "expedition_ranger_sidestep", context.core.position,
+                )
+            intents.append(intent or _wait(ranger, "hunter_route_blocked"))
+            continue
 
-            # 伴随式火力掩护优先：若有工兵在外探索，游侠伴随在工兵侧翼 2 格射程位
-            if context.core is not None:
-                core_pos = context.core.position
-                exploring_workers = [w for w in context.workers if (w.cargo or 0) == 0 and distance(w.position, core_pos) > 2]
-                if exploring_workers:
-                    assignment = _escort_assignment(
-                        ranger, escort_combat, exploring_workers, context.core
-                    )
-                    if assignment is not None:
-                        _, escort_slot = assignment
-                    if assignment is not None and escort_slot not in memory.obstacles:
+        if ranger.id in mining_rangers and context.core is not None:
+            exploring_workers = [
+                worker for worker in context.workers
+                if (worker.cargo or 0) == 0 and distance(worker.position, context.core.position) > 2
+            ]
+            if exploring_workers:
+                assignment = _escort_assignment(ranger, escort_combat, exploring_workers, context.core)
+                if assignment is not None:
+                    _, escort_slot = assignment
+                    if escort_slot not in memory.obstacles:
                         intent = _move(
                             ranger, escort_slot, "recon_squad_ranger_flank", 450,
                             context=context, memory=memory, reservations=reservations,
                             deadline=deadline, config=config,
                         )
                         if intent is not None:
-                            _record_unit_task(memory, context, ranger, kind="recon_escort", target=escort_slot, intent=intent)
                             intents.append(intent)
                             continue
 
+        if ranger.id in scout_rangers:
             hunter_target = _combat_target(
                 context.core, ranger, hunter_roster.index(ranger), len(hunter_roster),
                 memory, config, role="hunter",
-            ) if context.core is not None else None
+            ) if context.core is not None and ranger in hunter_roster else None
             if hunter_target is not None:
                 intent = _move(
                     ranger, hunter_target, "hunter_forward_recon", 420,
@@ -326,28 +278,19 @@ def _plan_rangers(
                         ranger, hunter_target, context, memory,
                         reservations, "hunter_forward_recon", context.core.position,
                     )
-                _record_unit_task(memory, context, ranger, kind="hunter", target=hunter_target, intent=intent)
                 intents.append(intent or _wait(ranger, "hunter_route_blocked"))
                 continue
 
-        guard_index = tuple(sorted(guard_rangers, key=lambda unit_id: unit_id.bytes)).index(ranger.id)
+        ordered_guards = tuple(sorted(guard_rangers, key=lambda unit_id: unit_id.bytes))
+        guard_index = ordered_guards.index(ranger.id) if ranger.id in guard_rangers else 0
         guard_target = guard_slots[(guard_index + len(context.vanguards)) % len(guard_slots)] if guard_slots else None
         if guard_target is not None and ranger.position != guard_target:
             intent = _move(
-                ranger,
-                guard_target,
-                "ranger_hold_defense_ring",
-                280,
-                context=context,
-                memory=memory,
-                reservations=reservations,
-                deadline=deadline,
-                config=config,
+                ranger, guard_target, "ranger_hold_defense_ring", 280,
+                context=context, memory=memory, reservations=reservations,
+                deadline=deadline, config=config,
             )
-            _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(ranger, "guard_route_blocked"))
         else:
-            if guard_target is not None:
-                _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=None)
             intents.append(_wait(ranger, "holding_defense_ring"))
     return intents
