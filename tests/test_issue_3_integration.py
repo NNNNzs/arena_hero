@@ -12,7 +12,13 @@ from arena_tactic.context import DecisionContext
 from arena_tactic.dashboard_integration import DashboardDataStore, dashboard_static_asset
 from arena_tactic.identity import entity_alias
 from arena_tactic.memory import AgentMemory
-from arena_tactic.models import ActionIntent, ActionKind, AgentConfig, ReservationTable
+from arena_tactic.models import (
+    ActionIntent,
+    ActionKind,
+    AgentConfig,
+    ReservationTable,
+    StrategicMode,
+)
 from arena_tactic.squads import SquadType, build_squad_plan
 from arena_tactic.strategy.workers import _plan_workers
 from arena_tactic.validation import validate_intents
@@ -66,10 +72,7 @@ def test_build_squad_plan_uses_dedicated_expedition_sizes():
     context = DecisionContext.from_turn(
         turn(owned_core=core(), units=(*vanguards, *rangers), beacon_position=(20, 0))
     )
-    memory = AgentMemory(last_mode="BEACON")
-    # record_mode normally supplies the enum before planning.
-    from arena_tactic.models import StrategicMode
-    memory.last_mode = StrategicMode.BEACON
+    memory = AgentMemory(last_mode=StrategicMode.BEACON)
     config = AgentConfig(
         core_guard_vanguards=1,
         core_guard_rangers=1,
@@ -122,6 +125,39 @@ def test_assign_squad_is_staged_as_persistent_membership_and_drives_behavior():
     assert intent.reason == "expedition_vanguard_to_beacon"
 
 
+def test_rejected_squad_command_does_not_mutate_next_memory():
+    missing = unit(1, UnitType.VANGUARD, (1, 0))
+    current = unit(2, UnitType.VANGUARD, (2, 0))
+    missing_alias = entity_alias(missing.id)
+    assert missing_alias is not None
+    queue = CommandQueue()
+    queue.enqueue(
+        {
+            "type": "ASSIGN_SQUAD",
+            "payload": {
+                "entity_alias": missing_alias,
+                "squad_id": "squad_scout_recon",
+            },
+        },
+        issuer="test",
+        current_tick=0,
+        idempotency_key="issue3-stale-squad",
+        expected_version=0,
+    )
+    runtime = AgentRuntime(command_queue=queue)
+
+    result = runtime.decide(turn(tick=1, owned_core=core(), units=(current,)))
+
+    assert missing_alias not in result.next_memory.manual_squad_assignments
+    assert result.prepared_commands is not None
+    transition = next(
+        status
+        for command_id, status, _reason in result.prepared_commands.transitions
+        if command_id == queue.snapshot()[0].command_id
+    )
+    assert transition.value == "REJECTED"
+
+
 def test_committed_policy_override_drives_live_guard_roster():
     vanguards = (
         unit(1, UnitType.VANGUARD, (5, 0)),
@@ -147,9 +183,15 @@ def test_committed_policy_override_drives_live_guard_roster():
 
     result = runtime.decide(turn(tick=2, owned_core=core(), units=vanguards))
 
-    vanguard_intents = [item for item in result.intents if item.actor_id in {unit.id for unit in vanguards}]
+    vanguard_ids = {candidate.id for candidate in vanguards}
+    vanguard_intents = [
+        item for item in result.intents if item.actor_id in vanguard_ids
+    ]
     assert len(vanguard_intents) == 2
-    assert all(item.reason in {"hold_core_defense_ring", "holding_defense_ring"} for item in vanguard_intents)
+    assert all(
+        item.reason in {"hold_core_defense_ring", "holding_defense_ring"}
+        for item in vanguard_intents
+    )
     assert runtime.config.core_guard_vanguards == 2
 
 
@@ -204,23 +246,41 @@ def test_final_capacity_allows_entering_a_cell_that_another_unit_leaves():
     )
     proposals = (
         ActionIntent(
-            leaving.id, False, ActionKind.MOVE, 10, "leave_full_cell",
-            direction=Direction.UP, reserved_cell=(0, -1),
+            leaving.id,
+            False,
+            ActionKind.MOVE,
+            10,
+            "leave_full_cell",
+            direction=Direction.UP,
+            reserved_cell=(0, -1),
         ),
         ActionIntent(
-            staying.id, False, ActionKind.WAIT, 20, "stay",
+            staying.id,
+            False,
+            ActionKind.WAIT,
+            20,
+            "stay",
         ),
         ActionIntent(
-            entering.id, False, ActionKind.MOVE, 100, "enter_after_departure",
-            direction=Direction.LEFT, reserved_cell=(0, 0),
+            entering.id,
+            False,
+            ActionKind.MOVE,
+            100,
+            "enter_after_departure",
+            direction=Direction.LEFT,
+            reserved_cell=(0, 0),
         ),
     )
 
     accepted, rejected = validate_intents(proposals, context, AgentConfig())
 
     assert not rejected
-    assert next(item for item in accepted if item.actor_id == leaving.id).action is ActionKind.MOVE
-    assert next(item for item in accepted if item.actor_id == entering.id).action is ActionKind.MOVE
+    assert next(
+        item for item in accepted if item.actor_id == leaving.id
+    ).action is ActionKind.MOVE
+    assert next(
+        item for item in accepted if item.actor_id == entering.id
+    ).action is ActionKind.MOVE
 
 
 def test_worker_prefers_safe_resource_under_same_threat_model_as_move():
@@ -236,7 +296,9 @@ def test_worker_prefers_safe_resource_under_same_threat_model_as_move():
     )
     memory = AgentMemory()
     reservations = ReservationTable(
-        occupancy={cell: len(ids) for cell, ids in context.friendly_occupancy.items()}
+        occupancy={
+            cell: len(ids) for cell, ids in context.friendly_occupancy.items()
+        }
     )
 
     intents = _plan_workers(
