@@ -12,6 +12,7 @@ from arena_hero import Turn
 
 from .command_center import PreparedCommands
 from .context import DecisionContext
+from .domain import CommandStatus
 from .memory import AgentMemory
 from .models import AgentConfig, DecisionResult
 from .runtime import AgentRuntime as _BaseAgentRuntime
@@ -65,11 +66,24 @@ class AgentRuntime(_BaseAgentRuntime):
         if prepared is None:
             return ()
 
-        # Let the mature manual-task/policy/objective staging implementation
-        # handle every command it already understands. ASSIGN_SQUAD is handled
-        # separately because squad membership is persistent, not a TTL task.
-        ordinary_commands = tuple(
+        # prepared.commands intentionally also contains rejected/expired items
+        # so trace/finalization can report their outcomes. Only commands whose
+        # transition is APPLIED are allowed to mutate next_memory.
+        applied_ids = {
+            command_id
+            for command_id, status, _result in prepared.transitions
+            if status is CommandStatus.APPLIED
+        }
+        admitted_commands = tuple(
             command for command in prepared.commands
+            if command.command_id in applied_ids
+        )
+
+        # Let the mature manual-task/policy/objective staging implementation
+        # handle every admitted command it already understands. ASSIGN_SQUAD is
+        # separate because squad membership is persistent, not a TTL task.
+        ordinary_commands = tuple(
+            command for command in admitted_commands
             if command.type.value != "ASSIGN_SQUAD"
         )
         ordinary = PreparedCommands(
@@ -80,13 +94,13 @@ class AgentRuntime(_BaseAgentRuntime):
         )
         staged = list(super()._stage_manual_commands(context, memory, ordinary))
 
-        for command in prepared.commands:
+        for command in admitted_commands:
             alias = command.payload.get("entity_alias")
             if command.type.value == "ASSIGN_SQUAD":
                 squad_id = command.payload.get("squad_id")
                 if isinstance(alias, str) and isinstance(squad_id, str):
                     memory.manual_squad_assignments[alias] = squad_id
-                    # A previously queued manual action must not hide the newly
+                    # A previous temporary manual action must not hide the newly
                     # selected squad's normal planner behavior.
                     memory.manual_assignments.pop(alias, None)
                     staged.append(alias)
