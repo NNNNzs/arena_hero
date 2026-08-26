@@ -110,8 +110,7 @@ def _basic_rejection(
             if (
                 target is None
                 or intent.target_cell != target.position
-                or shot_range(actor.position, target.position, context.obstacle_cells)
-                is None
+                or shot_range(actor.position, target.position, context.obstacle_cells) is None
             ):
                 return "ranger_target_not_current_and_legal"
 
@@ -123,12 +122,52 @@ def _basic_rejection(
     return None
 
 
+def _project_final_occupancy(
+    selected: dict[object, ActionIntent],
+    context: DecisionContext,
+) -> dict[tuple[int, int], int]:
+    """Project all currently selected Unit moves as one simultaneous Tick."""
+    counts = {
+        cell: len(ids) for cell, ids in context.friendly_occupancy.items()
+    }
+    for actor_id, intent in selected.items():
+        if intent.action is not ActionKind.MOVE:
+            continue
+        actor = context.current_objects.get(actor_id)
+        if not isinstance(actor, UnitView) or intent.direction is None:
+            continue
+        target = destination(actor.position, intent.direction)
+        counts[actor.position] = max(0, counts.get(actor.position, 0) - 1)
+        counts[target] = counts.get(target, 0) + 1
+    return counts
+
+
+def _incoming_to(
+    cell: tuple[int, int],
+    selected: dict[object, ActionIntent],
+    context: DecisionContext,
+) -> list[tuple[object, ActionIntent]]:
+    result: list[tuple[object, ActionIntent]] = []
+    for actor_id, intent in selected.items():
+        if intent.action is not ActionKind.MOVE or intent.direction is None:
+            continue
+        actor = context.current_objects.get(actor_id)
+        if isinstance(actor, UnitView) and destination(actor.position, intent.direction) == cell:
+            result.append((actor_id, intent))
+    return result
+
+
 def validate_intents(
     intents: Iterable[ActionIntent],
     context: DecisionContext,
     config: AgentConfig,
 ) -> tuple[tuple[ActionIntent, ...], tuple[RejectedIntent, ...]]:
-    """Select one legal action per current object and enforce cell capacity."""
+    """Select one legal action per current object and enforce final cell capacity.
+
+    Movement is arbitrated as a simultaneous end-of-Tick projection. This
+    avoids rejecting an entrant merely because the lower-scoring occupant that
+    frees its slot would have been visited later in score order.
+    """
     rejected: list[RejectedIntent] = []
     selected: dict[object, ActionIntent] = {}
     for intent in sorted(
@@ -148,21 +187,46 @@ def validate_intents(
             continue
         selected[intent.actor_id] = intent
 
-    reservations = ReservationTable(
-        occupancy={cell: len(ids) for cell, ids in context.friendly_occupancy.items()}
-    )
-    for actor_id, intent in list(selected.items()):
-        if intent.action is not ActionKind.MOVE:
-            continue
+    # Recompute the whole final occupancy after every rejected/rerouted move.
+    # This is intentionally iterative: rejecting one departure can make its
+    # source full again and invalidate an entrant that depended on that slot.
+    repair_budget = max(8, len(context.units) * 4)
+    while repair_budget > 0:
+        repair_budget -= 1
+        final_occupancy = _project_final_occupancy(selected, context)
+        overfull = sorted(cell for cell, count in final_occupancy.items() if count > 2)
+        if not overfull:
+            break
+        cell = overfull[0]
+        incoming = _incoming_to(cell, selected, context)
+        if not incoming:
+            # Current authoritative state should never exceed capacity; if it
+            # does, do not invent movement to repair server state.
+            break
+        # Highest score wins capacity. Deterministic UUID/action ordering makes
+        # the same lower-priority entrant lose on replay.
+        actor_id, loser = min(
+            incoming,
+            key=lambda item: (
+                item[1].score,
+                item[1].actor_id.bytes,
+                item[1].action.value,
+            ),
+        )
         actor = context.current_objects[actor_id]
         assert isinstance(actor, UnitView)
-        cell = destination(actor.position, intent.direction)  # type: ignore[arg-type]
-        if not reservations.reserve(cell, source=actor.position):
-            if config.planner_canary:
-                selected[actor_id] = _capacity_repair(intent, actor, context, reservations)
-                continue
-            rejected.append(RejectedIntent(intent, "friendly_cell_capacity_exceeded"))
-            del selected[actor_id]
+        del selected[actor_id]
+        if config.planner_canary:
+            projected_without = _project_final_occupancy(selected, context)
+            repaired = _capacity_repair(
+                loser,
+                actor,
+                context,
+                ReservationTable(occupancy=projected_without),
+            )
+            selected[actor_id] = repaired
+        else:
+            rejected.append(RejectedIntent(loser, "friendly_cell_capacity_exceeded"))
 
     # Every current controlled object gets an explicit action. A missing Core
     # remains actionless by design during RESPAWN.
@@ -194,17 +258,14 @@ def _capacity_repair(
     context: DecisionContext,
     reservations: ReservationTable,
 ) -> ActionIntent:
-    """Keep a canary plan complete when another current move consumed a slot.
-
-    This is the unified final arbitration layer: all entity trees may propose
-    independently, but only it has the final cross-role reservation order.
-    It does not relax terrain or enemy checks, and it records the reroute so
-    an operator can distinguish it from a normal tree decision.
-    """
+    """Reroute one canary move against already-projected final occupancy."""
     target = intent.target_cell or destination(actor.position, intent.direction)  # type: ignore[arg-type]
     alternatives = sorted(
         DIRECTIONS,
-        key=lambda direction: (distance(destination(actor.position, direction), target), direction.value),
+        key=lambda direction: (
+            distance(destination(actor.position, direction), target),
+            direction.value,
+        ),
     )
     for direction in alternatives:
         cell = destination(actor.position, direction)
@@ -212,9 +273,20 @@ def _capacity_repair(
             continue
         if reservations.reserve(cell, source=actor.position):
             return ActionIntent(
-                actor.id, False, ActionKind.MOVE, intent.score,
-                "arbitrator_capacity_reroute", direction=direction,
-                target_cell=intent.target_cell, reserved_cell=cell,
+                actor.id,
+                False,
+                ActionKind.MOVE,
+                intent.score,
+                "arbitrator_capacity_reroute",
+                direction=direction,
+                target_cell=intent.target_cell,
+                reserved_cell=cell,
             )
-    return ActionIntent(actor.id, False, ActionKind.WAIT, intent.score, "arbitrator_capacity_wait",
-                        target_cell=intent.target_cell)
+    return ActionIntent(
+        actor.id,
+        False,
+        ActionKind.WAIT,
+        intent.score,
+        "arbitrator_capacity_wait",
+        target_cell=intent.target_cell,
+    )
