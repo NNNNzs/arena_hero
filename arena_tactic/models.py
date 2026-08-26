@@ -96,6 +96,15 @@ class AgentConfig:
     resource_target_grace_ticks: int = 4
     core_guard_vanguards: int = 1
     core_guard_rangers: int = 1
+    # Dedicated tactical squad sizing.  These fields intentionally do not
+    # reuse intercept/recheck knobs: command-center squad composition must map
+    # to the same semantics used by the live planner.
+    expedition_vanguards: int = 2
+    expedition_rangers: int = 2
+    mining_escort_vanguards: int = 0
+    mining_escort_rangers: int = 1
+    scout_vanguards: int = 4
+    scout_rangers: int = 4
     patrol_radius_min: int = 8
     patrol_radius_max: int = 14
     # Four fixed clockwise arcs: east, south, west and north.  Targets advance
