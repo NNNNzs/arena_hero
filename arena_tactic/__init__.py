@@ -14,11 +14,15 @@ from .navigation import adjacent_direction, distance, shot_range
 from .integrated_runtime import AgentRuntime, choose_actions
 from .strategy import choose_mode, ranger_target_score, vanguard_cell_score
 
-# Keep callers importing arena_tactic.runtime after package initialization on
-# the same integrated implementation used by the service/public API.
+# Keep compatibility imports on the same integrated implementations used by
+# the service/public package without rewriting the mature base modules.
 from . import runtime as _runtime_module
 _runtime_module.AgentRuntime = AgentRuntime
 _runtime_module.choose_actions = choose_actions
+
+from . import dashboard as _dashboard_module
+from .dashboard_integration import DashboardDataStore as _IntegratedDashboardDataStore
+_dashboard_module.DashboardDataStore = _IntegratedDashboardDataStore
 
 __all__ = [
     "ActionIntent",
