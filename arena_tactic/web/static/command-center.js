@@ -8,6 +8,23 @@ let version = 0;
 let entitiesState = [];
 let selectedAlias = '';
 let activeKind = 'ALL';
+let squadsState = [];
+let squadAssignmentsState = {};
+let activeRosterTab = 'units'; // 'units' | 'squads'
+
+const squadTypeIcons = {
+  BASE_DEFENSE: '🛡️',
+  EXPEDITION_BEACON: '🌟',
+  MINING_ESCORT: '⛏️',
+  SCOUT_RECON: '🔭',
+};
+
+const squadTypeLabels = {
+  BASE_DEFENSE: '基地防线',
+  EXPEDITION_BEACON: '信标远征',
+  MINING_ESCORT: '矿区采矿/护航',
+  SCOUT_RECON: '迷雾侦察/巡逻',
+};
 let replayFrames = [];
 let replayIndex = 0;
 let replayLive = true;
@@ -129,6 +146,80 @@ function renderUnitList() {
   ));
   setHtml('unitList', rows(filtered, unitRow, '没有符合筛选条件的单位'));
   setText('unitFilterCount', `${filtered.length}/${entitiesState.length}`);
+}
+
+function renderSquadList() {
+  const el = $('squadList');
+  if (!el) return;
+  if (!squadsState || !squadsState.length) {
+    el.innerHTML = '<div class="muted">尚无编组数据</div>';
+    return;
+  }
+  const cards = squadsState.map(sq => {
+    const icon = squadTypeIcons[sq.type] || '🚩';
+    const memberCount = sq.members ? sq.members.length : 0;
+    const targetStr = sq.target ? ` · 目标 ${esc(sq.target.join(','))}` : '';
+    const memberList = (sq.members || []).map(m => {
+      const selected = m.alias === selectedAlias;
+      const posStr = m.position ? `[${esc(m.position.join(','))}]` : '';
+      const hpStr = m.hp != null ? `HP ${esc(m.hp)}` : '';
+      const cargoStr = m.cargo ? ` · 货 ${esc(m.cargo)}` : '';
+      const taskStr = m.task ? ` · ${esc(m.task)}` : '';
+      
+      const squadOptions = squadsState.map(targetSq => `
+        <option value="${esc(targetSq.id)}" ${targetSq.id === sq.id ? 'selected' : ''}>
+          ${esc(targetSq.name)}
+        </option>
+      `).join('');
+
+      return `
+        <div class="squad-member-row ${selected ? 'is-selected' : ''}" style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;margin-bottom:4px;background:#151e29;border:1px solid var(--line);border-radius:6px;font-size:12px;">
+          <div class="squad-member-info select-squad-unit" style="cursor:pointer;flex:1;" data-alias="${esc(m.alias)}">
+            <span class="unit-glyph kind-${String(m.kind || 'worker').toLowerCase()}" style="display:inline-block;vertical-align:middle;margin-right:4px;"></span>
+            <b>${esc(labels[m.kind] || m.kind)}</b> <small class="muted">${esc(m.alias.slice(0, 15))}</small>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+              ${posStr} ${hpStr}${cargoStr}${taskStr}
+            </div>
+          </div>
+          <div class="squad-member-action" style="margin-left:8px;">
+            <select class="squad-switch-select" data-alias="${esc(m.alias)}" style="font-size:11px;padding:2px 4px;background:#0f1620;border:1px solid var(--line);border-radius:4px;color:#e8eef5;">
+              ${squadOptions}
+            </select>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="squad-card" style="background:linear-gradient(145deg,#151e29,#111821);border:1px solid var(--line);border-radius:8px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div>
+            <strong style="font-size:13px;color:#e8eef5;">${icon} ${esc(sq.name)}</strong>
+            <span class="tag" style="margin-left:6px;font-size:11px;">${memberCount} 人</span>
+          </div>
+          <span class="state-pill" style="font-size:11px;">${esc(sq.status)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+          类型: ${esc(squadTypeLabels[sq.type] || sq.type)}${targetStr}
+        </div>
+        <div class="squad-members-box">
+          ${memberList || '<div class="muted" style="font-size:11px;">暂无分配成员</div>'}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  el.innerHTML = cards;
+}
+
+function setRosterTab(tab) {
+  activeRosterTab = tab;
+  $('tabUnitsBtn')?.classList.toggle('is-active', tab === 'units');
+  $('tabSquadsBtn')?.classList.toggle('is-active', tab === 'squads');
+  if ($('tabUnitsView')) $('tabUnitsView').hidden = tab !== 'units';
+  if ($('tabSquadsView')) $('tabSquadsView').hidden = tab !== 'squads';
+  if (tab === 'squads') renderSquadList();
+  else renderUnitList();
 }
 
 function stateLine(entity) {
@@ -307,11 +398,18 @@ function render(view) {
     renderCache.entities = entitiesKey;
     entitiesState = nextEntities;
     if (!entitiesState.some(entity => entity.alias === selectedAlias)) selectedAlias = entitiesState[0]?.alias || '';
-    renderUnitList();
+    if (activeRosterTab === 'squads') renderSquadList();
+    else renderUnitList();
     renderUnitDetail();
     syncEntityChoices(entitiesState);
     if (selectedAlias) window.selectTacticalUnit?.(selectedAlias);
   }
+
+  // 同步编组状态
+  const squadsData = view?.squads || {};
+  squadsState = squadsData.squads || [];
+  squadAssignmentsState = squadsData.assignments || {};
+  if (activeRosterTab === 'squads') renderSquadList();
 
   const overviewKey = signature([
     current.tick, current.mode_label, commandCenter.goals, commandCenter.tasks,
@@ -369,10 +467,19 @@ function renderMigrationAnalysis(view) {
 
 /* 策略配置面板渲染 */
 const configFieldLabels = {
-  core_guard_vanguards: '核心守卫·先锋', core_guard_rangers: '核心守卫·游侠',
-  early_workers: '初期工人', early_vanguards: '初期先锋', early_rangers: '初期游侠',
-  patrol_radius_min: '巡逻半径·最小', patrol_radius_max: '巡逻半径·最大',
-  patrol_arc_segments: '巡逻弧段数', patrol_radius_units_per_step: '巡逻半径扩张单位数', minimum_resource_reserve: '最低资源储备',
+  core_guard_vanguards: '核心守卫·先锋人数',
+  core_guard_rangers: '核心守卫·游侠人数',
+  intercept_vanguards: '远征编组·先锋编制',
+  intercept_rangers: '远征编组·游侠编制',
+  resource_recheck_worker_limit: '矿区护航·工兵编制',
+  early_workers: '初期工人',
+  early_vanguards: '初期先锋',
+  early_rangers: '初期游侠',
+  patrol_radius_min: '巡逻半径·最小',
+  patrol_radius_max: '巡逻半径·最大',
+  patrol_arc_segments: '巡逻弧段数',
+  patrol_radius_units_per_step: '巡逻半径扩张单位数',
+  minimum_resource_reserve: '最低资源储备',
   peacetime_resource_buffer: '和平期资源缓冲',
 };
 
@@ -383,12 +490,14 @@ function renderPolicyConfig(view) {
   if (!el) return;
   const overrideRows = Object.keys(configFieldLabels).map(field => {
     const label = configFieldLabels[field];
-    const value = overrides[field];
-    const display = value != null ? `<span class="tag">${esc(value)}</span>` : '<span class="muted">默认</span>';
-    return `<div class="config-row"><span>${esc(label)}</span>${display}</div>`;
+    const value = overrides[field] ?? '';
+    return `<div class="config-row" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+      <span style="font-size:12px;color:var(--muted);">${esc(label)}</span>
+      <input class="config-input" data-field="${esc(field)}" type="number" placeholder="默认" value="${esc(value)}" style="width:70px;padding:3px 6px;font-size:12px;background:#151e29;border:1px solid var(--line);border-radius:4px;color:#e8eef5;text-align:right;">
+    </div>`;
   }).join('');
   el.innerHTML = `
-    <div class="row"><b>姿态</b> <span class="tag">${esc(postureLabels[policy.posture] || policy.posture)}</span>
+    <div class="row" style="margin-bottom:10px;"><b>姿态</b> <span class="tag">${esc(postureLabels[policy.posture] || policy.posture)}</span>
       <small>生效 #${esc(policy.effective_tick || 0)}</small></div>
     ${overrideRows}`;
 }
@@ -778,6 +887,54 @@ $('migrate').onclick = migrate;
 $('cancelMigration').onclick = cancelMigration;
 $('setPolicy').onclick = setPolicyExtended;
 $('unitSearch').oninput = renderUnitList;
+$('tabUnitsBtn').onclick = () => setRosterTab('units');
+$('tabSquadsBtn').onclick = () => setRosterTab('squads');
+$('squadList').onclick = event => {
+  const memberInfo = event.target.closest('.select-squad-unit');
+  if (memberInfo && memberInfo.dataset.alias) {
+    chooseUnit(memberInfo.dataset.alias);
+  }
+};
+$('squadList').onchange = async event => {
+  const select = event.target.closest('.squad-switch-select');
+  if (!select) return;
+  const alias = select.dataset.alias;
+  const targetSquadId = select.value;
+  if (!alias || !targetSquadId) return;
+  
+  if (!csrf) {
+    alert('请先在右下方“人工任务”面板中输入管理员口令完成认证。');
+    if (activeRosterTab === 'squads') renderSquadList();
+    return;
+  }
+  
+  try {
+    const squad = squadsState.find(s => s.id === targetSquadId);
+    let taskKind = 'HOLD_POSITION';
+    let target = null;
+    if (targetSquadId === 'squad_expedition_beacon') {
+      const beaconPos = currentRenderedView?.current?.map?.beacon?.position;
+      taskKind = 'MOVE_TO_CELL';
+      target = beaconPos;
+    } else if (targetSquadId === 'squad_base_defense') {
+      taskKind = 'RETREAT_TO_CORE';
+    } else if (targetSquadId === 'squad_mining_escort') {
+      taskKind = 'HARVEST_VISIBLE';
+    }
+    
+    await api(`/api/v1/entities/${alias}/tasks`, 'POST', {
+      task_kind: taskKind,
+      priority: 850,
+      target: target,
+    });
+    
+    if (squadAssignmentsState) squadAssignmentsState[alias] = targetSquadId;
+    if (activeRosterTab === 'squads') renderSquadList();
+  } catch (err) {
+    alert(`切换编组失败: ${err.message}`);
+    if (activeRosterTab === 'squads') renderSquadList();
+  }
+};
 $('unitFilters').onclick = event => {
   const button = event.target.closest('.filter-btn');
   if (!button) return;

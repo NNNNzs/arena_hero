@@ -434,6 +434,99 @@ class DashboardDataStore:
         return compute_chunk_saturation(resource_cells, mined_cells, resource_observations, current_tick)
 
     @staticmethod
+    def _compute_squads_summary(
+        memory_data: dict[str, Any], latest: dict[str, Any] | None, policy_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """聚合计算当前的战术编组与成员归属。"""
+        if not latest or not isinstance(latest.get("map"), dict):
+            return {"squads": [], "assignments": {}}
+        
+        friendly_units = latest["map"].get("friendly", [])
+        core_obj = next((u for u in friendly_units if u.get("kind") == "CORE"), None)
+        core_pos = core_obj.get("position") if core_obj else None
+        mode = str(latest.get("mode") or "ECONOMY")
+        beacon = latest.get("map", {}).get("beacon") or {}
+        beacon_pos = beacon.get("position")
+
+        unit_tasks = memory_data.get("unit_tasks", {})
+        unit_manual_squads = memory_data.get("manual_squad_assignments", {})
+
+        squads: dict[str, dict[str, Any]] = {
+            "squad_base_defense": {
+                "id": "squad_base_defense",
+                "name": "基地防御防线",
+                "type": "BASE_DEFENSE",
+                "target": core_pos,
+                "members": [],
+                "status": "警戒中",
+            },
+            "squad_expedition_beacon": {
+                "id": "squad_expedition_beacon",
+                "name": "信标远征打击群",
+                "type": "EXPEDITION_BEACON",
+                "target": beacon_pos,
+                "members": [],
+                "status": "推进中" if mode == "BEACON" else "待命中",
+            },
+            "squad_mining_escort": {
+                "id": "squad_mining_escort",
+                "name": "矿区采矿与护航队",
+                "type": "MINING_ESCORT",
+                "target": core_pos,
+                "members": [],
+                "status": "作业中",
+            },
+            "squad_scout_recon": {
+                "id": "squad_scout_recon",
+                "name": "迷雾探索机动组",
+                "type": "SCOUT_RECON",
+                "target": core_pos,
+                "members": [],
+                "status": "侦察巡逻中",
+            },
+        }
+
+        assignments: dict[str, str] = {}
+
+        for u in friendly_units:
+            kind = u.get("kind")
+            alias = u.get("alias")
+            if not alias or kind == "CORE":
+                continue
+            
+            # 手动指派优先
+            manual_squad = unit_manual_squads.get(alias)
+            task = unit_tasks.get(alias) or {}
+            task_kind = task.get("kind", "") if isinstance(task, dict) else ""
+            if manual_squad and manual_squad in squads:
+                assigned_squad = manual_squad
+            else:
+                # 自动根据任务分配
+                if "expedition" in task_kind or task_kind == "beacon":
+                    assigned_squad = "squad_expedition_beacon"
+                elif task_kind in ("core_guard", "defense_search", "mineral_tank", "intercept"):
+                    assigned_squad = "squad_base_defense"
+                elif task_kind in ("harvest", "return", "vacate", "assigned_resource", "recon_escort") or kind == "WORKER":
+                    assigned_squad = "squad_mining_escort"
+                else:
+                    assigned_squad = "squad_scout_recon"
+
+            assignments[alias] = assigned_squad
+            squads[assigned_squad]["members"].append({
+                "alias": alias,
+                "kind": kind,
+                "position": u.get("position"),
+                "hp": u.get("hp"),
+                "cargo": u.get("cargo"),
+                "task": task_kind,
+            })
+
+        return {
+            "squads": list(squads.values()),
+            "assignments": assignments,
+        }
+
+    @staticmethod
     def _compress_explored_segments(explored: list[list[int]]) -> list[list[int]]:
         """Scanline-compress explored cells into horizontal segments.
 
@@ -586,6 +679,9 @@ class DashboardDataStore:
             # 注入策略配置覆盖
             policy_state = memory_data.get("policy_state", {})
 
+            # 注入战术编组数据
+            squads_data = self._compute_squads_summary(memory_data, latest, policy_state)
+
             return {
                 "schema_version": 1,
                 "generated_at": int(time.time()),
@@ -595,6 +691,7 @@ class DashboardDataStore:
                 "map_memory_version": memory_version,
                 "migration_recommendation": migration_rec,
                 "chunk_saturation": chunk_saturation,
+                "squads": squads_data,
                 "policy_config": {
                     "posture": policy_state.get("posture", "BALANCED"),
                     "effective_tick": policy_state.get("effective_tick", 0),
@@ -618,6 +715,7 @@ class DashboardDataStore:
             "map_memory_version": 0,
             "migration_recommendation": {},
             "chunk_saturation": {},
+            "squads": {},
             "policy_config": {"posture": "BALANCED", "effective_tick": 0, "overrides": {}},
             "event_log": (
                 self.event_log.payload(limit=event_limit)
@@ -821,10 +919,19 @@ DASHBOARD_HTML = """<!doctype html>
 
 <section class="operations-shell">
   <aside class="panel unit-panel">
-    <div class="section-head"><div><span class="eyebrow">ORDER OF BATTLE</span><h2>单位编组</h2></div><span id="unitFilterCount" class="tick">—</span></div>
-    <input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位">
-    <div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div>
-    <div id="unitList" class="unit-list muted">尚无单位</div>
+    <div class="section-head"><div><span class="eyebrow">ORDER OF BATTLE</span><h2>战斗序列</h2></div><span id="unitFilterCount" class="tick">—</span></div>
+    <div id="rosterTabs" class="tab-header" style="display:flex;gap:6px;margin:8px 0;">
+      <button id="tabUnitsBtn" class="filter-btn is-active" style="flex:1;">单位列表</button>
+      <button id="tabSquadsBtn" class="filter-btn" style="flex:1;">战术编组</button>
+    </div>
+    <div id="tabUnitsView">
+      <input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位">
+      <div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div>
+      <div id="unitList" class="unit-list muted">尚无单位</div>
+    </div>
+    <div id="tabSquadsView" hidden>
+      <div id="squadList" class="squad-list muted" style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">尚无编组数据</div>
+    </div>
   </aside>
 
   <section class="map-panel" aria-label="战术地图工作区">
