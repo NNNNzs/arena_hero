@@ -4,30 +4,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping, Sequence
 from uuid import UUID
 
-from arena_hero import CoreView, UnitType, UnitView
+from arena_hero import UnitType, UnitView
 
 from .context import DecisionContext
+from .identity import entity_alias
 from .memory import AgentMemory
-from .models import AgentConfig, Position
-from .navigation import distance, DIRECTIONS, destination
+from .models import AgentConfig, Position, StrategicMode
+from .navigation import distance
 
 
 class SquadType(str, Enum):
-    EXPEDITION_BEACON = "EXPEDITION_BEACON"   # 远征夺取信标
-    BASE_DEFENSE = "BASE_DEFENSE"             # 基地防御圈
-    MINING_ESCORT = "MINING_ESCORT"           # 矿区采矿/护航
-    SCOUT_RECON = "SCOUT_RECON"               # 迷雾前沿探索
+    EXPEDITION_BEACON = "EXPEDITION_BEACON"
+    BASE_DEFENSE = "BASE_DEFENSE"
+    MINING_ESCORT = "MINING_ESCORT"
+    SCOUT_RECON = "SCOUT_RECON"
 
 
 class SquadRole(str, Enum):
-    POINT_GUARD = "POINT_GUARD"       # 尖刀先锋（突击、卡位、拾取）
-    FIRE_SUPPORT = "FIRE_SUPPORT"     # 火力支援（游侠侧翼或后排掩护）
-    MINER = "MINER"                   # 采矿工兵
-    SCOUT = "SCOUT"                   # 侦察兵
-    DEFENDER = "DEFENDER"             # 守备驻扎
+    POINT_GUARD = "POINT_GUARD"
+    FIRE_SUPPORT = "FIRE_SUPPORT"
+    MINER = "MINER"
+    SCOUT = "SCOUT"
+    DEFENDER = "DEFENDER"
+
+
+SQUAD_ID_BY_TYPE = {
+    SquadType.BASE_DEFENSE: "squad_base_defense",
+    SquadType.EXPEDITION_BEACON: "squad_expedition_beacon",
+    SquadType.MINING_ESCORT: "squad_mining_escort",
+    SquadType.SCOUT_RECON: "squad_scout_recon",
+}
+SQUAD_TYPE_BY_ID = {value: key for key, value in SQUAD_ID_BY_TYPE.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,19 +56,19 @@ class Squad:
 
     @property
     def member_ids(self) -> set[UUID]:
-        return {m.unit_id for m in self.members}
+        return {member.unit_id for member in self.members}
 
     @property
     def vanguards(self) -> tuple[UUID, ...]:
-        return tuple(m.unit_id for m in self.members if m.unit_type is UnitType.VANGUARD)
+        return tuple(member.unit_id for member in self.members if member.unit_type is UnitType.VANGUARD)
 
     @property
     def rangers(self) -> tuple[UUID, ...]:
-        return tuple(m.unit_id for m in self.members if m.unit_type is UnitType.RANGER)
+        return tuple(member.unit_id for member in self.members if member.unit_type is UnitType.RANGER)
 
     @property
     def workers(self) -> tuple[UUID, ...]:
-        return tuple(m.unit_id for m in self.members if m.unit_type is UnitType.WORKER)
+        return tuple(member.unit_id for member in self.members if member.unit_type is UnitType.WORKER)
 
 
 @dataclass(slots=True)
@@ -69,18 +78,51 @@ class SquadPlan:
 
     def add_squad(self, squad: Squad) -> None:
         self.squads[squad.squad_id] = squad
-        for m in squad.members:
-            self.unit_to_squad[m.unit_id] = (squad.squad_id, m.role)
+        for member in squad.members:
+            self.unit_to_squad[member.unit_id] = (squad.squad_id, member.role)
 
     def get_unit_squad(self, unit_id: UUID) -> tuple[Squad, SquadRole] | None:
         mapping = self.unit_to_squad.get(unit_id)
-        if not mapping:
+        if mapping is None:
             return None
         squad_id, role = mapping
         squad = self.squads.get(squad_id)
-        if not squad:
-            return None
-        return squad, role
+        return (squad, role) if squad is not None else None
+
+    def unit_is(self, unit_id: UUID, squad_type: SquadType) -> bool:
+        assignment = self.get_unit_squad(unit_id)
+        return assignment is not None and assignment[0].squad_type is squad_type
+
+    def ids_for(self, squad_type: SquadType, unit_type: UnitType | None = None) -> set[UUID]:
+        squad = self.squads.get(SQUAD_ID_BY_TYPE[squad_type])
+        if squad is None:
+            return set()
+        return {
+            member.unit_id
+            for member in squad.members
+            if unit_type is None or member.unit_type is unit_type
+        }
+
+
+def _role(unit: UnitView, squad_type: SquadType) -> SquadRole:
+    if unit.unit_type is UnitType.WORKER:
+        return SquadRole.SCOUT if squad_type is SquadType.SCOUT_RECON else SquadRole.MINER
+    if squad_type is SquadType.BASE_DEFENSE:
+        return SquadRole.DEFENDER
+    if unit.unit_type is UnitType.RANGER:
+        return SquadRole.FIRE_SUPPORT
+    return SquadRole.SCOUT if squad_type is SquadType.SCOUT_RECON else SquadRole.POINT_GUARD
+
+
+def _manual_members(
+    units: tuple[UnitView, ...], memory: AgentMemory, squad_type: SquadType
+) -> list[UnitView]:
+    squad_id = SQUAD_ID_BY_TYPE[squad_type]
+    return [
+        unit
+        for unit in units
+        if memory.manual_squad_assignments.get(entity_alias(unit.id) or "") == squad_id
+    ]
 
 
 def build_squad_plan(
@@ -88,130 +130,125 @@ def build_squad_plan(
     memory: AgentMemory,
     config: AgentConfig,
 ) -> SquadPlan:
-    """Organize combat and civilian units into cohesive tactical squads."""
+    """Build one authoritative, stable four-squad plan for the current Tick.
+
+    Manual membership wins over automatic composition, but it does not bypass
+    planner safety rules such as critical-HP retreat or immediate enemy fire.
+    Automatic expedition membership is activated only while BEACON is the
+    strategic mode; otherwise those mobile units remain available for mining
+    escort, scouting, or defensive reserve.
+    """
     plan = SquadPlan()
     if context.core is None:
         return plan
 
-    core_pos = context.core.position
-    vanguards = sorted(context.vanguards, key=lambda u: u.id.bytes)
-    rangers = sorted(context.rangers, key=lambda u: u.id.bytes)
-    workers = sorted(context.workers, key=lambda u: u.id.bytes)
+    units = tuple(sorted(context.units, key=lambda unit: unit.id.bytes))
+    assigned: set[UUID] = set()
+    members: dict[SquadType, list[UnitView]] = {kind: [] for kind in SquadType}
 
-    # 1. 基地核心防卫编组（Base Defense Squad）
-    # 固定分配核心守备先锋与守备游侠
-    base_guard_vanguards = vanguards[:config.core_guard_vanguards]
-    base_guard_rangers = rangers[:config.core_guard_rangers]
-    
-    defense_members: list[SquadMember] = [
-        SquadMember(u.id, UnitType.VANGUARD, SquadRole.DEFENDER)
-        for u in base_guard_vanguards
-    ] + [
-        SquadMember(u.id, UnitType.RANGER, SquadRole.DEFENDER)
-        for u in base_guard_rangers
-    ]
-    if defense_members:
-        plan.add_squad(
-            Squad(
-                squad_id="squad_base_defense",
-                squad_type=SquadType.BASE_DEFENSE,
-                target=core_pos,
-                members=tuple(defense_members),
-                anchor_unit_id=context.core.id,
-            )
-        )
+    # Manual assignment is the first and strongest membership decision.
+    for squad_type in SquadType:
+        for unit in _manual_members(units, memory, squad_type):
+            if unit.id not in assigned:
+                members[squad_type].append(unit)
+                assigned.add(unit.id)
 
-    # 机动兵力
-    avail_vanguards = [u for u in vanguards if u not in base_guard_vanguards]
-    avail_rangers = [u for u in rangers if u not in base_guard_rangers]
+    def available(unit_type: UnitType) -> list[UnitView]:
+        return [
+            unit for unit in units
+            if unit.unit_type is unit_type and unit.id not in assigned
+        ]
 
-    # 2. 远征信标编组（Expedition Beacon Strike Group）
-    # 当信标有效且有可用机动兵力时，选拔先锋和游侠组成突击大队
-    beacon_target = context.beacon.position
-    if beacon_target is not None:
-        # 按离信标距离由近及远排序，取先锋与游侠
-        expedition_vg = sorted(
-            avail_vanguards,
-            key=lambda u: distance(u.position, beacon_target),
-        )[:max(2, config.intercept_vanguards)]
-        
-        # 挑选游侠提供伴随火力支援
-        expedition_ra = sorted(
-            avail_rangers,
-            key=lambda u: distance(u.position, beacon_target),
-        )[:max(2, config.intercept_rangers)]
+    # Core defense gets its configured baseline first.
+    for unit_type, count in (
+        (UnitType.VANGUARD, config.core_guard_vanguards),
+        (UnitType.RANGER, config.core_guard_rangers),
+    ):
+        chosen = available(unit_type)[:max(0, count)]
+        members[SquadType.BASE_DEFENSE].extend(chosen)
+        assigned.update(unit.id for unit in chosen)
 
-        if expedition_vg:
-            anchor = expedition_vg[0].id
-            exp_members: list[SquadMember] = [
-                SquadMember(u.id, UnitType.VANGUARD, SquadRole.POINT_GUARD)
-                for u in expedition_vg
-            ] + [
-                SquadMember(u.id, UnitType.RANGER, SquadRole.FIRE_SUPPORT)
-                for u in expedition_ra
-            ]
-            plan.add_squad(
-                Squad(
-                    squad_id="squad_expedition_beacon",
-                    squad_type=SquadType.EXPEDITION_BEACON,
-                    target=beacon_target,
-                    members=tuple(exp_members),
-                    anchor_unit_id=anchor,
-                )
-            )
-            # 扣除已加入远征队的兵力
-            avail_vanguards = [u for u in avail_vanguards if u not in expedition_vg]
-            avail_rangers = [u for u in avail_rangers if u not in expedition_ra]
+    # Only a live BEACON campaign automatically consumes expedition strength.
+    if memory.last_mode is StrategicMode.BEACON:
+        for unit_type, count in (
+            (UnitType.VANGUARD, config.expedition_vanguards),
+            (UnitType.RANGER, config.expedition_rangers),
+        ):
+            chosen = sorted(
+                available(unit_type),
+                key=lambda unit: (distance(unit.position, context.beacon.position), unit.id.bytes),
+            )[:max(0, count)]
+            members[SquadType.EXPEDITION_BEACON].extend(chosen)
+            assigned.update(unit.id for unit in chosen)
 
-    # 3. 矿区采矿与伴随护航编组（Mining & Escort Squads）
-    # 针对距离基地 > 2 格在外采矿的工兵，分配剩余机动兵力就近护航
-    remote_workers = [
-        w for w in workers
-        if distance(w.position, core_pos) > 2
-    ]
-    for idx, worker in enumerate(remote_workers):
-        escort_members = [SquadMember(worker.id, UnitType.WORKER, SquadRole.MINER)]
-        # 为该工人分配 1 个最近的游侠或先锋伴随掩护
-        if avail_rangers:
-            closest_ra = min(avail_rangers, key=lambda r: distance(r.position, worker.position))
-            escort_members.append(SquadMember(closest_ra.id, UnitType.RANGER, SquadRole.FIRE_SUPPORT))
-            avail_rangers.remove(closest_ra)
-        elif avail_vanguards:
-            closest_vg = min(avail_vanguards, key=lambda v: distance(v.position, worker.position))
-            escort_members.append(SquadMember(closest_vg.id, UnitType.VANGUARD, SquadRole.POINT_GUARD))
-            avail_vanguards.remove(closest_vg)
+    # Workers are economic by default unless the operator explicitly moved
+    # them to a different squad. Combat escorts are a distinct config surface.
+    mining_workers = available(UnitType.WORKER)
+    members[SquadType.MINING_ESCORT].extend(mining_workers)
+    assigned.update(unit.id for unit in mining_workers)
+    mining_anchor = min(
+        mining_workers,
+        key=lambda worker: (-distance(worker.position, context.core.position), worker.id.bytes),
+        default=None,
+    )
+    escort_target = mining_anchor.position if mining_anchor is not None else context.core.position
+    for unit_type, count in (
+        (UnitType.VANGUARD, config.mining_escort_vanguards),
+        (UnitType.RANGER, config.mining_escort_rangers),
+    ):
+        chosen = sorted(
+            available(unit_type),
+            key=lambda unit: (distance(unit.position, escort_target), unit.id.bytes),
+        )[:max(0, count)]
+        members[SquadType.MINING_ESCORT].extend(chosen)
+        assigned.update(unit.id for unit in chosen)
 
-        plan.add_squad(
-            Squad(
-                squad_id=f"squad_mining_escort_{idx + 1}",
-                squad_type=SquadType.MINING_ESCORT,
-                target=worker.position,
-                members=tuple(escort_members),
-                anchor_unit_id=worker.id,
-            )
-        )
+    # Scout strength is explicitly configurable. Remaining combat units are
+    # defensive reserve instead of silently swelling the expedition roster.
+    for unit_type, count in (
+        (UnitType.VANGUARD, config.scout_vanguards),
+        (UnitType.RANGER, config.scout_rangers),
+    ):
+        chosen = available(unit_type)[:max(0, count)]
+        members[SquadType.SCOUT_RECON].extend(chosen)
+        assigned.update(unit.id for unit in chosen)
 
-    # 4. 剩余单位归入迷雾探索/自由巡逻侦察（Scout Recon）
-    scout_members: list[SquadMember] = [
-        SquadMember(u.id, UnitType.VANGUARD, SquadRole.SCOUT)
-        for u in avail_vanguards
-    ] + [
-        SquadMember(u.id, UnitType.RANGER, SquadRole.SCOUT)
-        for u in avail_rangers
-    ] + [
-        SquadMember(w.id, UnitType.WORKER, SquadRole.MINER)
-        for w in workers
-        if w not in remote_workers
-    ]
-    if scout_members:
-        plan.add_squad(
-            Squad(
-                squad_id="squad_scout_recon",
-                squad_type=SquadType.SCOUT_RECON,
-                target=core_pos,
-                members=tuple(scout_members),
-                anchor_unit_id=context.core.id,
-            )
-        )
+    reserve = [unit for unit in units if unit.id not in assigned]
+    members[SquadType.BASE_DEFENSE].extend(reserve)
+    assigned.update(unit.id for unit in reserve)
 
+    targets = {
+        SquadType.BASE_DEFENSE: context.core.position,
+        SquadType.EXPEDITION_BEACON: context.beacon.position,
+        SquadType.MINING_ESCORT: escort_target,
+        SquadType.SCOUT_RECON: context.core.position,
+    }
+    anchors = {
+        SquadType.BASE_DEFENSE: context.core.id,
+        SquadType.EXPEDITION_BEACON: next(
+            (unit.id for unit in members[SquadType.EXPEDITION_BEACON] if unit.unit_type is UnitType.VANGUARD),
+            context.core.id,
+        ),
+        SquadType.MINING_ESCORT: mining_anchor.id if mining_anchor is not None else context.core.id,
+        SquadType.SCOUT_RECON: context.core.id,
+    }
+
+    # Always emit all four stable squad IDs so Dashboard membership and manual
+    # reassignment options never depend on transient roster composition.
+    for squad_type in (
+        SquadType.BASE_DEFENSE,
+        SquadType.EXPEDITION_BEACON,
+        SquadType.MINING_ESCORT,
+        SquadType.SCOUT_RECON,
+    ):
+        plan.add_squad(Squad(
+            squad_id=SQUAD_ID_BY_TYPE[squad_type],
+            squad_type=squad_type,
+            target=targets[squad_type],
+            members=tuple(
+                SquadMember(unit.id, unit.unit_type, _role(unit, squad_type))
+                for unit in members[squad_type]
+            ),
+            anchor_unit_id=anchors[squad_type],
+        ))
     return plan
