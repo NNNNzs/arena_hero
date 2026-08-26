@@ -27,11 +27,23 @@ _ALIAS = re.compile(r"^entity_[0-9a-f]{12}$")
 _TASK_KIND = re.compile(r"^[A-Z][A-Z_]{1,47}$")
 _POSTURES = frozenset({"BALANCED", "DEFENSIVE", "ECONOMY", "AGGRESSIVE"})
 _MANUAL_TASKS = frozenset({"RETREAT_TO_CORE", "HOLD_POSITION", "HARVEST_VISIBLE", "MOVE_TO_CELL"})
+_SQUAD_IDS = frozenset({
+    "squad_base_defense",
+    "squad_expedition_beacon",
+    "squad_mining_escort",
+    "squad_scout_recon",
+})
 # 策略热更新白名单：允许通过 UPDATE_POLICY 覆盖的 AgentConfig 数值字段
 # 格式: {字段名: (最小值, 最大值)}
 _POLICY_NUMERIC_FIELDS: dict[str, tuple[float, float]] = {
     "core_guard_vanguards": (0, 8),
     "core_guard_rangers": (0, 8),
+    "expedition_vanguards": (0, 12),
+    "expedition_rangers": (0, 12),
+    "mining_escort_vanguards": (0, 8),
+    "mining_escort_rangers": (0, 8),
+    "scout_vanguards": (0, 12),
+    "scout_rangers": (0, 12),
     "early_workers": (0, 12),
     "early_vanguards": (0, 8),
     "early_rangers": (0, 8),
@@ -105,7 +117,6 @@ class CommandQueue:
         with self._lock:
             if self._version == 0 and not self._commands:
                 restored: dict[str, Any] = {"version": version, "posture": posture, "effective_tick": effective_tick}
-                # 恢复数值字段覆盖
                 for field_name in _POLICY_NUMERIC_FIELDS:
                     if field_name in policy:
                         restored[field_name] = policy[field_name]
@@ -173,7 +184,7 @@ class CommandQueue:
                 continue
             if command.not_before_tick is not None and tick < command.not_before_tick:
                 continue
-            if command.type is CommandType.ASSIGN_TASK:
+            if command.type in {CommandType.ASSIGN_TASK, CommandType.ASSIGN_SQUAD}:
                 alias = command.payload.get("entity_alias")
                 if alias not in current_aliases:
                     commands.append(command)
@@ -205,13 +216,11 @@ class CommandQueue:
                 elif updated.type is CommandType.RESUME_AUTO and status is CommandStatus.APPLIED:
                     self._emergency_halt = False
                 elif updated.type is CommandType.UPDATE_POLICY and status is CommandStatus.APPLIED:
-                    # 策略更新：保留 posture + 所有白名单数值字段覆盖
                     policy_update: dict[str, Any] = {
                         "version": (updated.expected_version or 0) + 1,
                         "posture": updated.payload["posture"],
                         "effective_tick": prepared.tick,
                     }
-                    # 将数值字段覆盖合并到策略快照
                     for field_name in _POLICY_NUMERIC_FIELDS:
                         if field_name in updated.payload:
                             policy_update[field_name] = updated.payload[field_name]
@@ -282,6 +291,15 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
             payload["target"] = [target[0], target[1]]
         if kind == "MOVE_TO_CELL" and "target" not in payload:
             raise CommandError("INVALID_TARGET", "MOVE_TO_CELL requires a target cell")
+    elif command_type is CommandType.ASSIGN_SQUAD:
+        alias, squad_id = raw_payload.get("entity_alias"), raw_payload.get("squad_id")
+        if not isinstance(alias, str) or not _ALIAS.fullmatch(alias):
+            raise CommandError("INVALID_ALIAS", "entity_alias must be a redacted current entity alias")
+        if not isinstance(squad_id, str) or squad_id not in _SQUAD_IDS:
+            raise CommandError("INVALID_SQUAD", "squad_id is not supported")
+        payload = {"entity_alias": alias, "squad_id": squad_id}
+        # Squad membership is persistent state, not a TTL-limited action.  The
+        # command itself still expires if it cannot be admitted promptly.
     elif command_type is CommandType.CANCEL:
         alias = raw_payload.get("entity_alias")
         if not isinstance(alias, str) or not _ALIAS.fullmatch(alias):
@@ -297,15 +315,13 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
             raise CommandError("INVALID_PAYLOAD", "this command does not accept payload fields")
         payload = {}
     elif command_type is CommandType.UPDATE_POLICY:
-        # 支持 posture 字段 + 白名单内数值字段覆盖
         unknown_fields = set(raw_payload) - {"posture", *_POLICY_NUMERIC_FIELDS}
         if unknown_fields:
             raise CommandError("INVALID_POLICY", "policy contains a field outside the update whitelist")
         posture = raw_payload.get("posture")
         if posture not in _POSTURES:
             raise CommandError("INVALID_POLICY", "posture is not allowed")
-        payload: dict[str, Any] = {"posture": posture}
-        # 遍历白名单数值字段，逐个校验并加入 payload
+        payload = {"posture": posture}
         for field_name, (minimum, maximum) in _POLICY_NUMERIC_FIELDS.items():
             if field_name in raw_payload:
                 value = raw_payload[field_name]
@@ -320,7 +336,6 @@ def _validate_body(body: Mapping[str, Any], current_tick: int | None) -> tuple[C
                     )
                 payload[field_name] = value
     elif command_type is CommandType.TRIGGER_ANALYSIS:
-        # 手动触发分析扫描：payload 可指定 task_name，默认 resource_density_scan
         task_name = raw_payload.get("task_name", "resource_density_scan")
         if not isinstance(task_name, str) or not re.fullmatch(r"[a-z_]{1,64}", task_name):
             raise CommandError("INVALID_PAYLOAD", "task_name must be lowercase snake_case")
