@@ -24,6 +24,7 @@ class AgentRuntime(_BaseAgentRuntime):
     _CONFIG_OVERRIDE_FIELDS = _BaseAgentRuntime._CONFIG_OVERRIDE_FIELDS | frozenset({
         "expedition_vanguards",
         "expedition_rangers",
+        "beacon_secure_radius",
         "mining_escort_vanguards",
         "mining_escort_rangers",
         "scout_vanguards",
