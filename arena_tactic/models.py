@@ -96,6 +96,10 @@ class AgentConfig:
     resource_target_grace_ticks: int = 4
     core_guard_vanguards: int = 1
     core_guard_rangers: int = 1
+    # A cargo Worker may need the defensive ring cleared before it reaches the
+    # Core's immediate three-cell throat.  Keep the yielding horizon wide
+    # enough to clear the next relay cell in a one-cell corridor.
+    cargo_delivery_yield_radius: int = 6
     # Dedicated tactical squad sizing.  These fields intentionally do not
     # reuse intercept/recheck knobs: command-center squad composition must map
     # to the same semantics used by the live planner.
