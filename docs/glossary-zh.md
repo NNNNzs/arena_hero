@@ -73,6 +73,17 @@
 | intercept | 拦截 |
 | recon escort | 侦察护航 |
 | escort formation slot | 护航编队槽位 |
+| expedition_cohesion_hold | 远征前锋等待后队 |
+| expedition_regroup | 远征编组重组机动 |
+| expedition_regroup_pace_hold | 远征节奏单位原地等待 |
+| expedition_regroup_slot_hold | 远征成员保持重组槽位 |
+| expedition_contact_hold | 远征接敌后停止普通推进 |
+| expedition_pickup_waits_for_escort | 等待护卫就绪后拾取信标 |
+| expedition_formation_move | 远征编队槽位机动 |
+| expedition_formation_hold | 保持远征编队槽位 |
+| expedition_formation_route_blocked | 远征编队路线受阻 |
+| Squad cohesion | 编组凝聚 |
+| Squad-level arbitration | 编组级仲裁 |
 
 ## 游戏机制 (Mechanics)
 

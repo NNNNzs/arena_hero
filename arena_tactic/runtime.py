@@ -29,6 +29,18 @@ from .objectives import (
 )
 from .planning import LegacyPlannerAdapter
 from .scheduler import Actor, DeterministicScheduler, ScheduledAssignment, ScheduledTask, ScheduleResult
+from .squad_coordination import (
+    coordinate_expedition_intents,
+    intent_is_squad_protected,
+)
+from .squads import (
+    SQUAD_ID_BY_TYPE,
+    Squad,
+    SquadMember,
+    SquadRole,
+    SquadType,
+    build_squad_plan,
+)
 from .analysis_scheduler import AnalysisScheduler, MigrationRecommendation, default_analysis_scheduler
 from .tactical_geometry import migration_site_score, rich_resource_center
 from .strategy import propose_intents
@@ -673,21 +685,54 @@ class AgentRuntime:
         state = memory.objective_states.get("beacon", {})
         stage = state.get("stage")
         replacements: list[ActionIntent] = []
+        proposal_by_actor = {item.actor_id: item for item in proposals}
         scheduled_escorts = {
             alias for alias, assignment in memory.scheduler_assignments.items()
             if isinstance(assignment, dict) and assignment.get("kind") == "BEACON_ESCORT"
         }
-        escort_units = sorted(
+        planned_expedition = build_squad_plan(
+            context, memory, self.config
+        ).squads.get(SQUAD_ID_BY_TYPE[SquadType.EXPEDITION_BEACON])
+        planned_ids = planned_expedition.member_ids if planned_expedition is not None else set()
+        eligible_combat = sorted(
             (unit for unit in context.units if unit.unit_type in (UnitType.VANGUARD, UnitType.RANGER)
-             and not self._manual_safety_preempts(context, unit)
-             and (not scheduled_escorts or entity_alias(unit.id) in scheduled_escorts)),
+             and (unit.id in planned_ids or not scheduled_escorts
+                  or entity_alias(unit.id) in scheduled_escorts)),
             key=lambda unit: unit.id.bytes,
-        )[:2]
+        )
+        planned_units = tuple(unit for unit in eligible_combat if unit.id in planned_ids)
+        escort_units = planned_units if len(planned_units) >= 2 else tuple(eligible_combat[:2])
+        mobile_escort_units = tuple(
+            unit for unit in escort_units
+            if not self._manual_safety_preempts(context, unit)
+            and not intent_is_squad_protected(proposal_by_actor.get(unit.id))
+        )
+        campaign_squad = (
+            planned_expedition
+            if planned_expedition is not None
+            and {unit.id for unit in escort_units} == planned_expedition.member_ids
+            else Squad(
+                squad_id=SQUAD_ID_BY_TYPE[SquadType.EXPEDITION_BEACON],
+                squad_type=SquadType.EXPEDITION_BEACON,
+                target=context.beacon.position,
+                members=tuple(SquadMember(
+                    unit.id,
+                    unit.unit_type,
+                    SquadRole.POINT_GUARD
+                    if unit.unit_type is UnitType.VANGUARD
+                    else SquadRole.FIRE_SUPPORT,
+                ) for unit in escort_units),
+                anchor_unit_id=next(
+                    (unit.id for unit in escort_units if unit.unit_type is UnitType.VANGUARD),
+                    escort_units[0].id if escort_units else None,
+                ),
+            )
+        )
         reservations = ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
         if stage in {BeaconStage.ASSEMBLE.value, BeaconStage.RECOVER.value, BeaconStage.PICKUP.value}:
             # Keep the escort roster stable and bounded.  A carrier may only
             # pick up after the lifecycle has observed its current-cell facts.
-            for index, unit in enumerate(escort_units):
+            for index, unit in enumerate(mobile_escort_units):
                 target = context.beacon.position if index == 0 else self._beacon_escort_slot(
                     context, index, actor_cell=unit.position
                 )
@@ -699,7 +744,7 @@ class AgentRuntime:
                     replacements.append(intent)
         if stage == BeaconStage.PICKUP.value and context.beacon.status is BeaconStatus.GROUND:
             candidates = sorted(
-                (unit for unit in context.units if unit.position == context.beacon.position),
+                (unit for unit in mobile_escort_units if unit.position == context.beacon.position),
                 key=lambda unit: ({UnitType.VANGUARD: 0, UnitType.RANGER: 1, UnitType.WORKER: 2}[unit.unit_type], unit.id.bytes),
             )
             if candidates:
@@ -710,7 +755,7 @@ class AgentRuntime:
             carrier_alias = state.get("carrier_alias")
             carrier = next((unit for unit in context.units if entity_alias(unit.id) == carrier_alias), None)
             hold_cell = carrier.position if carrier is not None else context.beacon.position
-            for index, unit in enumerate(escort_units):
+            for index, unit in enumerate(mobile_escort_units):
                 target = hold_cell if index == 0 else self._beacon_escort_slot(
                     context, index, center=hold_cell, actor_cell=unit.position
                 )
@@ -723,7 +768,14 @@ class AgentRuntime:
         if stage == BeaconStage.HOLD.value and context.core.shield < 10 and context.resources > 0:
             intent = ActionIntent(context.core.id, True, ActionKind.REPAIR_SHIELD, 700, "beacon_campaign_hold_repair")
             replacements.append(intent)
-        return self._replace_objective_proposals(proposals, replacements)
+        combined = self._replace_objective_proposals(proposals, replacements)
+        return coordinate_expedition_intents(
+            context,
+            memory,
+            self.config,
+            campaign_squad,
+            tuple(combined),
+        )
 
     def _apply_core_migration(self, context: DecisionContext, memory: AgentMemory, proposals):
         """Start one safe observed leg only; later Turns drive all progress."""

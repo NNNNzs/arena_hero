@@ -9,8 +9,15 @@ from arena_hero import CoreState
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
-from ..models import ActionIntent, ActionKind, AgentConfig, ReservationTable, StrategicMode
-from ..squads import build_squad_plan
+from ..models import (
+    ActionIntent,
+    ActionKind,
+    AgentConfig,
+    ReservationTable,
+    StrategicMode,
+)
+from ..squad_coordination import coordinate_expedition_intents
+from ..squads import SQUAD_ID_BY_TYPE, SquadType, build_squad_plan
 from .common import CORE_MAX_HP, UNIT_MAX_HP, _anticipated_resources, _at_normal_core
 from .core_plan import _plan_core
 from .mode import choose_mode
@@ -81,6 +88,18 @@ def propose_intents(
             squad_plan,
         )
     )
+    expedition = squad_plan.squads.get(
+        SQUAD_ID_BY_TYPE[SquadType.EXPEDITION_BEACON]
+    )
+    if expedition is not None and expedition.members:
+        intents = list(coordinate_expedition_intents(
+            context,
+            memory,
+            config,
+            expedition,
+            tuple(intents),
+            deadline=deadline,
+        ))
     planned_unit_heals = sum(
         intent.estimated_cost
         for intent in intents
