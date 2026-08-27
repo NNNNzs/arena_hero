@@ -40,6 +40,7 @@ _POLICY_NUMERIC_FIELDS: dict[str, tuple[float, float]] = {
     "core_guard_rangers": (0, 8),
     "expedition_vanguards": (0, 12),
     "expedition_rangers": (0, 12),
+    "beacon_secure_radius": (0, 8),
     "mining_escort_vanguards": (0, 8),
     "mining_escort_rangers": (0, 8),
     "scout_vanguards": (0, 12),
