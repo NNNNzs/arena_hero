@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from arena_hero import BeaconStatus, CoreState, CoreView, UnitType, UnitView
+from arena_hero import BeaconStatus, CoreState, CoreView, UnitType
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
@@ -60,6 +60,20 @@ def _beacon_owned(context: DecisionContext) -> bool:
     return context.beacon.carrier_id in context.current_objects
 
 
+def _beacon_needs_exfil(
+    context: DecisionContext,
+    config: AgentConfig,
+) -> bool:
+    if context.core is None or context.beacon.carrier_id is None:
+        return False
+    carrier = context.current_objects.get(context.beacon.carrier_id)
+    return (
+        carrier is not None
+        and distance(carrier.position, context.core.position)
+        > max(0, config.beacon_secure_radius)
+    )
+
+
 def choose_mode(
     context: DecisionContext,
     memory: AgentMemory,
@@ -105,6 +119,11 @@ def choose_mode(
     )
     if core.hp < CORE_MAX_HP or core.shield < 3 or damaged_at_core:
         return StrategicMode.RECOVER
+
+    # Once acquired, bringing the publicly tracked carrier home outranks a new
+    # offensive campaign. Immediate defense and recovery still preempt exfil.
+    if _beacon_needs_exfil(context, config):
+        return StrategicMode.BEACON
 
     combat_count = len(context.vanguards) + len(context.rangers)
     enemy_core_visible = any(isinstance(enemy, CoreView) for enemy in context.enemies)
@@ -158,6 +177,4 @@ def choose_mode(
     ):
         return StrategicMode.ECONOMY
     return StrategicMode.EXPLORE
-
-
 
