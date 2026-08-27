@@ -256,7 +256,9 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "enemy_approach_blocked"))
             continue
 
-        cargo_yield = _yield_cargo_delivery(vanguard, context, memory, reservations)
+        cargo_yield = _yield_cargo_delivery(
+            vanguard, context, memory, reservations, config
+        )
         if cargo_yield is not None:
             _record_unit_task(
                 memory, context, vanguard, kind="yield_cargo_delivery",

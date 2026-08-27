@@ -480,22 +480,30 @@ def _yield_cargo_delivery(
     context: DecisionContext,
     memory: AgentMemory,
     reservations: ReservationTable,
+    config: AgentConfig,
 ) -> ActionIntent | None:
     """Move a nearby combat Unit outward before a cargo route is blocked.
 
     Workers are planned first, so their reservations expose the immediate
     delivery pressure.  This deliberately applies only outside an urgent
-    combat/intercept branch and only within the Core's three-cell throat.
+    combat/intercept branch and across the configurable Core approach ring.
+    The wider ring prevents a priority inversion where a cargo Worker waits
+    outside the old three-cell throat while a stationary relay Unit still
+    occupies the next cell in a one-cell corridor.
     """
     if context.core is None:
         return None
     core_position = context.core.position
     unit_distance = distance(unit.position, core_position)
-    if not 0 <= unit_distance <= 3:
+    if not 0 <= unit_distance <= config.cargo_delivery_yield_radius:
         return None
     cargo_workers = tuple(
         worker for worker in context.workers
-        if worker.cargo and distance(worker.position, core_position) <= 3
+        if (
+            worker.cargo
+            and distance(worker.position, core_position)
+            <= config.cargo_delivery_yield_radius
+        )
     )
     if not cargo_workers:
         return None

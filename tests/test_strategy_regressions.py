@@ -147,7 +147,7 @@ def test_combat_unit_yields_outward_for_nearby_cargo_delivery():
         turn(owned_core=core(position=(0, 0)), units=(vanguard, cargo_worker))
     )
     intent = _yield_cargo_delivery(
-        vanguard, context, AgentMemory(), ReservationTable(occupancy={})
+        vanguard, context, AgentMemory(), ReservationTable(occupancy={}), AgentConfig()
     )
 
     assert intent is not None
@@ -166,10 +166,42 @@ def test_combat_unit_vacates_core_cell_for_cargo_delivery():
         turn(owned_core=core(position=(0, 0)), units=(ranger, cargo_worker))
     )
     intent = _yield_cargo_delivery(
-        ranger, context, AgentMemory(), ReservationTable(occupancy={(0, 0): 2})
+        ranger,
+        context,
+        AgentMemory(),
+        ReservationTable(occupancy={(0, 0): 2}),
+        AgentConfig(),
     )
 
     assert intent is not None
     assert intent.reserved_cell != (0, 0)
     assert intent.reserved_cell is not None
     assert intent.reserved_cell[0] > 0
+
+
+def test_combat_unit_yields_for_cargo_waiting_at_the_outer_corridor_relay():
+    """A five-cell cargo queue must clear its blocking relay before entry."""
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.common import _yield_cargo_delivery
+
+    # This recreates Issue #7's priority inversion: the returning Worker is
+    # outside the former three-cell throat, while a stationary Ranger sits in
+    # the same one-cell approach corridor.
+    ranger = unit(1, UnitType.RANGER, (-4, 0))
+    cargo_worker = unit(2, UnitType.WORKER, (-5, 0), cargo=1)
+    context = DecisionContext.from_turn(
+        turn(owned_core=core(position=(0, 0)), units=(ranger, cargo_worker))
+    )
+
+    intent = _yield_cargo_delivery(
+        ranger,
+        context,
+        AgentMemory(),
+        ReservationTable(occupancy={(-4, 0): 1, (-5, 0): 1}),
+        AgentConfig(cargo_delivery_yield_radius=6),
+    )
+
+    assert intent is not None
+    assert intent.reason == "yield_cargo_delivery_sidestep"
+    assert intent.reserved_cell is not None
+    assert intent.reserved_cell != ranger.position

@@ -222,7 +222,9 @@ def _plan_rangers(
             intents.append(intent or _wait(ranger, "firing_route_blocked"))
             continue
 
-        cargo_yield = _yield_cargo_delivery(ranger, context, memory, reservations)
+        cargo_yield = _yield_cargo_delivery(
+            ranger, context, memory, reservations, config
+        )
         if cargo_yield is not None:
             _record_unit_task(
                 memory,

@@ -92,7 +92,7 @@ class AgentRuntime:
 
     # 策略热更新白名单：与 command_center._POLICY_NUMERIC_FIELDS 对齐
     _CONFIG_OVERRIDE_FIELDS = frozenset({
-        "core_guard_vanguards", "core_guard_rangers",
+        "core_guard_vanguards", "core_guard_rangers", "cargo_delivery_yield_radius",
         "early_workers", "early_vanguards", "early_rangers",
         "patrol_radius_min", "patrol_radius_max", "patrol_arc_segments",
         "patrol_radius_units_per_step",
