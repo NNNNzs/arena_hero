@@ -154,6 +154,14 @@ def _safe_objective_states(value: Any) -> dict[str, dict[str, Any]]:
             item = raw.get(key)
             if isinstance(item, str) and _EVENT_ID_RE.fullmatch(item):
                 state[key] = item
+        escort_aliases = raw.get("escort_aliases")
+        if isinstance(escort_aliases, (list, tuple)):
+            safe_aliases = [
+                item for item in escort_aliases[:16]
+                if isinstance(item, str) and _EVENT_ID_RE.fullmatch(item)
+            ]
+            if safe_aliases:
+                state["escort_aliases"] = list(dict.fromkeys(safe_aliases))
         for key in ("destination", "recovery_cell"):
             item = raw.get(key)
             if isinstance(item, (list, tuple)) and len(item) == 2 and all(type(axis) is int for axis in item):
@@ -245,6 +253,7 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
     _NUMERIC_WHITELIST = {
         "core_guard_vanguards", "core_guard_rangers", "cargo_delivery_yield_radius",
         "expedition_vanguards", "expedition_rangers",
+        "beacon_secure_radius",
         "mining_escort_vanguards", "mining_escort_rangers",
         "scout_vanguards", "scout_rangers",
         "early_workers", "early_vanguards", "early_rangers",

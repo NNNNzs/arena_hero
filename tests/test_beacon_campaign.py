@@ -1,10 +1,20 @@
 from arena_hero import BeaconStatus, UnitType
-from arena_tactic.models import AgentConfig
-from arena_tactic.objectives.beacon import BeaconCampaign, BeaconInput, BeaconStage
 
 from arena_tactic import AgentRuntime
+from arena_tactic.context import DecisionContext
+from arena_tactic.identity import entity_alias
+from arena_tactic.memory import AgentMemory
+from arena_tactic.models import AgentConfig, StrategicMode
+from arena_tactic.objectives.beacon import BeaconCampaign, BeaconInput, BeaconStage
+
 from arena_tactic.squad_coordination import evaluate_squad_cohesion
-from arena_tactic.squads import Squad, SquadMember, SquadRole, SquadType
+from arena_tactic.squads import (
+    Squad,
+    SquadMember,
+    SquadRole,
+    SquadType,
+    build_squad_plan,
+)
 
 from .factories import core, turn, unit
 
@@ -36,9 +46,43 @@ def test_carrier_death_rebuilds_recovery_tasks():
 
 def test_holding_beacon_raises_repair_policy():
     state, _, tasks, candidates = BeaconCampaign().evaluate(facts(own_carrier_alias="entity_carrier"))
-    assert state.stage is BeaconStage.HOLD
-    assert {task.kind for task in tasks} == {"HOLD_BEACON", "REPAIR_SHIELD"}
-    assert candidates == ("REPAIR_SHIELD",)
+    assert state.stage is BeaconStage.EXFIL
+    assert {task.kind for task in tasks} == {"EXFIL_BEACON", "ESCORT_CARRIER"}
+    assert candidates == ("WITHDRAW_BEACON",)
+
+
+def test_secured_beacon_expands_mining_escort_policy():
+    state, _, tasks, candidates = BeaconCampaign().evaluate(facts(
+        own_carrier_alias="entity_carrier",
+        carrier_secured=True,
+    ))
+
+    assert state.stage is BeaconStage.SECURE
+    assert {task.kind for task in tasks} == {
+        "SECURE_BEACON",
+        "REPAIR_SHIELD",
+        "EXPAND_MINING_ESCORT",
+    }
+    assert candidates == ("REPAIR_SHIELD", "EXPAND_MINING_ESCORT")
+
+
+def campaign_runtime(**changes):
+    config = dict(
+        beacon_campaign_v1=True,
+        core_guard_vanguards=0,
+        core_guard_rangers=0,
+        expedition_vanguards=1,
+        expedition_rangers=1,
+        mining_escort_vanguards=0,
+        mining_escort_rangers=0,
+        scout_vanguards=0,
+        scout_rangers=0,
+    )
+    config.update(changes)
+    return AgentRuntime(
+        memory=AgentMemory(last_mode=StrategicMode.BEACON),
+        config=AgentConfig(**config),
+    )
 
 
 def test_enabled_campaign_picks_up_only_current_ground_beacon_after_quorum():
@@ -46,17 +90,32 @@ def test_enabled_campaign_picks_up_only_current_ground_beacon_after_quorum():
     escort = unit(2, UnitType.RANGER, (2, 0))
     game_turn = turn(owned_core=core(), units=(carrier, escort), beacon_position=(1, 0), beacon_status=BeaconStatus.GROUND)
 
-    result = AgentRuntime(config=AgentConfig(beacon_campaign_v1=True)).decide(game_turn)
+    result = campaign_runtime().decide(game_turn)
 
     intent = next(item for item in result.intents if item.actor_id == carrier.id)
     assert intent.action.value == "PICKUP_BEACON"
     assert intent.reason == "beacon_campaign_pickup_current_ground"
 
 
+def test_lone_expedition_member_waits_for_pickup_quorum():
+    carrier = unit(3, UnitType.VANGUARD, (1, 0))
+    runtime = campaign_runtime(expedition_rangers=0)
+    result = runtime.decide(turn(
+        owned_core=core(),
+        units=(carrier,),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.GROUND,
+    ))
+
+    intent = next(item for item in result.intents if item.actor_id == carrier.id)
+    assert intent.action.value == "WAIT"
+    assert intent.reason == "expedition_pickup_waits_for_escort"
+
+
 def test_enabled_campaign_assembles_a_bounded_combat_escort_from_current_positions():
     vanguard = unit(1, UnitType.VANGUARD, (0, 0))
     ranger = unit(2, UnitType.RANGER, (0, 1))
-    result = AgentRuntime(config=AgentConfig(beacon_campaign_v1=True)).decide(
+    result = campaign_runtime().decide(
         turn(owned_core=core(), units=(vanguard, ranger), beacon_position=(5, 0))
     )
 
@@ -70,7 +129,7 @@ def test_planner_canary_uses_scheduler_escort_roster_and_distinct_formation_slot
     ranger = unit(2, UnitType.RANGER, (0, 1))
     extra_vanguard = unit(3, UnitType.VANGUARD, (0, -1))
 
-    result = AgentRuntime(config=AgentConfig(planner_canary=True, beacon_campaign_v1=True)).decide(
+    result = campaign_runtime(planner_canary=True).decide(
         turn(owned_core=core(), units=(vanguard, ranger, extra_vanguard), beacon_position=(5, 0))
     )
 
@@ -130,7 +189,7 @@ def test_pickup_readiness_requires_quorum_and_close_formation():
 def test_campaign_front_runner_waits_for_lagging_escort():
     front = unit(10, UnitType.VANGUARD, (8, 0))
     pace = unit(11, UnitType.RANGER, (1, 0))
-    result = AgentRuntime(config=AgentConfig(beacon_campaign_v1=True)).decide(
+    result = campaign_runtime().decide(
         turn(
             owned_core=core(position=(0, 0)),
             units=(front, pace),
@@ -147,7 +206,7 @@ def test_campaign_contact_holds_non_engaged_members_without_replacing_fire():
     ranger = unit(10, UnitType.RANGER, (0, 0))
     vanguard = unit(11, UnitType.VANGUARD, (0, 1))
     enemy = unit(90, UnitType.RANGER, (3, 0), controlled=False)
-    result = AgentRuntime(config=AgentConfig(beacon_campaign_v1=True)).decide(
+    result = campaign_runtime().decide(
         turn(
             owned_core=core(position=(-1, 0)),
             units=(ranger, vanguard),
@@ -182,3 +241,178 @@ def test_default_planner_arbitrates_every_expedition_squad_member():
     assert intents[front.id].reason == "expedition_cohesion_hold"
     assert not intents[core_guard.id].reason.startswith("expedition_")
     assert not intents[fire_guard.id].reason.startswith("expedition_")
+
+
+def test_campaign_does_not_acquire_beacon_outside_global_beacon_mode():
+    vanguard = unit(20, UnitType.VANGUARD, (0, 0))
+    ranger = unit(21, UnitType.RANGER, (0, 1))
+    runtime = AgentRuntime(config=AgentConfig(
+        beacon_campaign_v1=True,
+        core_guard_vanguards=0,
+        core_guard_rangers=0,
+        expedition_vanguards=1,
+        expedition_rangers=1,
+    ))
+
+    result = runtime.decide(turn(
+        owned_core=core(),
+        units=(vanguard, ranger),
+        beacon_position=(8, 0),
+    ))
+
+    assert result.mode is StrategicMode.ECONOMY
+    assert all(
+        not intent.reason.startswith("expedition_")
+        for intent in result.intents
+    )
+
+
+def test_carried_beacon_exfils_with_escort_toward_core():
+    carrier = unit(30, UnitType.VANGUARD, (8, 0))
+    escort = unit(31, UnitType.RANGER, (7, 0))
+    runtime = campaign_runtime()
+    runtime.memory.objective_states["beacon"] = {
+        "stage": BeaconStage.PICKUP.value,
+        "escort_aliases": [entity_alias(carrier.id), entity_alias(escort.id)],
+    }
+
+    result = runtime.decide(turn(
+        owned_core=core(position=(0, 0)),
+        units=(carrier, escort),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=carrier.id,
+    ))
+    intents = {item.actor_id: item for item in result.intents}
+
+    assert result.mode is StrategicMode.BEACON
+    assert intents[carrier.id].action.value == "MOVE"
+    assert intents[carrier.id].reason == "beacon_exfil_formation_move"
+    assert intents[carrier.id].reserved_cell == (7, 0)
+    assert intents[escort.id].reason.startswith("beacon_exfil_")
+
+
+def test_exfil_carrier_keeps_withdrawing_while_ranger_covers_contact():
+    carrier = unit(40, UnitType.VANGUARD, (8, 0))
+    escort = unit(41, UnitType.RANGER, (7, 1))
+    enemy = unit(90, UnitType.RANGER, (10, 1), controlled=False)
+    runtime = campaign_runtime()
+    runtime.memory.objective_states["beacon"] = {
+        "stage": BeaconStage.EXFIL.value,
+        "carrier_alias": entity_alias(carrier.id),
+        "escort_aliases": [entity_alias(carrier.id), entity_alias(escort.id)],
+    }
+
+    result = runtime.decide(turn(
+        owned_core=core(position=(0, 0)),
+        units=(carrier, escort),
+        enemies=(enemy,),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=carrier.id,
+    ))
+    intents = {item.actor_id: item for item in result.intents}
+
+    assert intents[escort.id].action.value == "SHOOT"
+    assert intents[carrier.id].action.value == "MOVE"
+    assert intents[carrier.id].reason.startswith("beacon_exfil_")
+
+
+def test_secured_carrier_stays_home_and_former_escort_joins_miners():
+    carrier = unit(50, UnitType.VANGUARD, (1, 0))
+    escort = unit(51, UnitType.RANGER, (2, 0))
+    worker = unit(52, UnitType.WORKER, (5, 0))
+    memory = AgentMemory(
+        last_mode=StrategicMode.ECONOMY,
+        objective_states={"beacon": {
+            "stage": BeaconStage.SECURE.value,
+            "carrier_alias": entity_alias(carrier.id),
+            "escort_aliases": [entity_alias(carrier.id), entity_alias(escort.id)],
+        }},
+    )
+    context = DecisionContext.from_turn(turn(
+        owned_core=core(),
+        units=(carrier, escort, worker),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=carrier.id,
+    ))
+    plan = build_squad_plan(context, memory, AgentConfig(
+        core_guard_vanguards=0,
+        core_guard_rangers=0,
+        mining_escort_vanguards=0,
+        mining_escort_rangers=0,
+        scout_vanguards=0,
+        scout_rangers=0,
+    ))
+
+    assert plan.unit_is(carrier.id, SquadType.BASE_DEFENSE)
+    assert plan.unit_is(worker.id, SquadType.MINING_ESCORT)
+    assert plan.unit_is(escort.id, SquadType.MINING_ESCORT)
+
+
+def test_secured_beacon_repairs_core_only_from_surplus_resources():
+    carrier = unit(60, UnitType.VANGUARD, (1, 0))
+    escort = unit(61, UnitType.RANGER, (2, 0))
+    runtime = campaign_runtime(minimum_resource_reserve=5)
+    runtime.memory.objective_states["beacon"] = {
+        "stage": BeaconStage.SECURE.value,
+        "carrier_alias": entity_alias(carrier.id),
+        "escort_aliases": [entity_alias(carrier.id), entity_alias(escort.id)],
+    }
+
+    result = runtime.decide(turn(
+        owned_core=core(shield=5),
+        units=(carrier, escort),
+        resources=6,
+        resource_cells=((4, 0),),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=carrier.id,
+    ))
+    core_intent = next(item for item in result.intents if item.is_core)
+
+    assert core_intent.action.value == "REPAIR_SHIELD"
+    assert core_intent.reason == "beacon_secure_core_repair"
+
+
+def test_global_defense_preempts_beacon_exfil_overlay():
+    carrier = unit(70, UnitType.VANGUARD, (8, 0))
+    escort = unit(71, UnitType.RANGER, (7, 0))
+    enemy = unit(99, UnitType.VANGUARD, (1, 0), controlled=False)
+    runtime = campaign_runtime()
+    runtime.memory.objective_states["beacon"] = {
+        "stage": BeaconStage.EXFIL.value,
+        "carrier_alias": entity_alias(carrier.id),
+        "escort_aliases": [entity_alias(carrier.id), entity_alias(escort.id)],
+    }
+
+    result = runtime.decide(turn(
+        owned_core=core(),
+        units=(carrier, escort),
+        enemies=(enemy,),
+        beacon_position=carrier.position,
+        beacon_status=BeaconStatus.CARRIED,
+        beacon_carrier_id=carrier.id,
+    ))
+
+    assert result.mode is StrategicMode.DEFEND
+    assert all(
+        not intent.reason.startswith("beacon_exfil_")
+        for intent in result.intents
+    )
+
+
+def test_beacon_escort_roster_survives_memory_round_trip():
+    first = unit(80, UnitType.VANGUARD, (3, 0))
+    second = unit(81, UnitType.RANGER, (4, 0))
+    aliases = [entity_alias(first.id), entity_alias(second.id)]
+    memory = AgentMemory(objective_states={"beacon": {
+        "stage": BeaconStage.EXFIL.value,
+        "carrier_alias": aliases[0],
+        "escort_aliases": aliases,
+    }})
+
+    restored = AgentMemory.from_dict(memory.to_dict())
+
+    assert restored.objective_states["beacon"]["escort_aliases"] == aliases

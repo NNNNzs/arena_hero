@@ -83,6 +83,7 @@ def _safe_slots(
     *,
     regroup: bool,
     pace_unit_id: UUID | None,
+    anchor_unit_id: UUID | None,
 ) -> dict[UUID, Position]:
     """Assign deterministic, unique loose-formation cells around an anchor."""
     cx, cy = center
@@ -101,6 +102,7 @@ def _safe_slots(
     ordered = tuple(sorted(
         units,
         key=lambda unit: (
+            0 if unit.id == anchor_unit_id else 1,
             0 if unit.id == pace_unit_id else 1,
             0 if unit.unit_type is UnitType.VANGUARD else 1,
             unit.id.bytes,
@@ -152,16 +154,35 @@ def coordinate_expedition_intents(
     proposals: tuple[ActionIntent, ...],
     *,
     deadline: float | None = None,
+    contact_holds: bool = True,
+    reason_prefix: str = "expedition",
+    allow_single_maneuver: bool = False,
 ) -> tuple[ActionIntent, ...]:
     """Replace independent Beacon movement with one complete squad order."""
     members = tuple(sorted(
         (unit for unit in context.units if unit.id in squad.member_ids),
         key=lambda unit: unit.id.bytes,
     ))
-    if len(members) < 2:
+    if not members:
         return proposals
 
     by_actor = {intent.actor_id: intent for intent in proposals}
+    if len(members) < 2 and not allow_single_maneuver:
+        member = members[0]
+        existing = by_actor.get(member.id)
+        if existing is None or existing.action is not ActionKind.PICKUP_BEACON:
+            return proposals
+        replacement = ActionIntent(
+            member.id,
+            False,
+            ActionKind.WAIT,
+            690,
+            f"{reason_prefix}_pickup_waits_for_escort",
+            target_cell=squad.target,
+        )
+        return tuple(
+            intent for intent in proposals if intent.actor_id != member.id
+        ) + (replacement,)
     protected = {
         unit.id for unit in members if intent_is_squad_protected(by_actor.get(unit.id))
     }
@@ -175,7 +196,9 @@ def coordinate_expedition_intents(
     )
     slots = _safe_slots(
         center, members, context, memory,
-        regroup=cohesion.regroup, pace_unit_id=cohesion.pace_unit_id,
+        regroup=cohesion.regroup,
+        pace_unit_id=cohesion.pace_unit_id,
+        anchor_unit_id=squad.anchor_unit_id,
     )
     planning_deadline = deadline or (perf_counter() + config.planning_budget_ms / 1_000)
     replacements: list[ActionIntent] = []
@@ -184,27 +207,34 @@ def coordinate_expedition_intents(
         existing = by_actor.get(unit.id)
         if unit.id in protected:
             continue
-        if contact:
+        if contact and contact_holds:
             replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, "expedition_contact_hold",
+                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_contact_hold",
             ))
             continue
-        if existing is not None and existing.action is ActionKind.PICKUP_BEACON:
+        pickup_is_waiting = (
+            existing is not None
+            and "pickup_waits_for_escort" in existing.reason
+        )
+        if (
+            existing is not None
+            and existing.action is ActionKind.PICKUP_BEACON
+        ) or pickup_is_waiting:
             if cohesion.pickup_ready:
                 continue
             replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, "expedition_pickup_waits_for_escort",
+                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_pickup_waits_for_escort",
                 target_cell=squad.target,
             ))
             continue
         if cohesion.regroup and unit.id == cohesion.pace_unit_id:
             replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, "expedition_regroup_pace_hold",
+                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_regroup_pace_hold",
             ))
             continue
         if unit.id in cohesion.hold_unit_ids:
             replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, "expedition_cohesion_hold",
+                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_cohesion_hold",
             ))
             continue
 
@@ -212,7 +242,8 @@ def coordinate_expedition_intents(
         if unit.position == target:
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 680,
-                "expedition_regroup_slot_hold" if cohesion.regroup else "expedition_formation_hold",
+                f"{reason_prefix}_regroup_slot_hold"
+                if cohesion.regroup else f"{reason_prefix}_formation_hold",
                 target_cell=target,
             ))
             continue
@@ -229,13 +260,13 @@ def coordinate_expedition_intents(
         )
         if direction is None:
             replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 680, "expedition_formation_route_blocked",
+                unit.id, False, ActionKind.WAIT, 680, f"{reason_prefix}_formation_route_blocked",
                 target_cell=target,
             ))
             continue
         replacements.append(ActionIntent(
             unit.id, False, ActionKind.MOVE, 680,
-            "expedition_regroup" if cohesion.regroup else "expedition_formation_move",
+            f"{reason_prefix}_regroup" if cohesion.regroup else f"{reason_prefix}_formation_move",
             target_cell=target,
             direction=direction,
             reserved_cell=destination(unit.position, direction),

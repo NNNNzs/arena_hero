@@ -73,17 +73,29 @@
 | intercept | 拦截 |
 | recon escort | 侦察护航 |
 | escort formation slot | 护航编队槽位 |
-| expedition_cohesion_hold | 远征前锋等待后队 |
-| expedition_regroup | 远征编组重组机动 |
-| expedition_regroup_pace_hold | 远征节奏单位原地等待 |
-| expedition_regroup_slot_hold | 远征成员保持重组槽位 |
-| expedition_contact_hold | 远征接敌后停止普通推进 |
-| expedition_pickup_waits_for_escort | 等待护卫就绪后拾取信标 |
-| expedition_formation_move | 远征编队槽位机动 |
-| expedition_formation_hold | 保持远征编队槽位 |
-| expedition_formation_route_blocked | 远征编队路线受阻 |
-| Squad cohesion | 编组凝聚 |
-| Squad-level arbitration | 编组级仲裁 |
+| expedition_cohesion_hold | 远征编队领先等待 |
+| expedition_regroup | 远征编队重组 |
+| expedition_regroup_pace_hold | 远征节奏单位等待重组 |
+| expedition_regroup_slot_hold | 远征单位在重组槽位等待 |
+| expedition_contact_hold | 远征编队接敌停止推进 |
+| expedition_pickup_waits_for_escort | 信标拾取等待护卫到位 |
+| expedition_formation_move | 远征编队队形移动 |
+| expedition_formation_hold | 远征编队槽位等待 |
+| expedition_formation_route_blocked | 远征编队路径受阻 |
+| beacon_exfil_formation_move | 信标撤离编队移动 |
+| beacon_exfil_cohesion_hold | 信标撤离领先等待 |
+| beacon_exfil_regroup | 信标撤离编队重组 |
+| beacon_exfil_core_repair | 信标撤离期间核心修盾 |
+| beacon_secure_core_repair | 信标安全固守期间核心修盾 |
+| ASSEMBLE | 信标护卫集结阶段 |
+| PICKUP | 信标拾取阶段 |
+| EXFIL | 信标护送撤离阶段 |
+| SECURE | 信标基地固守阶段 |
+| RECOVER | 信标失落恢复阶段 |
+| Squad cohesion | 编组凝聚度 |
+| Squad-level arbitration | 编组级动作仲裁 |
+| Beacon security screen | 信标安全警戒圈 |
+| Expanded mining escort | 扩展采矿护航 |
 
 ## 游戏机制 (Mechanics)
 
