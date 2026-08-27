@@ -40,7 +40,7 @@
 
 | 阶段 | 已实现的纯逻辑 | 实际文件与测试 | 默认开关与边界 |
 | --- | --- | --- | --- |
-| Phase 4 Beacon Campaign | `ASSEMBLE`、`PICKUP`、`HOLD`、`RECOVER` 生命周期。 | `arena_tactic/objectives/beacon.py`；`tests/test_beacon_campaign.py` | `beacon_campaign_v1=False`；最多两名当前安全的 Vanguard/Ranger 使用 scheduler roster 护送：carrier 候选朝公开 Beacon 坐标，另一名使用相邻独立编队槽位与共享预留，避免事后同格容量拒绝；只有 lifecycle 已到 `PICKUP`、Beacon 当前为 `GROUND`、候选单位实际同格时，才按稳定类型顺序授权一名单位拾取；持有时护卫靠近 carrier 并将 Core 修盾目标提高到 10。绝不主动 drop。 |
+| Phase 4 Beacon Campaign | `ASSEMBLE`、`PICKUP`、`EXFIL`、`SECURE`、`RECOVER` 生命周期。 | `arena_tactic/objectives/beacon.py`；`arena_tactic/squad_coordination.py`；`tests/test_beacon_campaign.py` | `beacon_campaign_v1=False`；只有全局 `BEACON` 模式可以启动集结、拾取和失落恢复，且只能使用正式 `EXPEDITION_BEACON` 成员，不再临时抽走其他编组。拾取后 Vanguard 优先携带，完整编队以携带者为锚、最慢成员为节奏向 Core 撤离；Ranger 接敌射击时非接敌成员继续撤离。携带者进入 `beacon_secure_radius` 后转为 `SECURE`：携带者留在基地防线，原远征护卫并入 `MINING_ESCORT` 扩大矿区安全覆盖，Core 只用超过最低储备的资源向 10 点护盾修复。绝不主动 drop，也不把公开坐标交给 Worker。 |
 | Phase 5 Core 迁移 | cargo 召回、同格存入、开始移动、移动等待、失败重规划、完成的计划状态。 | `arena_tactic/objectives/core_migration.py`；`tests/test_core_migration_plan.py` | `core_migration_v1=False`；`RECALL` 先让所有有货 Worker 回到当前 Core，已同格者先显式 `DEPOSIT`；直到当前权威 Turn 确认所有 Worker cargo 已清空，`START` 才向 Beacon 锚点提交一条当前可见、非障碍/资源/占用的安全相邻 `START_MOVE`。同一腿只授权一次，下一权威 Turn 观察到移动结束后再从当前格重启下一腿。手动迁移命令也沿用此安全路径。 |
 | Phase 6 敌 Core 攻击 | 集结、接战、失视重获、撤退、权威击杀确认。 | `arena_tactic/objectives/core_attack.py`；`tests/test_core_attack_campaign.py` | `core_attack_campaign_v1=False`；当前可见 target 但未达 quorum 时，combat roster 向该当前格集结；`ENGAGE` 仅替换拥有合法射线 Ranger 的 `SHOOT` 和相邻 Vanguard 的 `SWEEP`；`RETREAT` 向己 Core 回撤。失视不会按历史目标攻击；只有此前保存的脱敏目标别名与当前 `CORE_DESTROYED/ATTACK` 的 `target_id` 一致时才标为确认。 |
 
