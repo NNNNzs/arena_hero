@@ -251,7 +251,7 @@ def _safe_policy_state(value: Any) -> dict[str, Any]:
         return {"version": 0, "posture": "BALANCED", "effective_tick": 0}
     result: dict[str, Any] = {"version": version, "posture": posture, "effective_tick": effective}
     _NUMERIC_WHITELIST = {
-        "core_guard_vanguards", "core_guard_rangers",
+        "core_guard_vanguards", "core_guard_rangers", "cargo_delivery_yield_radius",
         "expedition_vanguards", "expedition_rangers",
         "beacon_secure_radius",
         "mining_escort_vanguards", "mining_escort_rangers",
