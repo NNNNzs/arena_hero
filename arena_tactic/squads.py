@@ -159,6 +159,14 @@ def build_squad_plan(
             if unit.unit_type is unit_type and unit.id not in assigned
         ]
 
+    beacon_state = memory.objective_states.get("beacon", {})
+    beacon_stage = beacon_state.get("stage")
+    carrier_alias = beacon_state.get("carrier_alias")
+    retained_escort_aliases = {
+        str(alias) for alias in beacon_state.get("escort_aliases", ())
+        if isinstance(alias, str)
+    }
+
     # Core defense gets its configured baseline first.
     for unit_type, count in (
         (UnitType.VANGUARD, config.core_guard_vanguards),
@@ -168,6 +176,20 @@ def build_squad_plan(
         members[SquadType.BASE_DEFENSE].extend(chosen)
         assigned.update(unit.id for unit in chosen)
 
+    # A secured carrier stays in the Core defense envelope.  It is never sent
+    # back out with the miners merely because its former escorts change jobs.
+    if beacon_stage == "SECURE" and isinstance(carrier_alias, str):
+        carrier = next(
+            (
+                unit for unit in units
+                if unit.id not in assigned and entity_alias(unit.id) == carrier_alias
+            ),
+            None,
+        )
+        if carrier is not None:
+            members[SquadType.BASE_DEFENSE].append(carrier)
+            assigned.add(carrier.id)
+
     # Only a live BEACON campaign automatically consumes expedition strength.
     if memory.last_mode is StrategicMode.BEACON:
         for unit_type, count in (
@@ -176,7 +198,11 @@ def build_squad_plan(
         ):
             chosen = sorted(
                 available(unit_type),
-                key=lambda unit: (distance(unit.position, context.beacon.position), unit.id.bytes),
+                key=lambda unit: (
+                    0 if entity_alias(unit.id) in retained_escort_aliases else 1,
+                    distance(unit.position, context.beacon.position),
+                    unit.id.bytes,
+                ),
             )[:max(0, count)]
             members[SquadType.EXPEDITION_BEACON].extend(chosen)
             assigned.update(unit.id for unit in chosen)
@@ -192,6 +218,20 @@ def build_squad_plan(
         default=None,
     )
     escort_target = mining_anchor.position if mining_anchor is not None else context.core.position
+
+    # After exfil, the surviving expedition escorts become the expanded mining
+    # security screen.  The carrier remains at home; only combat escorts are
+    # transferred into MINING_ESCORT.
+    if beacon_stage == "SECURE":
+        secured_escorts = [
+            unit for unit in units
+            if unit.id not in assigned
+            and unit.unit_type in (UnitType.VANGUARD, UnitType.RANGER)
+            and entity_alias(unit.id) in retained_escort_aliases
+            and entity_alias(unit.id) != carrier_alias
+        ]
+        members[SquadType.MINING_ESCORT].extend(secured_escorts)
+        assigned.update(unit.id for unit in secured_escorts)
     for unit_type, count in (
         (UnitType.VANGUARD, config.mining_escort_vanguards),
         (UnitType.RANGER, config.mining_escort_rangers),
