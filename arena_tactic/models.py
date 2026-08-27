@@ -105,6 +105,9 @@ class AgentConfig:
     # to the same semantics used by the live planner.
     expedition_vanguards: int = 2
     expedition_rangers: int = 2
+    # A carried Beacon remains in exfil until its carrier reaches this
+    # Manhattan radius around the stationary Core.
+    beacon_secure_radius: int = 2
     mining_escort_vanguards: int = 0
     mining_escort_rangers: int = 1
     scout_vanguards: int = 4
