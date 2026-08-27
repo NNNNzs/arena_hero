@@ -48,6 +48,7 @@ def _integrated_command_center_js(source: str) -> str:
         "  resource_recheck_worker_limit: '矿区护航·工兵编制',\n",
         "  expedition_vanguards: '远征编组·先锋编制',\n"
         "  expedition_rangers: '远征编组·游侠编制',\n"
+        "  beacon_secure_radius: '信标撤离·基地安全半径',\n"
         "  mining_escort_vanguards: '矿区护航·先锋编制',\n"
         "  mining_escort_rangers: '矿区护航·游侠编制',\n"
         "  scout_vanguards: '侦察巡逻·先锋编制',\n"
