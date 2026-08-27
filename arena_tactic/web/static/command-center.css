@@ -430,6 +430,8 @@ h3 { font: 650 13px/1.25 var(--display); letter-spacing: .04em; }
 .replay-track input { display: block; width: 100%; min-height: auto; margin: 0; padding: 0; border: 0; accent-color: var(--friendly); cursor: pointer; }
 .replay-markers { position: absolute; inset: 4px 8px auto; height: 10px; pointer-events: none; }
 .replay-marker { position: absolute; width: 6px; height: 6px; padding: 0; transform: translateX(-50%); border: 1px solid var(--bg); border-radius: 50%; background: var(--resource); cursor: pointer; pointer-events: auto; }
+.replay-hover { position: absolute; top: -27px; transform: translateX(-50%); padding: 3px 7px; border: 1px solid var(--cyan); border-radius: 5px; background: #0c151d; color: var(--text); font: 600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; pointer-events: none; box-shadow: 0 5px 16px #0008; z-index: 4; }
+.replay-hover::after { content: ''; position: absolute; left: 50%; bottom: -5px; width: 8px; height: 8px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid var(--cyan); border-bottom: 1px solid var(--cyan); background: #0c151d; }
 .replay-marker.damage { background: var(--threat); }
 .replay-marker.spawn { background: var(--friendly); }
 .replay-marker.move { background: #78a5b8; }

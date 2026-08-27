@@ -40,6 +40,7 @@ let lastPolicyRefresh = 0;
 let lastReplayTick = -1;
 let replayPollTimer = 0;
 let historyLoaded = false;
+let earlierReplayInFlight = false;
 let activeEventCategory = 'ALL';
 let eventLogState = { events: [], category_counts: {}, total: 0 };
 let eventInFlight = false;
@@ -677,8 +678,48 @@ function renderReplayMarkers() {
   renderCache.markers = markerKey;
   const maximum = Math.max(1, replayFrames.length - 1);
   setHtml('replayMarkers', replayFrames.flatMap((frame, index) => (
-    (frame.markers || []).map(marker => `<button class="replay-marker ${esc(String(marker.kind || '').toLowerCase())}" style="left:${index / maximum * 100}%" data-index="${index}" title="#${esc(frame.tick)} · ${esc(marker.label)}"></button>`)
+    (frame.markers || []).filter(marker => {
+      if (String(marker.kind || '').toLowerCase() !== 'move') return true;
+      const previous = replayFrames[index - 1]?.markers || [];
+      const next = replayFrames[index + 1]?.markers || [];
+      return !previous.some(item => String(item.kind || '').toLowerCase() === 'move')
+        || !next.some(item => String(item.kind || '').toLowerCase() === 'move');
+    }).map(marker => `<button class="replay-marker ${esc(String(marker.kind || '').toLowerCase())}" style="left:${index / maximum * 100}%" data-index="${index}" title="#${esc(frame.tick)} · ${esc(marker.label)}"></button>`)
   )).join(''));
+}
+
+function showReplayHover(index, left) {
+  const frame = replayFrames[index];
+  const hover = $('replayHover');
+  const track = $('replayTrack');
+  if (!frame || !hover || !track) return;
+  hover.textContent = `Tick #${frame.tick}`;
+  hover.style.left = `${Math.max(2, Math.min(track.clientWidth - 2, left))}px`;
+  hover.hidden = false;
+}
+
+function hideReplayHover() {
+  if ($('replayHover')) $('replayHover').hidden = true;
+}
+
+async function loadEarlierReplay() {
+  if (earlierReplayInFlight || !replayFrames.length) return;
+  earlierReplayInFlight = true;
+  const button = $('replayLoadEarlier');
+  if (button) { button.disabled = true; button.textContent = '加载中…'; }
+  try {
+    const earliest = Number(replayFrames[0].tick);
+    const r = await fetch(`/api/replay?limit=32&to_tick=${encodeURIComponent(earliest - 1)}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.frames?.length) mergeReplayFrames(data.frames, { keepWindow: true });
+    else if (button) button.textContent = '已到最早';
+  } catch (_) {
+    if (button) button.textContent = '重试更早';
+  } finally {
+    earlierReplayInFlight = false;
+    if (button && button.textContent === '加载中…') { button.disabled = false; button.textContent = '↞ 更早'; }
+  }
 }
 
 function renderReplay({ forceMap = false } = {}) {
@@ -718,6 +759,7 @@ function selectReplay(index, { live = false } = {}) {
   if (!replayFrames.length) return;
   replayIndex = Math.max(0, Math.min(replayFrames.length - 1, index));
   replayLive = live;
+  if (!live && replayIndex === 0) loadEarlierReplay();
   if (!live && !historyLoaded) {
     historyLoaded = true;
     fetchReplayHistory();
@@ -728,15 +770,42 @@ function selectReplay(index, { live = false } = {}) {
 function setLive(payload) {
   lastPayload = payload;
   render(payload);
+  if (replayLive) {
+    const tick = payload?.current?.tick ?? payload?.service?.last_tick ?? 'unknown';
+    const mapKey = `${tick}:live`;
+    if (lastMapKey !== mapKey) {
+      lastMapKey = mapKey;
+      try {
+        window.renderTacticalMap?.(payload);
+        if (selectedAlias) window.selectTacticalUnit?.(selectedAlias);
+      } catch (error) { console.error('Tactical map render error:', error); }
+    }
+  }
 }
 
-function mergeReplayFrames(newFrames) {
+function mergeReplayFrames(newFrames, { keepWindow = false } = {}) {
   if (!newFrames.length) return;
   const priorTick = selectedFrame()?.tick;
   const tickMap = new Map(replayFrames.map(f => [f.tick, f]));
   for (const frame of newFrames) tickMap.set(frame.tick, frame);
-  replayFrames = [...tickMap.values()].sort((a, b) => Number(a.tick) - Number(b.tick)).slice(-200);
-  lastReplayTick = Math.max(...replayFrames.map(f => Number(f.tick)));
+  const merged = [...tickMap.values()].sort((a, b) => Number(a.tick) - Number(b.tick));
+  replayFrames = (keepWindow ? merged : merged.slice(-200));
+  // A replay snapshot can be written before its asynchronous decision trace.
+  // Do not advance past the first frame without command_center: the next
+  // incremental request must include it so the trace can fill it in later.
+  const orderedTicks = replayFrames
+    .map(frame => Number(frame.tick))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  let cursor = lastReplayTick;
+  if (orderedTicks.length && cursor < orderedTicks[0] - 1) cursor = orderedTicks[0] - 1;
+  for (const frame of replayFrames) {
+    const tick = Number(frame.tick);
+    if (!Number.isFinite(tick) || tick <= cursor) continue;
+    if (!frame.command_center) break;
+    cursor = tick;
+  }
+  lastReplayTick = cursor;
   const latest = Math.max(0, replayFrames.length - 1);
   if (replayLive || replayIndex >= replayFrames.length) replayIndex = latest;
   else if (priorTick != null) {
@@ -746,7 +815,9 @@ function mergeReplayFrames(newFrames) {
   $('replaySlider').max = String(latest);
   $('replaySlider').value = String(replayIndex);
   renderReplayMarkers();
-  renderReplay();
+  // A previously incomplete frame may now contain its delayed decision trace
+  // without changing its Tick, so the map key alone cannot detect this update.
+  renderReplay({ forceMap: replayLive });
 }
 
 function stopReplay() {
@@ -1016,6 +1087,15 @@ $('replayMarkers').onclick = event => {
   const marker = event.target.closest('.replay-marker');
   if (marker) selectReplay(Number(marker.dataset.index));
 };
+const replayTrack = $('replayTrack');
+replayTrack.onmousemove = event => {
+  if (!replayFrames.length) return;
+  const rect = replayTrack.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+  showReplayHover(Math.round(ratio * Math.max(0, replayFrames.length - 1)), event.clientX - rect.left);
+};
+replayTrack.onmouseleave = hideReplayHover;
+$('replayLoadEarlier').onclick = loadEarlierReplay;
 // 迁移分析触发按钮
 const triggerBtn = $('triggerAnalysis');
 if (triggerBtn) triggerBtn.onclick = triggerAnalysis;
