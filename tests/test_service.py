@@ -188,6 +188,37 @@ def test_dashboard_projects_only_redacted_command_center_trace_fields(tmp_path: 
     assert "raw-id" not in body.decode()
 
 
+def test_dashboard_projects_mode_and_squad_causality_without_raw_trace_fields(tmp_path: Path):
+    replay = tmp_path / "replay.jsonl"
+    trace = tmp_path / "decision-trace.jsonl"
+    replay.write_text(json.dumps({"tick": 11, "mode": "ATTACK", "state": {
+        "resources": 8, "resource_capacity": 10, "population": 1,
+        "core": {"id": "entity_000000000001", "kind": "CORE", "position": [0, 0], "hp": 5},
+        "units": [{"id": "entity_0123456789ab", "kind": "UNIT", "unit_type": "RANGER", "position": [2, 1], "hp": 2}],
+    }, "intents": [], "events": []}) + "\n", encoding="utf-8")
+    trace.write_text(json.dumps({"record_type": "decision_trace", "tick": 11,
+        "entity_traces": [], "goal_summaries": [], "task_transitions": [], "command_results": [],
+        "causality": {"mode": {"mode": "ATTACK", "previous_mode": "BEACON", "changed": True,
+            "duration_ticks": 1, "rule_id": "MODE_ATTACK", "summary": "visible enemy core",
+            "exit_condition": "ENEMY_CORE_LOST", "source_cell": [8, 9],
+            "preconditions": {"combat_count": 3, "secret": {"not": "allowed"}}}},
+    }) + "\n", encoding="utf-8")
+    memory = tmp_path / "agent-state.json"
+    memory.write_text(json.dumps({"explored": [[0, 0]], "unit_tasks": {}}), encoding="utf-8")
+
+    result = _http_response("/api/dashboard", ServiceStatus(), DashboardDataStore(
+        replay, trace_path=trace, memory_path=memory, cache_seconds=0,
+    ))
+    assert result is not None
+    payload = json.loads(result[1])
+    mode = payload["command_center"]["causality"]["mode"]
+    assert mode["rule_id"] == "MODE_ATTACK" and mode["source_cell"] == [8, 9]
+    assert mode["preconditions"] == {"combat_count": 3}
+    squad = payload["squads"]["squads"][3]
+    assert squad["causality"]["member_aliases"] == ["entity_0123456789ab"]
+    assert "ATTACK（进攻模式）" in squad["causality"]["flow_reason"]
+
+
 def test_dashboard_merges_same_tick_state_into_unit_decision_card(tmp_path: Path):
     replay = tmp_path / "replay.jsonl"
     trace = tmp_path / "decision-trace.jsonl"
@@ -201,7 +232,7 @@ def test_dashboard_merges_same_tick_state_into_unit_decision_card(tmp_path: Path
                            "current_task": "HARVEST_RESOURCE", "goal": "ECONOMY", "action": "MOVE",
                            "status": "RUNNING", "task_status": "RUNNING", "assignment_status": "SCHEDULED",
                            "current_cell": [2, 1], "target_cell": [3, 1], "next_step": "HARVEST",
-                           "wake_condition": "arrive_at_resource", "eta_ticks": 2,
+                           "wake_condition": "arrive_at_resource", "wait_kind": "ROUTE_BLOCKED", "eta_ticks": 2,
                            "reason_codes": ["path_to_resource"], "node_path": [],
                            "candidate_intents": [{"action": "MOVE", "direction": "RIGHT", "score": 750}] }],
         "goal_summaries": [], "task_transitions": [], "command_results": []}) + "\n", encoding="utf-8")
@@ -212,6 +243,7 @@ def test_dashboard_merges_same_tick_state_into_unit_decision_card(tmp_path: Path
     assert entity["state_synced"] is True and entity["position"] == [2, 1]
     assert entity["hp"] == 2 and entity["cargo"] == 1
     assert entity["next_step"] == "HARVEST" and entity["wake_condition"] == "arrive_at_resource"
+    assert entity["wait_kind"] == "ROUTE_BLOCKED"
     assert entity["candidate_intents"][0]["action"] == "MOVE"
 
 
@@ -433,4 +465,3 @@ def test_replay_timeline_endpoint(tmp_path: Path):
     assert len(payload["timeline"]) == 10
     markers_at_5 = next(item["markers"] for item in payload["timeline"] if item["tick"] == 5)
     assert any(m["kind"] == "DAMAGE" for m in markers_at_5)
-

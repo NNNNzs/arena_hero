@@ -43,7 +43,7 @@ from .squads import (
 )
 from .analysis_scheduler import AnalysisScheduler, MigrationRecommendation, default_analysis_scheduler
 from .tactical_geometry import migration_site_score, rich_resource_center
-from .strategy import choose_mode, propose_intents
+from .strategy import choose_mode, explain_mode, propose_intents
 from .validation import validate_intents
 
 
@@ -116,6 +116,8 @@ class AgentRuntime:
         started = perf_counter()
         deadline = started + self.config.planning_budget_ms / 1_000
         context = DecisionContext.from_turn(turn)
+        mode_before = self.memory.last_mode
+        mode_since_before = self.memory.mode_since_tick
         prepared_commands = self._prepare_commands(context)
         next_memory = self.memory.advance(context, self.config)
         # 应用策略覆盖到运行时配置（每 tick 从 policy_state 读取数值覆盖）
@@ -206,6 +208,11 @@ class AgentRuntime:
                 trace = self.legacy_planner.trace(
                     context, intents, rejected, next_memory, self.trace_limits, elapsed_ms
                 )
+                if not trace.truncation.byte_limit_reached:
+                    trace = replace(trace, causality={"mode": explain_mode(
+                        context, next_memory, effective_config, mode,
+                        previous_mode=mode_before, previous_since_tick=mode_since_before,
+                    )})
                 if self.config.planner_canary:
                     trace = replace(trace, planner_version="bt-planner-canary-v1")
                 if worker_result is not None:

@@ -55,6 +55,9 @@ _WAIT_REASONS = {
     "core_migration_progresses_naturally": ("LIFECYCLE", "CORE_MOVEMENT_COMPLETES", None),
     "resources_reserved_or_no_legal_core_action": ("RESOURCE_WAIT", "CORE_RESOURCES_OR_LEGAL_ACTION", None),
     "validator_safe_fallback": ("SAFETY", "NEXT_AUTHORITATIVE_TURN", 1),
+    "squad_base_defense_worker_hold": ("COHESION_HOLD", "SQUAD_ADVANCES", 1),
+    "squad_base_defense_worker_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
+    "squad_expedition_worker_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
 }
 
 
@@ -192,7 +195,7 @@ class LegacyPlannerAdapter:
             trace = replace(
                 trace,
                 entity_traces=tuple(replace(item, node_path=(), candidate_intents=()) for item in trace.entity_traces),
-                arbitration=(), validation=(),
+                arbitration=(), validation=(), causality={},
                 truncation=replace(trace.truncation, truncated=True, dropped_nodes=trace.truncation.dropped_nodes + sum(len(item.node_path) for item in trace.entity_traces), byte_limit_reached=True),
             )
             encoded_size = _jsonl_size(trace)
@@ -201,6 +204,7 @@ class LegacyPlannerAdapter:
                 trace,
                 entity_traces=tuple(replace(item, summary_only=True) for item in trace.entity_traces),
                 goal_summaries=(), task_transitions=(), command_results=(), timings={},
+                causality={},
                 truncation=replace(trace.truncation, truncated=True, byte_limit_reached=True),
             )
             encoded_size = _jsonl_size(trace)
@@ -208,7 +212,7 @@ class LegacyPlannerAdapter:
             trace = replace(
                 trace,
                 entity_traces=(), goal_summaries=(), task_transitions=(), arbitration=(),
-                validation=(), command_results=(), timings={},
+                validation=(), command_results=(), timings={}, causality={},
                 truncation=replace(
                     trace.truncation, truncated=True, dropped_entities=len(entities),
                     byte_limit_reached=True,

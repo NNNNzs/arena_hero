@@ -178,3 +178,56 @@ def choose_mode(
         return StrategicMode.ECONOMY
     return StrategicMode.EXPLORE
 
+
+def explain_mode(
+    context: DecisionContext,
+    memory: AgentMemory,
+    config: AgentConfig,
+    mode: StrategicMode,
+    *,
+    previous_mode: StrategicMode | None = None,
+    previous_since_tick: int | None = None,
+) -> dict[str, object]:
+    """Return a compact, non-authoritative explanation of the selected mode.
+
+    This deliberately mirrors only already-evaluated public state predicates;
+    it never invents fogged enemies or target coordinates.
+    """
+    core = context.core
+    combat_count = len(context.vanguards) + len(context.rangers)
+    enemy_core = next((enemy for enemy in context.enemies if isinstance(enemy, CoreView)), None)
+    pressure = _pressure_distance(context)
+    previous = previous_mode or memory.last_mode
+    since = previous_since_tick if previous_since_tick is not None else memory.mode_since_tick
+    duration = max(1, context.tick - since + 1) if previous is mode else 1
+    details: dict[str, object] = {
+        "mode": mode.value,
+        "previous_mode": previous.value,
+        "changed": previous is not mode,
+        "duration_ticks": duration,
+        "rule_id": f"MODE_{mode.value}",
+        "preconditions": {},
+        "exit_condition": "NEXT_AUTHORITATIVE_TURN",
+    }
+    if mode is StrategicMode.RESPAWN:
+        details.update(summary="核心未在当前权威状态中", exit_condition="CORE_VISIBLE")
+    elif mode is StrategicMode.RECOVER:
+        details.update(summary="核心迁移或生命值恢复优先", exit_condition="CORE_STABLE_AND_RECOVERED")
+    elif mode is StrategicMode.DEFEND:
+        details.update(summary="核心受到可见或隐藏攻击压力", exit_condition="THREAT_OUTSIDE_EXIT_DISTANCE")
+        details["preconditions"] = {"pressure_distance": pressure, "core_emergency": _core_emergency_defense(context), "hidden_pressure": _hidden_attack_pressure(context, memory)}
+    elif mode is StrategicMode.ATTACK:
+        details.update(summary="发现敌方核心且战力满足攻坚门限", exit_condition="ENEMY_CORE_LOST_OR_COMBAT_FORCE_LOW")
+        details["preconditions"] = {"enemy_core_visible": enemy_core is not None, "combat_count": combat_count, "minimum_combat_count": 3, "core_healthy": bool(core and core.hp == CORE_MAX_HP and core.shield >= 3)}
+        if enemy_core is not None:
+            details["source_cell"] = list(enemy_core.position)
+    elif mode is StrategicMode.BEACON:
+        details.update(summary="信标可争夺或需护送回核心", exit_condition="BEACON_UNAVAILABLE_OR_CORE_UNSAFE")
+        details["preconditions"] = {"beacon_status": context.beacon.status.value if context.beacon.status else "UNKNOWN", "population": context.population, "minimum_population": 6}
+        details["source_cell"] = list(context.beacon.position)
+    elif mode is StrategicMode.ECONOMY:
+        details.update(summary="可见资源、携带货物或早期编制尚未完成", exit_condition="ROSTER_READY_AND_NO_RESOURCE_WORK")
+        details["preconditions"] = {"visible_resources": len(context.resource_cells), "workers_with_cargo": sum((worker.cargo or 0) > 0 for worker in context.workers)}
+    else:
+        details.update(summary="无即时威胁且无可见经济目标，维持前沿侦察", exit_condition="RESOURCE_OR_THREAT_VISIBLE")
+    return details

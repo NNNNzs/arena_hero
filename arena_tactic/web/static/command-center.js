@@ -170,6 +170,7 @@ function renderSquadList() {
     const targetStr = sq.target ? ` · 目标 ${esc(sq.target.join(','))}` : '';
     const isCollapsed = collapsedSquadIds.has(sq.id);
     const indicator = isCollapsed ? '▶' : '▼';
+    const flowReason = sq.causality?.flow_reason || '当前策略模式重新分配编组。';
 
     const memberList = (sq.members || []).map(m => {
       const selected = m.alias === selectedAlias;
@@ -216,6 +217,7 @@ function renderSquadList() {
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
             类型: ${esc(squadTypeLabels[sq.type] || sq.type)}${targetStr}
           </div>
+          <button class="squad-flow focus-squad" data-squad-id="${esc(sq.id)}" title="在地图上聚焦编组">${esc(flowReason)}</button>
           <div class="squad-members-box">
             ${memberList || '<div class="muted" style="font-size:11px;">暂无分配成员</div>'}
           </div>
@@ -225,6 +227,24 @@ function renderSquadList() {
   }).join('');
 
   el.innerHTML = cards;
+}
+
+function modeCausalityText(causality) {
+  const mode = causality?.mode;
+  if (!mode) return '尚无本 Tick 的策略判定记录。';
+  const source = Array.isArray(mode.source_cell) ? ` 触发点 ${mode.source_cell.join(',')}。` : '';
+  const transition = mode.changed ? `从 ${mode.previous_mode || '未知'} 切换。` : `已持续 ${mode.duration_ticks ?? '—'} Tick。`;
+  return `${mode.summary || mode.rule_id || '策略判定'} ${transition}${source} 退出条件：${mode.exit_condition || '下一份权威状态'}。`;
+}
+
+function focusSquad(squadId) {
+  const squad = squadsState.find(item => item.id === squadId);
+  if (!squad) return;
+  const details = squad.causality || {};
+  const target = details.coordination_target || details.centroid || squad.target;
+  if (Array.isArray(target)) window.focusTacticalCell?.(target);
+  const first = (details.member_aliases || squad.members || []).map(item => typeof item === 'string' ? item : item.alias).find(Boolean);
+  if (first) chooseUnit(first, { focusMap: false });
 }
 
 function setRosterTab(tab) {
@@ -256,6 +276,7 @@ function card(entity) {
   const nodes = rows(entity.node_path, node => (
     `<li><b>${esc(node.node_id)}</b> · ${esc(status(node.status))} · ${esc(reason(node.reason))}</li>`
   ), '无行为树节点');
+  const diagnostic = entity.action === 'WAIT' ? `<div class="unit-meta">停滞诊断：${esc(entity.wait_kind || 'UNKNOWN_WAIT')} · ${esc(reason(entity.blocker || entity.reason) || '等待下一份权威状态')}</div>` : '';
   return `<article class="unit-card ${entity.status === 'RUNNING' ? 'is-running' : ''} ${entity.blocker ? 'is-blocked' : ''}">
     <header class="unit-head"><div><b>${esc(labels[entity.kind] || entity.kind || '单位')}</b><span class="alias">${esc(entity.alias)}</span></div><span class="state-pill">${esc(status(entity.status || 'UNKNOWN'))}</span></header>
     <div class="unit-state"><span>${stateLine(entity)}</span><span class="tick">#${esc(entity.trace_tick ?? '—')}</span></div>
@@ -265,6 +286,7 @@ function card(entity) {
       <div class="next-step"><small>下一步</small><strong>${esc(action(entity.next_step) || task(entity.next_step) || '等待新决策')}</strong><span>${esc(wake(entity.wake_condition) || reason(entity.blocker) || '无触发条件')}${eta}</span></div>
     </div>
     <div class="unit-meta">${assignment.lock ? `目标锁 ${esc(assignment.lock)} · ` : ''}${assignment.lease_until_tick != null ? `租约至 #${esc(assignment.lease_until_tick)} · ` : ''}${entity.waited_ticks ? `已等待 ${esc(entity.waited_ticks)} Tick` : ''}</div>
+    ${diagnostic}
     <details><summary>查看决策链</summary><div class="trace-columns"><div><b>备选动作</b><ul>${candidates}</ul></div><div><b>行为树路径</b><ul>${nodes}</ul></div></div></details>
     <button class="neutral select-entity" data-alias="${esc(entity.alias)}">用于任务</button>
   </article>`;
@@ -400,6 +422,12 @@ function render(view) {
     setText('tick', current.tick ?? service.last_tick ?? '—');
     setText('resources', current.resources == null ? '—' : `${current.resources}/${current.resource_capacity ?? '—'}`);
     setText('mode', current.mode_label || '等待数据');
+    const modeButton = $('modeCausality');
+    if (modeButton) {
+      const text = modeCausalityText(commandCenter.causality);
+      modeButton.title = text;
+      modeButton.textContent = commandCenter.causality?.mode ? '查看判定链' : '等待判定链';
+    }
     setText('unitCount', commandCenter.entities?.length || 0);
   }
 
@@ -982,10 +1010,18 @@ $('btnCollapseAllSquads')?.addEventListener('click', () => {
   squadsState.forEach(sq => collapsedSquadIds.add(sq.id));
   renderSquadList();
 });
+$('modeCausality')?.addEventListener('click', () => {
+  window.alert(modeCausalityText(currentRenderedView?.command_center?.causality));
+});
 $('squadList').onclick = event => {
   const memberInfo = event.target.closest('.select-squad-unit');
   if (memberInfo && memberInfo.dataset.alias) {
     chooseUnit(memberInfo.dataset.alias);
+    return;
+  }
+  const flow = event.target.closest('.focus-squad');
+  if (flow) {
+    focusSquad(flow.dataset.squadId);
     return;
   }
   const header = event.target.closest('.squad-card-header');

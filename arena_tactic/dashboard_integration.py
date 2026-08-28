@@ -177,6 +177,26 @@ class DashboardDataStore(_BaseDashboardDataStore):
                 "task": task_kind,
             })
 
+        flow_by_mode = {
+            "ATTACK": "ATTACK（进攻模式）优先编入基地防御与机动巡逻，远征信标编制暂停。",
+            "DEFEND": "DEFEND（防守模式）优先回填核心防线，其余编组保留最低必要成员。",
+            "BEACON": "BEACON（信标模式）优先维持信标远征与护卫编制。",
+            "ECONOMY": "ECONOMY（经济模式）优先保障采矿与资源护航。",
+            "EXPLORE": "EXPLORE（探索模式）将可用战斗单位调往前沿侦察。",
+            "RECOVER": "RECOVER（恢复模式）暂停远离核心的高风险编组行动。",
+            "RESPAWN": "RESPAWN（重生模式）等待下一份权威状态后重新编组。",
+        }
+        for squad in squads.values():
+            members = squad["members"]
+            positions = [member["position"] for member in members if isinstance(member.get("position"), list) and len(member["position"]) == 2]
+            squad["causality"] = {
+                "flow_reason": flow_by_mode.get(mode, "当前策略模式重新分配编组。"),
+                "mode": mode,
+                "member_aliases": [member["alias"] for member in members],
+                "centroid": [round(sum(cell[0] for cell in positions) / len(positions)), round(sum(cell[1] for cell in positions) / len(positions))] if positions else None,
+                "coordination_target": squad["target"],
+            }
+
         return {"squads": list(squads.values()), "assignments": assignments}
 
     def _integrated_memory_payload(self) -> dict[str, Any]:

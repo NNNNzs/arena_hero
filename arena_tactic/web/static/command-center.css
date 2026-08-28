@@ -93,6 +93,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mode-causality,.squad-flow {
+  border: 0;
+  background: transparent;
+  color: var(--cyan);
+  cursor: pointer;
+  font: 10px/1.35 var(--utility);
+  padding: 3px 0;
+  text-align: left;
+}
+.squad-flow { display: block; max-width: 100%; }
 .status {
   display: flex;
   align-items: center;

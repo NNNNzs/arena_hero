@@ -129,6 +129,7 @@ class DecisionTrace:
     validation: tuple[Mapping[str, Any], ...] = ()
     command_results: tuple[Mapping[str, Any], ...] = ()
     timings: Mapping[str, float] = field(default_factory=dict)
+    causality: Mapping[str, Any] = field(default_factory=dict)
     truncation: TraceTruncation = TraceTruncation()
 
     def __post_init__(self) -> None:
@@ -145,6 +146,7 @@ class DecisionTrace:
                 raise TypeError(f"DecisionTrace.{name} entries must be mappings")
             object.__setattr__(self, name, frozen)
         object.__setattr__(self, "timings", freeze_mapping(self.timings, field_name="DecisionTrace.timings"))
+        object.__setattr__(self, "causality", freeze_mapping(self.causality, field_name="DecisionTrace.causality"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +198,7 @@ def trace_record(trace: DecisionTrace) -> dict[str, Any]:
         "validation": [thaw_json(value) for value in trace.validation],
         "command_results": [thaw_json(value) for value in trace.command_results],
         "timings": thaw_json(trace.timings),
+        "causality": thaw_json(trace.causality),
         "truncation": {
             "truncated": trace.truncation.truncated,
             "dropped_entities": trace.truncation.dropped_entities,

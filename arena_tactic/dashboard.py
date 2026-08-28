@@ -245,6 +245,7 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
             "current_cell": list(item.get("current_cell")) if isinstance(item.get("current_cell"), (list, tuple)) and len(item["current_cell"]) == 2 and all(type(axis) is int for axis in item["current_cell"]) else None,
             "target_cell": list(item.get("target_cell")) if isinstance(item.get("target_cell"), (list, tuple)) and len(item["target_cell"]) == 2 and all(type(axis) is int for axis in item["target_cell"]) else None,
             "next_step": _safe_text(item.get("next_step"), maximum=80),
+            "wait_kind": _safe_text(item.get("wait_kind"), maximum=32),
             "wake_condition": _safe_text(item.get("wake_condition"), maximum=100),
             "eta_ticks": _integer(item.get("eta_ticks")),
             "reason": _safe_text((item.get("reason_codes") or [None])[0], maximum=80),
@@ -281,6 +282,19 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
         goal = _safe_text(value.get("goal"), maximum=48)
         status = _safe_text(value.get("status"), maximum=24)
         return {"goal": goal, "status": status, "stage": _safe_text(value.get("stage"), maximum=32)} if goal else None
+    raw_causality = record.get("causality") if isinstance(record.get("causality"), dict) else {}
+    raw_mode_causality = raw_causality.get("mode") if isinstance(raw_causality.get("mode"), dict) else {}
+    mode_causality = {
+        "mode": _safe_text(raw_mode_causality.get("mode"), maximum=24),
+        "previous_mode": _safe_text(raw_mode_causality.get("previous_mode"), maximum=24),
+        "changed": bool(raw_mode_causality.get("changed")),
+        "duration_ticks": _integer(raw_mode_causality.get("duration_ticks")),
+        "rule_id": _safe_text(raw_mode_causality.get("rule_id"), maximum=48),
+        "summary": _safe_text(raw_mode_causality.get("summary"), maximum=120),
+        "exit_condition": _safe_text(raw_mode_causality.get("exit_condition"), maximum=80),
+        "source_cell": list(raw_mode_causality.get("source_cell")) if isinstance(raw_mode_causality.get("source_cell"), (list, tuple)) and len(raw_mode_causality["source_cell"]) == 2 and all(type(axis) is int for axis in raw_mode_causality["source_cell"]) else None,
+        "preconditions": {key: value for key, value in raw_mode_causality.get("preconditions", {}).items() if isinstance(key, str) and isinstance(value, (str, int, bool, type(None)))} if isinstance(raw_mode_causality.get("preconditions"), dict) else {},
+    }
     return {
         "tick": tick,
         "planner_version": _safe_text(record.get("planner_version"), maximum=80),
@@ -308,6 +322,7 @@ def _project_trace_record(record: dict[str, Any]) -> dict[str, Any] | None:
              "reason": _safe_text(value.get("reason"), maximum=64)}
             for value in record.get("task_transitions", ())[:100] if isinstance(value, dict)
         ],
+        "causality": {"mode": mode_causality} if mode_causality["mode"] else {},
     }
 
 
@@ -521,6 +536,26 @@ class DashboardDataStore:
                 "task": task_kind,
             })
 
+        flow_by_mode = {
+            "ATTACK": "ATTACK（进攻模式）优先编入基地防御与机动巡逻，远征信标编制暂停。",
+            "DEFEND": "DEFEND（防守模式）优先回填核心防线，其余编组保留最低必要成员。",
+            "BEACON": "BEACON（信标模式）优先维持信标远征与护卫编制。",
+            "ECONOMY": "ECONOMY（经济模式）优先保障采矿与资源护航。",
+            "EXPLORE": "EXPLORE（探索模式）将可用战斗单位调往前沿侦察。",
+            "RECOVER": "RECOVER（恢复模式）暂停远离核心的高风险编组行动。",
+            "RESPAWN": "RESPAWN（重生模式）等待下一份权威状态后重新编组。",
+        }
+        for squad in squads.values():
+            members = squad["members"]
+            positions = [member["position"] for member in members if isinstance(member.get("position"), list) and len(member["position"]) == 2]
+            squad["causality"] = {
+                "flow_reason": flow_by_mode.get(mode, "当前策略模式重新分配编组。"),
+                "mode": mode,
+                "member_aliases": [member["alias"] for member in members],
+                "centroid": [round(sum(cell[0] for cell in positions) / len(positions)), round(sum(cell[1] for cell in positions) / len(positions))] if positions else None,
+                "coordination_target": squad["target"],
+            }
+
         return {
             "squads": list(squads.values()),
             "assignments": assignments,
@@ -681,6 +716,16 @@ class DashboardDataStore:
 
             # 注入战术编组数据
             squads_data = self._compute_squads_summary(memory_data, latest, policy_state)
+            if command_center is not None:
+                causality = dict(command_center.get("causality") or {})
+                causality["squads"] = [
+                    {"id": item["id"], "flow_reason": item.get("causality", {}).get("flow_reason"),
+                     "member_aliases": item.get("causality", {}).get("member_aliases", []),
+                     "centroid": item.get("causality", {}).get("centroid"),
+                     "coordination_target": item.get("causality", {}).get("coordination_target")}
+                    for item in squads_data["squads"]
+                ]
+                command_center["causality"] = causality
 
             return {
                 "schema_version": 1,
@@ -911,7 +956,7 @@ DASHBOARD_HTML = """<!doctype html>
   <div class="top-metrics" aria-label="实时作战状态">
     <div class="metric"><span>TICK</span><strong id="tick">—</strong></div>
     <div class="metric"><span>资源 / 容量</span><strong id="resources">—</strong></div>
-    <div class="metric"><span>策略模式</span><strong id="mode">—</strong></div>
+    <div class="metric"><span>策略模式</span><strong id="mode">—</strong><button id="modeCausality" class="mode-causality" type="button" title="等待策略因果链">查看判定链</button></div>
     <div class="metric"><span>单位在线</span><strong id="unitCount">—</strong></div>
   </div>
   <div id="status" class="status">正在获取状态</div>
