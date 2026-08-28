@@ -930,7 +930,14 @@ DASHBOARD_HTML = """<!doctype html>
       <div id="unitList" class="unit-list muted">尚无单位</div>
     </div>
     <div id="tabSquadsView" hidden>
-      <div id="squadList" class="squad-list muted" style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">尚无编组数据</div>
+      <div class="squad-toolbar" style="display:flex;justify-content:space-between;align-items:center;margin:6px 0 8px;">
+        <span id="squadTotalStats" class="muted" style="font-size:11px;">共 0 个编组</span>
+        <div style="display:flex;gap:4px;">
+          <button id="btnExpandAllSquads" class="filter-btn" style="min-height:22px;padding:1px 6px;font-size:10px;">全部展开</button>
+          <button id="btnCollapseAllSquads" class="filter-btn" style="min-height:22px;padding:1px 6px;font-size:10px;">全部折叠</button>
+        </div>
+      </div>
+      <div id="squadList" class="squad-list muted">尚无编组数据</div>
     </div>
   </aside>
 

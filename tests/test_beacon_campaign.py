@@ -221,6 +221,41 @@ def test_campaign_contact_holds_non_engaged_members_without_replacing_fire():
     assert intents[vanguard.id].reason == "expedition_contact_hold"
 
 
+def test_campaign_detaches_retreating_ranger_without_holding_healthy_escort():
+    ranger = unit(10, UnitType.RANGER, (2, 0), hp=1)
+    vanguard = unit(11, UnitType.VANGUARD, (6, 0))
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(0, 0)),
+            units=(ranger, vanguard),
+            beacon_position=(10, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[ranger.id].reason == "critical_ranger_retreat"
+    assert intents[vanguard.id].action.value == "MOVE"
+    assert intents[vanguard.id].reason == "expedition_formation_move"
+
+
+def test_campaign_detaches_retreat_blocked_ranger_without_holding_healthy_escort():
+    ranger = unit(10, UnitType.RANGER, (2, 0), hp=1)
+    vanguard = unit(11, UnitType.VANGUARD, (6, 0))
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(0, 0)),
+            units=(ranger, vanguard),
+            obstacle_cells=((1, 0), (2, -1), (2, 1), (3, 0)),
+            beacon_position=(10, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[ranger.id].reason == "critical_retreat_blocked"
+    assert intents[vanguard.id].action.value == "MOVE"
+    assert intents[vanguard.id].reason == "expedition_formation_move"
+
+
 def test_default_planner_arbitrates_every_expedition_squad_member():
     core_guard = unit(1, UnitType.VANGUARD, (0, 1))
     front = unit(2, UnitType.VANGUARD, (8, 0))

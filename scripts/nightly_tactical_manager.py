@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BASE_DIR = Path("/root/project/arena_hero")
+BASE_DIR = Path(__file__).resolve().parent.parent
 NIGHTLY_LOG = BASE_DIR / "runtime" / "nightly_tactical_reports.jsonl"
 DEFAULT_EMAIL = "709934831@qq.com"
 
@@ -34,25 +34,47 @@ def append_nightly_snapshot(snapshot: dict) -> None:
 
 
 def aggregate_and_send_email(target_email: str = DEFAULT_EMAIL) -> tuple[bool, str]:
-    if not NIGHTLY_LOG.exists():
-        return False, "没有找到夜间战况记录文件。"
-
     records = []
-    with open(NIGHTLY_LOG, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except Exception:
-                    continue
+    if NIGHTLY_LOG.exists():
+        with open(NIGHTLY_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except Exception:
+                        continue
+
+    if not records:
+        # Fallback: dynamically inspect recent window if log is empty
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import tactical_inspector  # type: ignore
+            report = tactical_inspector.inspect(
+                runtime=BASE_DIR / "runtime",
+                window=100,
+                max_bytes=10 * 1024 * 1024,
+                health_url="http://127.0.0.1:8787/livez",
+                health_timeout=2.0,
+            )
+            records.append(report)
+        except Exception as e:
+            return False, f"夜间战况记录为空且实时采样失败: {e}"
 
     if not records:
         return False, "夜间战况记录为空。"
 
     total_ticks = len(records)
-    first_tick = records[0].get("tick_start", records[0].get("last_tick", "N/A"))
-    last_tick = records[-1].get("tick_end", records[-1].get("last_tick", "N/A"))
+    first_tick = (
+        records[0].get("window", {}).get("tick_start")
+        or records[0].get("tick_start")
+        or records[0].get("service", {}).get("payload", {}).get("last_tick", "N/A")
+    )
+    last_tick = (
+        records[-1].get("window", {}).get("tick_end")
+        or records[-1].get("tick_end")
+        or records[-1].get("service", {}).get("payload", {}).get("last_tick", "N/A")
+    )
     
     # Analyze anomalies across the night
     all_anomalies = []
@@ -123,7 +145,12 @@ def aggregate_and_send_email(target_email: str = DEFAULT_EMAIL) -> tuple[bool, s
         if res.returncode == 0:
             # Backup & Clear the nightly log
             backup_file = BASE_DIR / "runtime" / f"nightly_reports_{date_str}.jsonl"
-            NIGHTLY_LOG.rename(backup_file)
+            if NIGHTLY_LOG.exists():
+                NIGHTLY_LOG.rename(backup_file)
+            else:
+                with open(backup_file, "w", encoding="utf-8") as f:
+                    for r in records:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
             return True, f"邮件已成功发送至 {target_email}，夜间记录已备份至 {backup_file.name}"
         else:
             return False, f"agently-cli 发送失败: {res.stderr or res.stdout}"

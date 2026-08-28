@@ -193,6 +193,16 @@ h3 { font: 650 13px/1.25 var(--display); letter-spacing: .04em; }
   flex-direction: column;
   min-height: 0;
 }
+#tabUnitsView, #tabSquadsView {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+#tabUnitsView[hidden], #tabSquadsView[hidden] {
+  display: none;
+}
 .unit-search, input, select {
   width: 100%;
   min-height: 34px;
@@ -226,6 +236,53 @@ h3 { font: 650 13px/1.25 var(--display); letter-spacing: .04em; }
   min-height: 0;
   overflow: auto;
   scrollbar-color: var(--line) transparent;
+}
+.squad-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.squad-card {
+  background: linear-gradient(145deg, #151e29, #111821);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  transition: border-color 0.15s ease;
+}
+.squad-card:hover {
+  border-color: var(--friendly);
+}
+.squad-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+.squad-card-header:hover strong {
+  color: var(--friendly);
+}
+.squad-collapse-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-size: 10px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.squad-card.is-collapsed .squad-card-body {
+  display: none;
+}
+.squad-card-body {
+  margin-top: 8px;
 }
 .unit-row {
   display: grid;

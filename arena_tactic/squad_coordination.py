@@ -12,7 +12,7 @@ from arena_hero import UnitType, UnitView
 from .context import DecisionContext
 from .memory import AgentMemory
 from .models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from .navigation import DIRECTIONS, destination, distance, plan_step
+from .navigation import DIRECTIONS, destination, distance, plan_step, shot_range
 from .squads import Squad
 
 
@@ -31,14 +31,19 @@ def evaluate_squad_cohesion(
     squad: Squad,
     units: Iterable[UnitView],
     *,
+    detached_unit_ids: Iterable[UUID] = (),
     maximum_lead: int = 1,
     cohesion_radius: int = 4,
     pickup_radius: int = 2,
     escort_quorum: int = 2,
 ) -> SquadCohesion:
-    """Measure progress from the slowest member instead of each unit's route."""
+    """Measure progress from active members, excluding detached recovery units."""
+    detached = frozenset(detached_unit_ids)
     live = tuple(sorted(
-        (unit for unit in units if unit.id in squad.member_ids),
+        (
+            unit for unit in units
+            if unit.id in squad.member_ids and unit.id not in detached
+        ),
         key=lambda unit: unit.id.bytes,
     ))
     if not live:
@@ -73,6 +78,55 @@ def intent_is_squad_protected(intent: ActionIntent | None) -> bool:
     return any(token in intent.reason for token in (
         "retreat", "heal", "critical", "emergency", "intercept_visible_threat",
     ))
+
+
+def _intent_is_detached_for_recovery(intent: ActionIntent | None) -> bool:
+    """Identify a member temporarily unavailable for Beacon formation pacing."""
+    if intent is None:
+        return False
+    if intent.action is ActionKind.HEAL:
+        return True
+    return any(token in intent.reason for token in (
+        "retreat", "heal", "critical", "emergency",
+    ))
+
+
+def squad_has_combat_contact(
+    context: DecisionContext,
+    members: Iterable[UnitView],
+    intents: Iterable[ActionIntent],
+) -> bool:
+    """Return whether a squad is fighting or faces an immediate visible attack."""
+    member_list = tuple(members)
+    member_ids = {unit.id for unit in member_list}
+    combat_reason_tokens = (
+        "intercept_",
+        "visible_threat",
+        "enemy_approach",
+    )
+    if any(
+        intent.actor_id in member_ids
+        and (
+            intent.action in {ActionKind.SHOOT, ActionKind.SWEEP}
+            or any(token in intent.reason for token in combat_reason_tokens)
+        )
+        for intent in intents
+    ):
+        return True
+
+    for enemy in context.enemies:
+        if not isinstance(enemy, UnitView):
+            continue
+        for member in member_list:
+            if enemy.unit_type is UnitType.VANGUARD:
+                if distance(enemy.position, member.position) == 1:
+                    return True
+            elif (
+                enemy.unit_type is UnitType.RANGER
+                and shot_range(enemy.position, member.position, context.obstacle_cells) is not None
+            ):
+                return True
+    return False
 
 
 def _safe_slots(
@@ -186,8 +240,16 @@ def coordinate_expedition_intents(
     protected = {
         unit.id for unit in members if intent_is_squad_protected(by_actor.get(unit.id))
     }
-    contact = bool(protected)
-    cohesion = evaluate_squad_cohesion(squad, members)
+    detached = {
+        unit.id for unit in members
+        if str(unit.id) in memory.retreating_unit_ids
+        or _intent_is_detached_for_recovery(by_actor.get(unit.id))
+    }
+    contact = squad_has_combat_contact(context, members, proposals)
+    cohesion = evaluate_squad_cohesion(
+        squad, members, detached_unit_ids=detached,
+    )
+    active_members = tuple(unit for unit in members if unit.id not in detached)
     reservations = _movement_reservations(context, proposals, squad.member_ids)
     center = (
         next(unit.position for unit in members if unit.id == cohesion.pace_unit_id)
@@ -195,7 +257,7 @@ def coordinate_expedition_intents(
         else squad.target
     )
     slots = _safe_slots(
-        center, members, context, memory,
+        center, active_members, context, memory,
         regroup=cohesion.regroup,
         pace_unit_id=cohesion.pace_unit_id,
         anchor_unit_id=squad.anchor_unit_id,
@@ -205,7 +267,7 @@ def coordinate_expedition_intents(
 
     for unit in members:
         existing = by_actor.get(unit.id)
-        if unit.id in protected:
+        if unit.id in protected or unit.id in detached:
             continue
         if contact and contact_holds:
             replacements.append(ActionIntent(

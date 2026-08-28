@@ -11,6 +11,7 @@ let activeKind = 'ALL';
 let squadsState = [];
 let squadAssignmentsState = {};
 let activeRosterTab = 'units'; // 'units' | 'squads'
+let collapsedSquadIds = new Set();
 
 const squadTypeIcons = {
   BASE_DEFENSE: '🛡️',
@@ -154,12 +155,22 @@ function renderSquadList() {
   if (!el) return;
   if (!squadsState || !squadsState.length) {
     el.innerHTML = '<div class="muted">尚无编组数据</div>';
+    if ($('squadTotalStats')) $('squadTotalStats').textContent = '共 0 个编组';
     return;
   }
+
+  const totalMembers = squadsState.reduce((sum, sq) => sum + (sq.members ? sq.members.length : 0), 0);
+  if ($('squadTotalStats')) {
+    $('squadTotalStats').textContent = `共 ${squadsState.length} 个编组 · ${totalMembers} 人`;
+  }
+
   const cards = squadsState.map(sq => {
     const icon = squadTypeIcons[sq.type] || '🚩';
     const memberCount = sq.members ? sq.members.length : 0;
     const targetStr = sq.target ? ` · 目标 ${esc(sq.target.join(','))}` : '';
+    const isCollapsed = collapsedSquadIds.has(sq.id);
+    const indicator = isCollapsed ? '▶' : '▼';
+
     const memberList = (sq.members || []).map(m => {
       const selected = m.alias === selectedAlias;
       const posStr = m.position ? `[${esc(m.position.join(','))}]` : '';
@@ -192,19 +203,22 @@ function renderSquadList() {
     }).join('');
 
     return `
-      <div class="squad-card" style="background:linear-gradient(145deg,#151e29,#111821);border:1px solid var(--line);border-radius:8px;padding:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <div>
-            <strong style="font-size:13px;color:#e8eef5;">${icon} ${esc(sq.name)}</strong>
-            <span class="tag" style="margin-left:6px;font-size:11px;">${memberCount} 人</span>
+      <div class="squad-card ${isCollapsed ? 'is-collapsed' : ''}" data-squad-id="${esc(sq.id)}">
+        <div class="squad-card-header" data-squad-id="${esc(sq.id)}" title="${isCollapsed ? '点击展开' : '点击折叠'}">
+          <div style="display:flex;align-items:center;min-width:0;gap:4px;">
+            <span class="squad-collapse-indicator">${indicator}</span>
+            <strong style="font-size:13px;color:#e8eef5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${icon} ${esc(sq.name)}</strong>
+            <span class="tag" style="margin-left:4px;font-size:10px;padding:1px 5px;">${memberCount} 人</span>
           </div>
           <span class="state-pill" style="font-size:11px;">${esc(sq.status)}</span>
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
-          类型: ${esc(squadTypeLabels[sq.type] || sq.type)}${targetStr}
-        </div>
-        <div class="squad-members-box">
-          ${memberList || '<div class="muted" style="font-size:11px;">暂无分配成员</div>'}
+        <div class="squad-card-body">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+            类型: ${esc(squadTypeLabels[sq.type] || sq.type)}${targetStr}
+          </div>
+          <div class="squad-members-box">
+            ${memberList || '<div class="muted" style="font-size:11px;">暂无分配成员</div>'}
+          </div>
         </div>
       </div>
     `;
@@ -960,10 +974,29 @@ $('setPolicy').onclick = setPolicyExtended;
 $('unitSearch').oninput = renderUnitList;
 $('tabUnitsBtn').onclick = () => setRosterTab('units');
 $('tabSquadsBtn').onclick = () => setRosterTab('squads');
+$('btnExpandAllSquads')?.addEventListener('click', () => {
+  collapsedSquadIds.clear();
+  renderSquadList();
+});
+$('btnCollapseAllSquads')?.addEventListener('click', () => {
+  squadsState.forEach(sq => collapsedSquadIds.add(sq.id));
+  renderSquadList();
+});
 $('squadList').onclick = event => {
   const memberInfo = event.target.closest('.select-squad-unit');
   if (memberInfo && memberInfo.dataset.alias) {
     chooseUnit(memberInfo.dataset.alias);
+    return;
+  }
+  const header = event.target.closest('.squad-card-header');
+  if (header && header.dataset.squadId) {
+    const squadId = header.dataset.squadId;
+    if (collapsedSquadIds.has(squadId)) {
+      collapsedSquadIds.delete(squadId);
+    } else {
+      collapsedSquadIds.add(squadId);
+    }
+    renderSquadList();
   }
 };
 $('squadList').onchange = async event => {
