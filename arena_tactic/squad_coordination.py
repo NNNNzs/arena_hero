@@ -25,6 +25,7 @@ class SquadCohesion:
     regroup: bool
     pickup_ready: bool
     maximum_separation: int
+    extreme_split: bool
 
 
 def evaluate_squad_cohesion(
@@ -36,6 +37,7 @@ def evaluate_squad_cohesion(
     cohesion_radius: int = 4,
     pickup_radius: int = 2,
     escort_quorum: int = 2,
+    extreme_split_radius: int | None = None,
 ) -> SquadCohesion:
     """Measure progress from active members, excluding detached recovery units."""
     detached = frozenset(detached_unit_ids)
@@ -47,7 +49,7 @@ def evaluate_squad_cohesion(
         key=lambda unit: unit.id.bytes,
     ))
     if not live:
-        return SquadCohesion(None, frozenset(), False, False, 0)
+        return SquadCohesion(None, frozenset(), False, False, 0, False)
 
     remaining = {unit.id: distance(unit.position, squad.target) for unit in live}
     pace = max(live, key=lambda unit: (remaining[unit.id], unit.id.bytes))
@@ -61,12 +63,20 @@ def evaluate_squad_cohesion(
         default=0,
     )
     regroup = maximum_separation > max(1, cohesion_radius)
+    # Ordinary regrouping keeps the pace unit stationary while the lead closes
+    # in.  That is unsafe for inter-chunk splits: holding both the lead and the
+    # pace unit creates a bidirectional wait with no possible progress.
+    extreme_radius = (
+        max(12, max(1, cohesion_radius) * 3)
+        if extreme_split_radius is None else max(1, extreme_split_radius)
+    )
+    extreme_split = maximum_separation > extreme_radius
     pickup_ready = (
         len(live) >= max(1, escort_quorum)
         and maximum_separation <= max(1, cohesion_radius)
         and all(remaining[unit.id] <= max(0, pickup_radius) for unit in live)
     )
-    return SquadCohesion(pace.id, hold, regroup, pickup_ready, maximum_separation)
+    return SquadCohesion(pace.id, hold, regroup, pickup_ready, maximum_separation, extreme_split)
 
 
 def intent_is_squad_protected(intent: ActionIntent | None) -> bool:
@@ -136,6 +146,7 @@ def _safe_slots(
     memory: AgentMemory,
     *,
     regroup: bool,
+    extreme_split: bool,
     pace_unit_id: UUID | None,
     anchor_unit_id: UUID | None,
 ) -> dict[UUID, Position]:
@@ -163,7 +174,7 @@ def _safe_slots(
         ),
     ))
     for unit in ordered:
-        if regroup and unit.id == pace_unit_id:
+        if regroup and not extreme_split and unit.id == pace_unit_id:
             slots[unit.id] = unit.position
             used.add(unit.position)
             continue
@@ -252,13 +263,22 @@ def coordinate_expedition_intents(
     active_members = tuple(unit for unit in members if unit.id not in detached)
     reservations = _movement_reservations(context, proposals, squad.member_ids)
     center = (
-        next(unit.position for unit in members if unit.id == cohesion.pace_unit_id)
+        # For an extreme split, rally behind the leading active unit.  The
+        # leading unit remains held by cohesion while the trailing pace unit
+        # receives a real catch-up route rather than being pinned in place.
+        max(
+            active_members,
+            key=lambda unit: (-distance(unit.position, squad.target), unit.id.bytes),
+        ).position
+        if cohesion.extreme_split and active_members
+        else next(unit.position for unit in members if unit.id == cohesion.pace_unit_id)
         if cohesion.regroup and cohesion.pace_unit_id is not None
         else squad.target
     )
     slots = _safe_slots(
         center, active_members, context, memory,
         regroup=cohesion.regroup,
+        extreme_split=cohesion.extreme_split,
         pace_unit_id=cohesion.pace_unit_id,
         anchor_unit_id=squad.anchor_unit_id,
     )
@@ -289,7 +309,7 @@ def coordinate_expedition_intents(
                 target_cell=squad.target,
             ))
             continue
-        if cohesion.regroup and unit.id == cohesion.pace_unit_id:
+        if cohesion.regroup and not cohesion.extreme_split and unit.id == cohesion.pace_unit_id:
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_regroup_pace_hold",
             ))

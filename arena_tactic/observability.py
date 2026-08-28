@@ -53,6 +53,7 @@ _REASON_LABELS = {
     "unit_retreat_to_core_heal": "撤退治疗",
     "unit_retreat_to_core_heal_unsafe_fallback": "撤退治疗（风险路径）",
     "unit_retreat_to_core_heal_shelter": "撤退治疗（掩体庇护）",
+    "unit_retreat_to_core_heal_distant_fallback": "撤退治疗（远距机动）",
 }
 
 

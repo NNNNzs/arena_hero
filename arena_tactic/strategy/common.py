@@ -244,6 +244,60 @@ def _retreat_shelter_intent(
     )
 
 
+def _distant_retreat_fallback_intent(
+    unit: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+) -> ActionIntent | None:
+    """Make safe local progress when a fog-distance route home cannot be planned."""
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
+        | set(context.enemy_occupancy)
+    )
+    threats = enemy_threat_cells(context)
+    previous = memory.unit_tasks.get(str(unit.id), {}).get("prev_cell")
+    previous_cell = tuple(previous) if isinstance(previous, (list, tuple)) and len(previous) == 2 else None
+    candidates = [
+        (destination(unit.position, direction), direction)
+        for direction in DIRECTIONS
+        if destination(unit.position, direction) not in blocked
+    ]
+    # Prefer an unthreatened cell, then one that still trends home.  The strong
+    # anti-backtrack penalty prevents a blocked long-haul route becoming a
+    # two-cell oscillation while new terrain is revealed.
+    candidates.sort(key=lambda item: (
+        item[0] in threats,
+        1 if previous_cell is not None and item[0] == previous_cell else 0,
+        distance(item[0], target),
+        item[1].value,
+    ))
+    for cell, direction in candidates:
+        if reservations.reserve(cell, source=unit.position):
+            memory.unit_tasks[str(unit.id)] = {
+                "kind": "distant_retreat_fallback",
+                "target": list(target),
+                "prev_cell": list(unit.position),
+                "step": list(cell),
+                "attempt_tick": context.tick,
+            }
+            return ActionIntent(
+                actor_id=unit.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=755,
+                reason=reason + "_distant_fallback",
+                target_cell=cell,
+                direction=direction,
+                reserved_cell=cell,
+            )
+    return None
+
+
 def _unit_retreat_to_core(
     unit: UnitView,
     context: DecisionContext,
@@ -278,7 +332,7 @@ def _unit_retreat_to_core(
         return _retreat_shelter_intent(
             unit, target, context, memory, reservations
         )
-    return _move(
+    intent = _move(
         unit,
         target,
         "unit_retreat_to_core_heal_unsafe_fallback",
@@ -290,6 +344,14 @@ def _unit_retreat_to_core(
         config=config,
         avoid_threats=False,
     )
+    if intent is not None:
+        return intent
+    if distance(unit.position, target) >= config.long_distance_retreat_threshold:
+        return _distant_retreat_fallback_intent(
+            unit, target, context, memory, reservations,
+            "unit_retreat_to_core_heal",
+        )
+    return None
 
 
 def _at_normal_core(unit: UnitView, context: DecisionContext) -> bool:
@@ -345,7 +407,7 @@ def _return_to_core(
     if intent is not None:
         return intent
     # 安全路径不通，降级为忽略威胁的普通路径
-    return _move(
+    intent = _move(
         unit,
         target,
         reason + "_unsafe_fallback",
@@ -357,6 +419,13 @@ def _return_to_core(
         config=config,
         avoid_threats=False,
     )
+    if intent is not None:
+        return intent
+    if distance(unit.position, target) >= config.long_distance_retreat_threshold:
+        return _distant_retreat_fallback_intent(
+            unit, target, context, memory, reservations, reason,
+        )
+    return None
 
 
 def _return_to_core_sidestep(

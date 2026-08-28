@@ -202,6 +202,25 @@ def test_campaign_front_runner_waits_for_lagging_escort():
     assert front_intent.reason == "expedition_cohesion_hold"
 
 
+def test_campaign_extreme_split_advances_trailing_escort_without_mutual_hold():
+    front = unit(10, UnitType.VANGUARD, (200, 0))
+    trailing = unit(11, UnitType.RANGER, (0, 0))
+
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(0, 0)),
+            units=(front, trailing),
+            beacon_position=(400, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[front.id].reason == "expedition_cohesion_hold"
+    assert intents[trailing.id].action.value == "MOVE"
+    assert intents[trailing.id].reason == "expedition_regroup"
+    assert intents[trailing.id].reserved_cell == (1, 0)
+
+
 def test_campaign_contact_holds_non_engaged_members_without_replacing_fire():
     ranger = unit(10, UnitType.RANGER, (0, 0))
     vanguard = unit(11, UnitType.VANGUARD, (0, 1))
@@ -254,6 +273,27 @@ def test_campaign_detaches_retreat_blocked_ranger_without_holding_healthy_escort
     assert intents[ranger.id].reason == "critical_retreat_blocked"
     assert intents[vanguard.id].action.value == "MOVE"
     assert intents[vanguard.id].reason == "expedition_formation_move"
+
+
+def test_campaign_distant_critical_ranger_uses_local_fallback_when_core_route_is_blocked():
+    ranger = unit(10, UnitType.RANGER, (51, 0), hp=1)
+    vanguard = unit(11, UnitType.VANGUARD, (101, 0))
+    wall = tuple((50, y) for y in range(-12, 13))
+
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(0, 0)),
+            units=(ranger, vanguard),
+            obstacle_cells=wall,
+            beacon_position=(200, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[ranger.id].action.value == "MOVE"
+    assert intents[ranger.id].reason == "critical_ranger_retreat_distant_fallback"
+    assert intents[ranger.id].reserved_cell not in wall
+    assert intents[vanguard.id].action.value == "MOVE"
 
 
 def test_default_planner_arbitrates_every_expedition_squad_member():
