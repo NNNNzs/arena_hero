@@ -34,6 +34,7 @@ ALERT_RULES: dict[str, AlertRule] = {
         _rule("DEPOSIT_FAILURES", "warning", "资源入库连续失败", "窗口内资源入库失败达到告警条件。", "按失败原因复核距离、容量和核心状态。"),
         _rule("PRODUCTION_FREEZE", "warning", "兵营生产冻结", "和平或经济模式下资源和人口空间充足但持续未生产。", "检查生产预算、编制目标和生成条件。"),
         _rule("INEFFECTIVE_STATIONARY", "warning", "对象长期无效静止", "对象长期原地等待或移动失败。", "检查阻塞目标、失败目的地冷却和等待原因。"),
+        _rule("SQUAD_EXPEDITION_STALL", "warning", "信标打击群协同停滞", "信标远征打击群在远征模式下长期原地等待或无有效净位移。", "复核远征编队凝聚力、极端脱节集结与长途导航阻塞。"),
         _rule("EXPLORATION_STALL", "warning", "迷雾探索停滞", "工人移动未形成有效位移，或资源探索长期无进展。", "复核扇区目标、前沿更新和永久障碍记忆。"),
         _rule("DEFENSE_DISENGAGED", "critical", "防守单位脱离交战", "可见威胁出现时战斗单位远离敌人并等待。", "检查防守分配、接敌距离和等待条件。"),
         _rule("BEACON_CARRIER_ISOLATED", "critical", "信标携带者被孤立", "信标携带者距战斗友军过远或没有护卫。", "重新分配护卫并缩短编队间距。"),

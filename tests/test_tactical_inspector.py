@@ -265,6 +265,60 @@ def test_no_defense_disengaged_when_threat_is_distant(tmp_path, monkeypatch):
     assert finding is None
 
 
+def test_detects_squad_expedition_stall_after_sustained_cohesion_hold(tmp_path, monkeypatch):
+    rows = []
+    for tick in range(100, 120):
+        row = _row(tick, [10, 10], mode="BEACON")
+        row["state"]["units"] = [
+            {"id": "front", "unit_type": "VANGUARD", "position": [20, 20], "hp": 4},
+            {"id": "support", "unit_type": "RANGER", "position": [21, 20], "hp": 3},
+        ]
+        row["intents"] = [
+            {"actor": "front", "action": "WAIT", "reason": "expedition_cohesion_hold", "squad_id": "squad_expedition_beacon"},
+            {"actor": "support", "action": "WAIT", "reason": "expedition_regroup", "squad_id": "squad_expedition_beacon"},
+        ]
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    finding = next(f for f in report["findings"] if f["code"] == "SQUAD_EXPEDITION_STALL")
+    assert finding["entities"] == ["front", "support"]
+    assert all(item["ticks"] == 20 and item["net_displacement"] == 0 for item in finding["evidence"])
+
+
+def test_detects_assigned_expedition_stall_outside_beacon_mode(tmp_path, monkeypatch):
+    rows = []
+    for tick in range(100, 120):
+        row = _row(tick, [10, 10], mode="ATTACK")
+        row["state"]["units"] = [
+            {"id": "front", "unit_type": "VANGUARD", "position": [20, 20], "hp": 4},
+            {"id": "support", "unit_type": "RANGER", "position": [21, 20], "hp": 3},
+        ]
+        row["intents"] = [
+            {"actor": "front", "action": "WAIT", "reason": "formation_hold", "squad_id": "squad_expedition_beacon"},
+            {"actor": "support", "action": "WAIT", "reason": "route_blocked", "squad_id": "squad_expedition_beacon"},
+        ]
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    assert "SQUAD_EXPEDITION_STALL" in {finding["code"] for finding in report["findings"]}
+
+
+def test_core_defense_stationary_is_reported_separately_from_ineffective(tmp_path, monkeypatch):
+    rows = []
+    for tick in range(100, 108):
+        row = _row(tick, [8, 8], mode="BEACON")
+        row["intents"] = [
+            {"actor": "guard", "action": "WAIT", "reason": "holding_defense_ring"},
+            {"actor": "worker", "action": "MOVE", "reason": "explore_sector_frontier"},
+        ]
+        row["events"] = [{"type": "UNIT_MOVE_FAILED", "actor": "guard"}]
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    assert "INEFFECTIVE_STATIONARY" not in {f["code"] for f in report["findings"]}
+    assert report["movement"]["defensive_stationary_entities"][0]["entity"] == "guard"
+
+
 def _main_report(severity: str) -> dict:
     return {
         "window": {"tick_start": 1, "tick_end": 2},
@@ -318,7 +372,7 @@ def test_non_quiet_alert_behavior_is_unchanged(monkeypatch, capsys):
 def test_list_rules_prints_all_registered_rules(capsys):
     assert inspector.main(["--list-rules"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 14
+    assert len(lines) == 15
     assert {line.split("\t", 1)[0] for line in lines} == set(inspector.ALERT_RULES)
 
 
@@ -327,4 +381,4 @@ def test_json_findings_and_registry_use_rule_metadata(tmp_path, monkeypatch):
     finding = next(f for f in report["findings"] if f["code"] == "CORE_UNDER_ATTACK")
     assert finding["zh_label"] == "核心正在遭受攻击"
     assert finding["recommendation"]
-    assert len(report["alert_rules"]) == 14
+    assert len(report["alert_rules"]) == 15

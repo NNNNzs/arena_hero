@@ -29,6 +29,8 @@ PRODUCTION_FREEZE_TICKS = 5
 UNANSWERED_DAMAGE_TICKS = 2
 BEACON_ESCORT_DISTANCE = 4
 DECISION_SPIKE_MS = 2_000.0
+EXPEDITION_STALL_TICKS = 20
+CORE_GUARD_DISTANCE = 5
 
 
 def _tail_lines(path: Path, limit: int, max_bytes: int) -> list[bytes]:
@@ -197,6 +199,30 @@ def _oscillation(positions: list[tuple[int, tuple[int, int]]]) -> dict[str, Any]
     return None
 
 
+def _is_expedition_intent(intent: dict[str, Any], mode: str, kind: str) -> bool:
+    """Recognize expedition membership across compact replay schema variants."""
+    reason = str(intent.get("reason") or "").lower()
+    squad = str(intent.get("squad_id") or intent.get("squad") or intent.get("assignment") or "").lower()
+    # Current tactics identify coordinated members by expedition_* reasons.
+    # Some dashboard/replay schemas additionally preserve the squad identifier.
+    if reason.startswith("expedition_") or "squad_expedition" in squad or "expedition_beacon" in squad:
+        return True
+    # In BEACON, a combat unit that is not explicitly assigned to core defense
+    # is an expedition candidate even if a compact replay omitted squad_id.
+    return mode == "BEACON" and kind in {"VANGUARD", "RANGER"} and not _is_core_defense_intent(intent)
+
+
+def _is_core_defense_intent(intent: dict[str, Any]) -> bool:
+    reason = str(intent.get("reason") or "").lower()
+    squad = str(intent.get("squad_id") or intent.get("squad") or intent.get("assignment") or "").lower()
+    return (
+        reason in {"holding_defense_ring", "hold_vanguard_mineral_tank"}
+        or "core_guard" in reason
+        or "base_defense" in squad
+        or "squad_base_defense" in squad
+    )
+
+
 def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_timeout: float) -> dict[str, Any]:
     replay, replay_quality = read_rotated_jsonl(runtime, "replay.jsonl", window, max_bytes)
     traces, trace_quality = read_rotated_jsonl(runtime, "decision-trace.jsonl", window, max_bytes)
@@ -210,6 +236,8 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     kinds: dict[str, str] = {}
     actions: defaultdict[str, Counter[str]] = defaultdict(Counter)
     reasons: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    intent_history: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    core_positions: dict[int, tuple[int, int]] = {}
     failed_moves: Counter[str] = Counter()
     modes: list[tuple[int, str]] = []
     visible_resources: list[int] = []
@@ -236,6 +264,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             kinds[cid] = "CORE"
             if cpos:
                 positions[cid].append((tick, cpos))
+                core_positions[tick] = cpos
             if isinstance(core.get("hp"), int):
                 core_hp.append((tick, core["hp"]))
         units = [unit for unit in state.get("units") or [] if isinstance(unit, dict)]
@@ -270,6 +299,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             actor = str(intent.get("actor") or intent.get("actor_alias") or "unknown")
             actions[actor][str(intent.get("action") or "UNKNOWN")] += 1
             reasons[actor][str(intent.get("reason") or "unknown")] += 1
+            intent_history[actor].append({"tick": tick, "mode": mode, **intent})
         resources, population = state.get("resources"), state.get("population")
         core_action = str(intents_by_actor.get(str(core.get("id")) if core else "", {}).get("action") or "UNKNOWN").upper()
         peaceful = mode == "ECONOMY" or (not enemy_positions and mode not in {"ATTACK", "DEFEND", "BEACON"})
@@ -332,7 +362,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
                 for reason in entity.get("reason_codes") or []:
                     reasons[actor][str(reason)] += 1
 
-    oscillators, stuck = [], []
+    oscillators, stuck, defensive_stationary = [], [], []
     for actor, samples in positions.items():
         samples = sorted(dict(samples).items())
         osc = _oscillation(samples)
@@ -351,11 +381,78 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             )
             ineffective = failed_moves[actor] + blocked_waits
             if run >= 6 and ineffective >= 3:
-                stuck.append({"entity": actor, "kind": kinds.get(actor, "UNKNOWN"), "cell": list(last), "stationary_ticks": run, "blocked_waits": blocked_waits, "failed_moves": failed_moves[actor]})
+                recent_intents = [
+                    intent for intent in intent_history[actor]
+                    if intent.get("tick") in {sample_tick for sample_tick, _ in samples[-run:]}
+                ]
+                guard_samples = [
+                    intent for intent in recent_intents
+                    if _is_core_defense_intent(intent)
+                    and _distance(last, core_positions.get(intent["tick"])) is not None
+                    and _distance(last, core_positions.get(intent["tick"])) <= CORE_GUARD_DISTANCE
+                ]
+                entry = {"entity": actor, "kind": kinds.get(actor, "UNKNOWN"), "cell": list(last), "stationary_ticks": run, "blocked_waits": blocked_waits, "failed_moves": failed_moves[actor]}
+                # A guard holding a nearby Core ring is intentional tactical
+                # posture, not ineffective pathing. Keep it visible in the
+                # movement report without emitting the generic warning.
+                if guard_samples and len(guard_samples) >= max(1, len(recent_intents) // 2):
+                    defensive_stationary.append({**entry, "classification": "core_defense_guard"})
+                else:
+                    is_expedition = any(
+                        _is_expedition_intent(
+                            intent, str(intent.get("mode", "UNKNOWN")), kinds.get(actor, "UNKNOWN")
+                        )
+                        for intent in recent_intents
+                    )
+                    stuck.append({**entry, "classification": "expedition" if is_expedition else "economy_or_other"})
     if oscillators:
         findings.append(_finding("UNIT_OSCILLATION", "warning", f"{len(oscillators)} 个对象出现 2~4 格周期性往复", entities=(o["entity"] for o in oscillators), evidence=oscillators))
     if stuck:
         findings.append(_finding("INEFFECTIVE_STATIONARY", "warning", f"{len(stuck)} 个对象长期原地等待或移动失败", entities=(s["entity"] for s in stuck), evidence=stuck))
+
+    # ── SQUAD_EXPEDITION_STALL: expedition members must advance as a group.
+    # This deliberately uses a longer consecutive window than generic stuck
+    # detection: short cohesion/regroup holds are normal formation behavior.
+    expedition_stalls: list[dict[str, Any]] = []
+    for actor, samples in positions.items():
+        if kinds.get(actor) not in {"VANGUARD", "RANGER", "WORKER"}:
+            continue
+        sample_positions = dict(samples)
+        expedition_samples = []
+        for intent in intent_history[actor]:
+            tick = intent.get("tick")
+            if isinstance(tick, int) and tick in sample_positions and _is_expedition_intent(intent, str(intent.get("mode", "UNKNOWN")), kinds.get(actor, "UNKNOWN")):
+                expedition_samples.append({"tick": tick, "position": sample_positions[tick], "reason": str(intent.get("reason") or "unknown"), "action": str(intent.get("action") or "UNKNOWN")})
+        for run in _runs(expedition_samples, EXPEDITION_STALL_TICKS):
+            first, last_sample = run[0], run[-1]
+            net_displacement = _distance(first["position"], last_sample["position"])
+            hold_reasons = sum(
+                1 for sample in run
+                if any(token in sample["reason"].lower() for token in ("cohesion", "regroup", "hold", "blocked", "route"))
+            )
+            # A stalled formation has no net advance, either because every
+            # member waits/regroups or because a route blockage prevents it.
+            if net_displacement == 0 and (hold_reasons > 0 or all(sample["action"].upper() == "WAIT" for sample in run)):
+                expedition_stalls.append({
+                    "entity": actor,
+                    "kind": kinds.get(actor),
+                    "tick_range": [first["tick"], last_sample["tick"]],
+                    "ticks": len(run),
+                    "net_displacement": net_displacement,
+                    "reasons": dict(Counter(sample["reason"] for sample in run)),
+                })
+                break
+    # Require a squad-sized failure, preventing an isolated escort from
+    # generating a formation-level alert.
+    if len(expedition_stalls) >= 2:
+        findings.append(_finding(
+            "SQUAD_EXPEDITION_STALL",
+            "warning",
+            f"{len(expedition_stalls)} 名信标远征成员连续 {EXPEDITION_STALL_TICKS}+ ticks 无有效净位移",
+            ticks=(item["tick_range"][-1] for item in expedition_stalls),
+            entities=(item["entity"] for item in expedition_stalls),
+            evidence=expedition_stalls,
+        ))
 
     # ── EXPLORATION_STALL: workers moving a lot but not making progress,
     #    or resource exploration completely dead.  Complements UNIT_OSCILLATION
@@ -540,7 +637,7 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
         "window": {"requested_ticks": window, "replay_records": len(replay), "trace_records": len(traces), "tick_start": replay[0].get("tick") if replay else None, "tick_end": replay[-1].get("tick") if replay else None},
         "service": _health(health_url, health_timeout),
         "economy": {"core_resources": latest.get("resources"), "capacity": latest.get("resource_capacity"), "population": latest.get("population"), "workers": workers, "worker_status_counts": dict(status_counts), "carrying_workers": carrying_now, "deposit": {"succeeded": deposit_success, "failed": deposit_failed, "failure_reasons": dict(event_reasons["DEPOSIT_FAILED"])}, "resources": {"no_resource_ticks": no_resource_ticks, "latest_visible_cells": visible_resources[-1] if visible_resources else None, "empty_visibility_ratio": round(empty_ratio, 3)}},
-        "movement": {"oscillating_entities": oscillators, "stationary_ineffective_entities": stuck, "move_failures": event_counts["UNIT_MOVE_FAILED"], "move_failure_reasons": dict(event_reasons["UNIT_MOVE_FAILED"])},
+        "movement": {"oscillating_entities": oscillators, "stationary_ineffective_entities": stuck, "defensive_stationary_entities": defensive_stationary, "move_failures": event_counts["UNIT_MOVE_FAILED"], "move_failure_reasons": dict(event_reasons["UNIT_MOVE_FAILED"])},
         "battlefield": {"core": latest.get("core"), "visible_enemy_count": len(latest.get("visible_enemies") or []), "recent_lifecycle_events": lifecycle, "hidden_attack_ticks": hidden_damage_ticks, "defense_disengagement": disengaged[-8:]},
         "strategy": {"current_mode": modes[-1][1] if modes else agent_state.get("last_mode"), "mode_history": [{"tick": t, "mode": m} for t, m in modes[-20:]], "switch_count": len(switches), "switches": switches[-20:], "migration": {"current_state": migration_state, "destination": (latest.get("core") or {}).get("destination") if isinstance(latest.get("core"), dict) else None, "events": migration_events, "failures_or_cancels": migration_failures, "cooldown_until_tick": agent_state.get("migration_cooldown_until_tick")}},
         "findings": findings,
