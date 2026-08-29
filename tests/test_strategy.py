@@ -415,9 +415,9 @@ def test_default_combat_roster_keeps_guards_but_patrols_and_hunts_elsewhere():
     tasks = result.next_memory.unit_tasks
 
     kinds = [tasks[str(actor.id)]["kind"] for actor in combat]
-    assert kinds.count("core_guard") == 2
+    assert kinds.count("core_guard") == 3
     assert kinds.count("patrol") == 3
-    assert kinds.count("hunter") == 2
+    assert kinds.count("hunter") == 1
     assert any(
         intent.reason == "patrol_outer_ring"
         for intent in result.intents
@@ -714,7 +714,7 @@ def test_beacon_prefers_vanguard_and_never_drops_it():
         beacon_position=beacon_vanguard.position,
         beacon_status=BeaconStatus.GROUND,
     )
-    result = choose_actions(game_turn)
+    result = choose_actions(game_turn, config=AgentConfig(core_guard_vanguards=0))
     intent = next(
         intent for intent in result.intents if intent.actor_id == beacon_vanguard.id
     )

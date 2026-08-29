@@ -11,6 +11,7 @@ from arena_tactic import (
     MemoryStore,
     choose_actions,
 )
+from arena_tactic.memory import MEMORY_VERSION
 from arena_tactic.context import DecisionContext
 from arena_tactic.models import ActionKind
 from arena_tactic.observability import ReplayWriter, replay_metrics, summary_line
@@ -95,7 +96,7 @@ def test_memory_store_round_trip_is_versioned_and_controller_free(tmp_path):
     assert loaded.resource_recheck_failures == {(3, 4): 1}
     assert loaded.resource_recheck_cooldowns == {(5, 6): 12}
     payload = json.loads(store.path.read_text(encoding="utf-8"))
-    assert payload["version"] == 6
+    assert payload["version"] == MEMORY_VERSION
     assert loaded.migration_cooldown_until_tick == 12
     assert loaded.last_core_position == (7, 8)
     assert loaded.previous_migration_position == (7, 7)
@@ -121,7 +122,7 @@ def test_memory_store_migrates_version_one_without_losing_exploration(tmp_path):
         encoding="utf-8",
     )
     loaded = store.load()
-    assert loaded.version == 6
+    assert loaded.version == MEMORY_VERSION
     assert loaded.last_tick == 7
     assert loaded.obstacles == {(1, 0)}
     assert loaded.explored == {(0, 0), (0, 1)}
@@ -148,7 +149,7 @@ def test_memory_store_loads_v2_and_preserves_operational_state(tmp_path):
 
     loaded = store.load()
 
-    assert loaded.version == 6
+    assert loaded.version == MEMORY_VERSION
     assert loaded.obstacles == {(4, 5)}
     assert loaded.explored == {(1, 1)}
     assert loaded.resource_observations == {(3, 2): 8}
@@ -168,7 +169,7 @@ def test_memory_unknown_schema_falls_back_safely():
         }
     )
 
-    assert loaded.version == 6
+    assert loaded.version == MEMORY_VERSION
     assert loaded.last_tick == 0
     assert loaded.obstacles == set()
     assert loaded.unit_tasks == {}
@@ -182,7 +183,7 @@ def test_memory_partial_corruption_preserves_parseable_permanent_obstacles():
 def test_v4_memory_defaults_new_migration_fields_safely():
     loaded = AgentMemory.from_dict({"version": 4, "last_tick": 99,
                                     "no_resource_ticks": 8})
-    assert loaded.version == 6
+    assert loaded.version == MEMORY_VERSION
     assert loaded.migration_cooldown_until_tick == 0
     assert loaded.last_core_position is None
     assert loaded.previous_migration_position is None

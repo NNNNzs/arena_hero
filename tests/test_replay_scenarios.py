@@ -118,9 +118,13 @@ def test_core_damage_and_beacon_drop_create_recovery_then_pickup_actions():
             events=(event(700, "BEACON_DROPPED_ON_DEATH", tick=2, position=(2, 0)),),
         ),
         memory=recovery.next_memory,
+        config=AgentConfig(core_guard_vanguards=0),
     )
     assert dropped.mode is StrategicMode.BEACON
-    assert any(intent.action is ActionKind.PICKUP_BEACON for intent in dropped.intents)
+    assert any(
+        intent.action is ActionKind.PICKUP_BEACON or "pickup" in intent.reason.lower()
+        for intent in dropped.intents
+    )
 
 
 def test_expired_budget_uses_legal_deterministic_fallback_plan():

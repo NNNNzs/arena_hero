@@ -35,6 +35,9 @@ class SquadCohesion:
     extreme_split: bool
 
 
+MAX_COHESION_HOLD_TICKS = 10
+
+
 def evaluate_squad_cohesion(
     squad: Squad,
     units: Iterable[UnitView],
@@ -347,6 +350,7 @@ def coordinate_expedition_intents(
         pace_unit_id=cohesion.pace_unit_id,
         anchor_unit_id=squad.anchor_unit_id,
     )
+    cohesion_holds: dict[str, int] = memory.objective_states.setdefault("squad_cohesion_holds", {})
     planning_deadline = deadline or (perf_counter() + config.planning_budget_ms / 1_000)
     replacements: list[ActionIntent] = []
 
@@ -375,10 +379,19 @@ def coordinate_expedition_intents(
             ))
             continue
         if cohesion.regroup and not cohesion.extreme_split and unit.id == cohesion.pace_unit_id:
-            replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_regroup_pace_hold",
-            ))
-            continue
+            pace_key = f"pace_{unit.id}"
+            pace_count = cohesion_holds.get(pace_key, 0) + 1
+            if pace_count <= MAX_COHESION_HOLD_TICKS:
+                cohesion_holds[pace_key] = pace_count
+                replacements.append(ActionIntent(
+                    unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_regroup_pace_hold",
+                ))
+                continue
+            else:
+                cohesion_holds.pop(pace_key, None)
+        else:
+            cohesion_holds.pop(f"pace_{unit.id}", None)
+
         # During an inter-chunk split retain the forward rally leader, but do
         # not serialize every trailing member behind the single pace unit.
         # Each trailing member gets its own slot and can leave congestion in
@@ -387,10 +400,19 @@ def coordinate_expedition_intents(
             unit.id in cohesion.hold_unit_ids
             and (not cohesion.extreme_split or unit.id == extreme_rally_leader_id)
         ):
-            replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_cohesion_hold",
-            ))
-            continue
+            hold_key = str(unit.id)
+            hold_count = cohesion_holds.get(hold_key, 0) + 1
+            if hold_count <= MAX_COHESION_HOLD_TICKS:
+                cohesion_holds[hold_key] = hold_count
+                replacements.append(ActionIntent(
+                    unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_cohesion_hold",
+                ))
+                continue
+            else:
+                # Timeout: break out of endless hold, advance forward towards objective slot
+                cohesion_holds.pop(hold_key, None)
+        else:
+            cohesion_holds.pop(str(unit.id), None)
 
         target = slots[unit.id]
         if unit.position == target:

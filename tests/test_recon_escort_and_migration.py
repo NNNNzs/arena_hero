@@ -29,7 +29,7 @@ def test_vanguard_recon_escort_screen():
     
     # 当有工兵在外探索且无敌人时，Vanguard 应该执行伴随护航
     game_turn = turn(owned_core=c, units=(w, v))
-    res = choose_actions(game_turn, config=AgentConfig(core_guard_vanguards=0))
+    res = choose_actions(game_turn, config=AgentConfig(core_guard_vanguards=0, mining_escort_vanguards=1))
     
     v_intent = next((item for item in res.intents if item.actor_id == v.id), None)
     assert v_intent is not None

@@ -445,9 +445,10 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     # Require a squad-sized failure, preventing an isolated escort from
     # generating a formation-level alert.
     if len(expedition_stalls) >= 2:
+        severity = "critical" if len(expedition_stalls) >= 3 or any(item.get("ticks", 0) >= 30 for item in expedition_stalls) else "warning"
         findings.append(_finding(
             "SQUAD_EXPEDITION_STALL",
-            "warning",
+            severity,
             f"{len(expedition_stalls)} 名信标远征成员连续 {EXPEDITION_STALL_TICKS}+ ticks 无有效净位移",
             ticks=(item["tick_range"][-1] for item in expedition_stalls),
             entities=(item["entity"] for item in expedition_stalls),

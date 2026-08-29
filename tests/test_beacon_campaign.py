@@ -556,5 +556,37 @@ def test_beacon_escort_roster_survives_memory_round_trip():
     }})
 
     restored = AgentMemory.from_dict(memory.to_dict())
-
+    assert restored.objective_states["beacon"]["carrier_alias"] == aliases[0]
     assert restored.objective_states["beacon"]["escort_aliases"] == aliases
+
+
+def test_campaign_cohesion_hold_timeout_breaks_deadlock_and_advances():
+    front = unit(10, UnitType.VANGUARD, (8, 0))
+    pace = unit(11, UnitType.RANGER, (0, 0))
+    runtime = campaign_runtime()
+
+    # 前 10 个 tick 应该持续 hold
+    for i in range(10):
+        game_turn = turn(
+            owned_core=core(position=(0, 0)),
+            units=(front, pace),
+            beacon_position=(20, 0),
+            tick=i + 1,
+        )
+        result = runtime.decide(game_turn)
+        runtime.commit(result)
+        front_intent = next(item for item in result.intents if item.actor_id == front.id)
+        assert front_intent.action.value == "WAIT"
+        assert front_intent.reason == "expedition_cohesion_hold"
+
+    # 第 11 个 tick 超时触发，front 强制打破死锁向前/向编队槽位移动
+    game_turn = turn(
+        owned_core=core(position=(0, 0)),
+        units=(front, pace),
+        beacon_position=(20, 0),
+        tick=11,
+    )
+    result = runtime.decide(game_turn)
+    front_intent = next(item for item in result.intents if item.actor_id == front.id)
+    assert front_intent.action.value == "MOVE"
+    assert front_intent.reason.startswith("expedition_")
