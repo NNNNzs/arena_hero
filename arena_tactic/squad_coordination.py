@@ -7,12 +7,19 @@ from dataclasses import dataclass
 from time import perf_counter
 from uuid import UUID
 
-from arena_hero import UnitType, UnitView
+from arena_hero import Direction, UnitType, UnitView
 
 from .context import DecisionContext
 from .memory import AgentMemory
 from .models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from .navigation import DIRECTIONS, destination, distance, plan_step, shot_range
+from .navigation import (
+    DIRECTIONS,
+    destination,
+    distance,
+    enemy_threat_cells,
+    plan_step,
+    shot_range,
+)
 from .squads import Squad
 
 
@@ -33,7 +40,7 @@ def evaluate_squad_cohesion(
     units: Iterable[UnitView],
     *,
     detached_unit_ids: Iterable[UUID] = (),
-    maximum_lead: int = 1,
+    maximum_lead: int | None = None,
     cohesion_radius: int = 4,
     pickup_radius: int = 2,
     escort_quorum: int = 2,
@@ -54,9 +61,16 @@ def evaluate_squad_cohesion(
     remaining = {unit.id: distance(unit.position, squad.target) for unit in live}
     pace = max(live, key=lambda unit: (remaining[unit.id], unit.id.bytes))
     pace_remaining = remaining[pace.id]
+    # A formation may span several cells while still marching safely.  Using a
+    # one-cell lead here made every member ahead of the absolute slowest unit
+    # wait, which turns ordinary four-unit movement into a serial convoy.
+    lead_tolerance = (
+        max(1, cohesion_radius)
+        if maximum_lead is None else max(0, maximum_lead)
+    )
     hold = frozenset(
         unit.id for unit in live
-        if remaining[unit.id] + max(0, maximum_lead) < pace_remaining
+        if remaining[unit.id] + lead_tolerance < pace_remaining
     )
     maximum_separation = max(
         (distance(left.position, right.position) for left in live for right in live),
@@ -161,7 +175,12 @@ def _safe_slots(
     outer = (
         (cx + 3, cy), (cx, cy + 3), (cx - 3, cy), (cx, cy - 3),
     )
-    blocked = memory.obstacles | set(context.obstacle_cells) | set(context.enemy_occupancy)
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
+        | set(context.enemy_occupancy)
+    )
     used: set[Position] = set()
     slots: dict[UUID, Position] = {}
     ordered = tuple(sorted(
@@ -209,6 +228,45 @@ def _movement_reservations(
         source = actor.position if actor is not None else None
         reservations.reserve(intent.reserved_cell, source=source)
     return reservations
+
+
+def _squad_evasion_step(
+    unit: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    *,
+    avoid_threats: bool,
+) -> Direction | None:
+    """Reserve one safe local sidestep when the formation route is contested.
+
+    ``plan_step`` deliberately refuses a contested first step for general
+    navigation.  A Beacon squad has several independently assigned slots, so
+    a deterministic adjacent lane is preferable to leaving a whole departure
+    group stationary behind one occupied cell.
+    """
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
+        | set(context.enemy_occupancy)
+    )
+    if avoid_threats:
+        blocked.update(enemy_threat_cells(context))
+    ranked = sorted(
+        DIRECTIONS,
+        key=lambda direction: (
+            distance(destination(unit.position, direction), target),
+            (DIRECTIONS.index(direction) - unit.id.int) % len(DIRECTIONS),
+            direction.value,
+        ),
+    )
+    for direction in ranked:
+        cell = destination(unit.position, direction)
+        if cell not in blocked and reservations.reserve(cell, source=unit.position):
+            return direction
+    return None
 
 
 def coordinate_expedition_intents(
@@ -262,10 +320,17 @@ def coordinate_expedition_intents(
     )
     active_members = tuple(unit for unit in members if unit.id not in detached)
     reservations = _movement_reservations(context, proposals, squad.member_ids)
+    extreme_rally_leader_id = (
+        max(
+            active_members,
+            key=lambda unit: (-distance(unit.position, squad.target), unit.id.bytes),
+        ).id
+        if cohesion.extreme_split and active_members else None
+    )
     center = (
         # For an extreme split, rally behind the leading active unit.  The
-        # leading unit remains held by cohesion while the trailing pace unit
-        # receives a real catch-up route rather than being pinned in place.
+        # leader remains held while every trailing member receives a real
+        # catch-up route rather than serializing behind the pace unit.
         max(
             active_members,
             key=lambda unit: (-distance(unit.position, squad.target), unit.id.bytes),
@@ -314,7 +379,14 @@ def coordinate_expedition_intents(
                 unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_regroup_pace_hold",
             ))
             continue
-        if unit.id in cohesion.hold_unit_ids:
+        # During an inter-chunk split retain the forward rally leader, but do
+        # not serialize every trailing member behind the single pace unit.
+        # Each trailing member gets its own slot and can leave congestion in
+        # the same Tick.
+        if (
+            unit.id in cohesion.hold_unit_ids
+            and (not cohesion.extreme_split or unit.id == extreme_rally_leader_id)
+        ):
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_cohesion_hold",
             ))
@@ -340,6 +412,17 @@ def coordinate_expedition_intents(
             config=config,
             avoid_threats=True,
         )
+        used_evasion = False
+        if direction is None:
+            direction = _squad_evasion_step(
+                unit,
+                target,
+                context,
+                memory,
+                reservations,
+                avoid_threats=True,
+            )
+            used_evasion = direction is not None
         if direction is None:
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 680, f"{reason_prefix}_formation_route_blocked",
@@ -348,7 +431,13 @@ def coordinate_expedition_intents(
             continue
         replacements.append(ActionIntent(
             unit.id, False, ActionKind.MOVE, 680,
-            f"{reason_prefix}_regroup" if cohesion.regroup else f"{reason_prefix}_formation_move",
+            (
+                f"{reason_prefix}_regroup_evasion"
+                if cohesion.regroup else f"{reason_prefix}_formation_evasion"
+            ) if used_evasion else (
+                f"{reason_prefix}_regroup"
+                if cohesion.regroup else f"{reason_prefix}_formation_move"
+            ),
             target_cell=target,
             direction=direction,
             reserved_cell=destination(unit.position, direction),

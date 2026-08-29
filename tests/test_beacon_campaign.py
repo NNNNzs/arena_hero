@@ -7,7 +7,10 @@ from arena_tactic.memory import AgentMemory
 from arena_tactic.models import AgentConfig, StrategicMode
 from arena_tactic.objectives.beacon import BeaconCampaign, BeaconInput, BeaconStage
 
-from arena_tactic.squad_coordination import evaluate_squad_cohesion
+from arena_tactic.squad_coordination import (
+    coordinate_expedition_intents,
+    evaluate_squad_cohesion,
+)
 from arena_tactic.squads import (
     Squad,
     SquadMember,
@@ -170,6 +173,20 @@ def test_cohesion_uses_slowest_member_to_limit_front_runner_progress():
     assert not cohesion.pickup_ready
 
 
+def test_cohesion_allows_members_within_formation_radius_to_march_together():
+    front = unit(10, UnitType.VANGUARD, (4, 0))
+    middle = unit(11, UnitType.RANGER, (2, 0))
+    pace = unit(12, UnitType.RANGER, (0, 0))
+
+    cohesion = evaluate_squad_cohesion(
+        expedition(front, middle, pace),
+        (front, middle, pace),
+    )
+
+    assert not cohesion.regroup
+    assert cohesion.hold_unit_ids == frozenset()
+
+
 def test_pickup_readiness_requires_quorum_and_close_formation():
     carrier = unit(10, UnitType.VANGUARD, (10, 0))
     close_escort = unit(11, UnitType.RANGER, (9, 0))
@@ -219,6 +236,56 @@ def test_campaign_extreme_split_advances_trailing_escort_without_mutual_hold():
     assert intents[trailing.id].action.value == "MOVE"
     assert intents[trailing.id].reason == "expedition_regroup"
     assert intents[trailing.id].reserved_cell == (1, 0)
+
+
+def test_campaign_extreme_split_releases_the_entire_trailing_group_to_march():
+    front = unit(10, UnitType.VANGUARD, (200, 0))
+    trailing_vanguard = unit(11, UnitType.VANGUARD, (0, 0))
+    trailing_ranger_one = unit(12, UnitType.RANGER, (0, 1))
+    trailing_ranger_two = unit(13, UnitType.RANGER, (1, 0))
+
+    result = campaign_runtime(
+        expedition_vanguards=2,
+        expedition_rangers=2,
+    ).decide(turn(
+        owned_core=core(position=(0, -1)),
+        units=(front, trailing_vanguard, trailing_ranger_one, trailing_ranger_two),
+        beacon_position=(400, 0),
+    ))
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[front.id].reason == "expedition_cohesion_hold"
+    for member in (trailing_vanguard, trailing_ranger_one, trailing_ranger_two):
+        assert intents[member.id].action.value == "MOVE"
+        assert intents[member.id].reason.startswith("expedition_regroup")
+
+
+def test_expedition_crowded_departure_uses_local_evasion_for_all_members():
+    vanguard = unit(10, UnitType.VANGUARD, (0, 0))
+    ranger = unit(11, UnitType.RANGER, (0, 0))
+    # A current-Turn full cell occupies the direct departure lane.  These are
+    # not squad members, so the formation must use a side lane this Tick.
+    traffic_one = unit(20, UnitType.WORKER, (1, 0))
+    traffic_two = unit(21, UnitType.WORKER, (1, 0))
+    context = DecisionContext.from_turn(turn(
+        owned_core=core(position=(-2, 0)),
+        units=(vanguard, ranger, traffic_one, traffic_two),
+        beacon_position=(10, 0),
+    ))
+
+    intents = coordinate_expedition_intents(
+        context,
+        AgentMemory(),
+        AgentConfig(),
+        expedition(vanguard, ranger),
+        (),
+    )
+    by_actor = {item.actor_id: item for item in intents}
+
+    for member in (vanguard, ranger):
+        assert by_actor[member.id].action.value == "MOVE"
+        assert by_actor[member.id].reason == "expedition_formation_evasion"
+        assert by_actor[member.id].reserved_cell != (1, 0)
 
 
 def test_campaign_contact_holds_non_engaged_members_without_replacing_fire():
