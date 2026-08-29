@@ -253,9 +253,18 @@ def build_squad_plan(
         members[SquadType.SCOUT_RECON].extend(chosen)
         assigned.update(unit.id for unit in chosen)
 
+    # Remaining combat units: dynamically reinforce active strategic frontline
+    # (BEACON expedition in Beacon mode, SCOUT_RECON in peacetime), rather than
+    # endlessly stacking up and crowding the home core in BASE_DEFENSE.
     reserve = [unit for unit in units if unit.id not in assigned]
-    members[SquadType.BASE_DEFENSE].extend(reserve)
-    assigned.update(unit.id for unit in reserve)
+    if reserve:
+        if memory.last_mode is StrategicMode.BEACON:
+            members[SquadType.EXPEDITION_BEACON].extend(reserve)
+        elif memory.last_mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE):
+            members[SquadType.SCOUT_RECON].extend(reserve)
+        else:
+            members[SquadType.BASE_DEFENSE].extend(reserve)
+        assigned.update(unit.id for unit in reserve)
 
     targets = {
         SquadType.BASE_DEFENSE: context.core.position,
