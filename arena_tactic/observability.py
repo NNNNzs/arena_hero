@@ -241,6 +241,7 @@ class ReplayWriter:
         path: Path,
         max_file_bytes: int = 64 * 1024 * 1024,
         history_files: int = 3,
+        writer: Any | None = None,
     ) -> None:
         if max_file_bytes <= 0:
             raise ValueError("max_file_bytes must be positive")
@@ -249,6 +250,7 @@ class ReplayWriter:
         self.path = path
         self.max_file_bytes = max_file_bytes
         self.history_files = history_files
+        self.writer = writer
         self._lock = threading.Lock()
 
     def append(
@@ -257,8 +259,9 @@ class ReplayWriter:
         result: DecisionResult,
         submission: Any,
     ) -> None:
+        record = replay_record(context, result, submission)
         line = json.dumps(
-            replay_record(context, result, submission),
+            record,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -276,6 +279,8 @@ class ReplayWriter:
             with self.path.open("ab") as stream:
                 stream.write(encoded)
                 stream.flush()
+        if self.writer is not None:
+            self.writer.submit("replay", record)
 
     def _rotate_files(self) -> None:
         if self.history_files == 0:

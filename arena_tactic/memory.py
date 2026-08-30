@@ -681,10 +681,18 @@ class AgentMemory:
 
 
 class MemoryStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, supabase: Any | None = None, writer: Any | None = None) -> None:
         self.path = path
+        self.supabase = supabase
+        self.writer = writer
 
     def load(self) -> AgentMemory:
+        # A fresh database state wins over the local cache; local files keep
+        # offline operation possible when Supabase is unreachable.
+        if self.supabase is not None:
+            remote = self.supabase.load_memory()
+            if isinstance(remote, dict):
+                return AgentMemory.from_dict(remote)
         try:
             raw = self.path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError):
@@ -722,3 +730,9 @@ class MemoryStore:
         payload = json.dumps(memory.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         temporary.write_text(payload + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
+        if self.writer is not None:
+            self.writer.submit("memory", memory.to_dict())
+        elif self.supabase is not None:
+            # Direct use is retained for small tools/tests; the service passes
+            # an AsyncSupabaseWriter so this path never runs per Tick.
+            self.supabase.save_memory(memory.to_dict())

@@ -26,6 +26,7 @@ from arena_tactic.context import DecisionContext
 from arena_tactic.dashboard import DashboardDataStore, dashboard_static_asset, redact_error
 from arena_tactic.observability import ReplayWriter, summary_line
 from arena_tactic.runtime import choose_actions
+from arena_tactic.storage import AsyncSupabaseWriter, SupabaseStorage
 
 __all__ = ["choose_actions", "ensure_frontend_built", "play", "serve"]
 
@@ -255,9 +256,9 @@ def _start_health_server(
     port: int,
     status: ServiceStatus,
     replay_path: Path | None = None,
-    command_api: CommandApi | None = None,
+    command_api: CommandApi | None = None, supabase: SupabaseStorage | None = None,
 ) -> ThreadingHTTPServer:
-    dashboard = DashboardDataStore(replay_path or Path(__file__).with_name("runtime") / "replay.jsonl")
+    dashboard = DashboardDataStore(replay_path or Path(__file__).with_name("runtime") / "replay.jsonl", supabase=supabase)
     api = command_api or CommandApi(CommandQueue(), status_snapshot=status.snapshot)
     handler = type("ArenaHeroHealthHandler", (_HealthHandler,), {"status": status, "dashboard": dashboard, "command_api": api})
     server = ThreadingHTTPServer((host, port), handler)
@@ -266,14 +267,20 @@ def _start_health_server(
 
 
 def play(api_key: str, *, status: ServiceStatus | None = None, stop: threading.Event | None = None,
-         command_queue: CommandQueue | None = None, config: AgentConfig | None = None) -> None:
+         command_queue: CommandQueue | None = None, config: AgentConfig | None = None,
+         supabase: SupabaseStorage | None = None) -> None:
     """Run the tactic once until the SDK stream closes or stop is requested."""
     status = status or ServiceStatus()
     stop = stop or threading.Event()
     state_file = Path(__file__).with_name("runtime") / "agent-state.json"
-    replay = ReplayWriter(Path(__file__).with_name("runtime") / "replay.jsonl")
-    trace_sink = BoundedTraceSink(Path(__file__).with_name("runtime") / "decision-trace.jsonl")
-    runtime = AgentRuntime(memory_store=MemoryStore(state_file), trace_sink=trace_sink,
+    supabase = supabase or SupabaseStorage.from_environment(Path(__file__).with_name(".env"))
+    writer = AsyncSupabaseWriter(supabase) if supabase is not None else None
+    replay = ReplayWriter(Path(__file__).with_name("runtime") / "replay.jsonl", writer=writer)
+    trace_sink = BoundedTraceSink(
+        Path(__file__).with_name("runtime") / "decision-trace.jsonl",
+        on_record=(lambda record: writer.submit("trace", record)) if writer is not None else None,
+    )
+    runtime = AgentRuntime(memory_store=MemoryStore(state_file, supabase=supabase, writer=writer), trace_sink=trace_sink,
                            command_queue=command_queue, config=config or _runtime_config_from_environment())
     base_url = os.environ.get("ARENA_HERO_BASE_URL", "https://api.arenahero.io")
     try:
@@ -294,6 +301,13 @@ def play(api_key: str, *, status: ServiceStatus | None = None, stop: threading.E
                 print(summary_line(context, result, accepted), flush=True)
     finally:
         runtime.close()
+        if writer is not None:
+            snapshot = status.snapshot()
+            writer.submit("report", {
+                "report_type": "runtime", "tick_start": 0, "tick_end": snapshot.get("last_tick") or 0,
+                "summary": "Arena Hero tactic runtime stopped", "metrics": snapshot, "raw_content": "",
+            })
+            writer.close()
     status.update(connected=False)
 
 
@@ -304,12 +318,13 @@ def serve(api_key: str, *, host: str = "127.0.0.1", port: int = 8787) -> None:
     audit_sink = BoundedAuditSink(Path(__file__).with_name("runtime") / "audit.jsonl")
     command_queue = CommandQueue(audit_sink=audit_sink)
     command_api = CommandApi.from_environment(command_queue, status.snapshot)
-    health = _start_health_server(host, port, status, command_api=command_api)
+    supabase = SupabaseStorage.from_environment(Path(__file__).with_name(".env"))
+    health = _start_health_server(host, port, status, command_api=command_api, supabase=supabase)
     reconnect_delay = float(os.environ.get("ARENA_HERO_RECONNECT_DELAY", "10"))
     try:
         while not stop.is_set():
             try:
-                play(api_key, status=status, stop=stop, command_queue=command_queue)
+                play(api_key, status=status, stop=stop, command_queue=command_queue, supabase=supabase)
             except Exception as exc:  # network/server failures must not stop 24/7 play
                 safe_error = redact_error(f"{type(exc).__name__}: {exc}") or type(exc).__name__
                 status.update(connected=False, last_error=safe_error)

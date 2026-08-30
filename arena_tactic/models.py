@@ -86,7 +86,7 @@ class AgentConfig:
     # roster is already filled; 0 disables the peacetime conservation.
     peacetime_resource_buffer: int = 40
     astar_node_limit: int = 1_500
-    explored_history_limit: int = 20_000
+    explored_history_limit: int = 100_000
     event_history_limit: int = 512
     exploration_sector_ticks: int = 60
     movement_failure_cooldown_ticks: int = 4
