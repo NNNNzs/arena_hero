@@ -58,11 +58,13 @@ class EventLogCollector:
     """Consume new replay lines once, including files moved to ``.1`` / ``.2``."""
 
     def __init__(self, replay_path: Path, *, event_path: Path | None = None, state_path: Path | None = None,
-                 max_events: int = EVENT_LOG_LIMIT, enemy_reappear_ticks: int = ENEMY_REAPPEAR_TICKS) -> None:
+                 max_events: int = EVENT_LOG_LIMIT, enemy_reappear_ticks: int = ENEMY_REAPPEAR_TICKS,
+                 supabase: Any | None = None, writer: Any | None = None) -> None:
         self.replay_path = replay_path
         self.event_path = event_path or replay_path.with_name("events.jsonl")
         self.state_path = state_path or replay_path.with_name("event-log-state.json")
         self.max_events, self.enemy_reappear_ticks = max_events, enemy_reappear_ticks
+        self.supabase, self.writer = supabase, writer
 
     def _load_state(self) -> dict[str, Any]:
         try:
@@ -173,10 +175,20 @@ class EventLogCollector:
             combined = (existing + generated)[-self.max_events:]
             self.event_path.parent.mkdir(parents=True, exist_ok=True)
             self.event_path.write_text("".join(json.dumps({**event, "description": _description(event["type"], event.get("position"), event.get("target"), event.get("values", {}))}, ensure_ascii=False, separators=(",", ":")) + "\n" for event in combined), encoding="utf-8")
+            if self.writer is not None:
+                for event in generated:
+                    self.writer.submit("event", {**event, "description": _description(event["type"], event.get("position"), event.get("target"), event.get("values", {}))})
+            elif self.supabase is not None:
+                for event in generated:
+                    self.supabase.save_event({**event, "description": _description(event["type"], event.get("position"), event.get("target"), event.get("values", {}))})
         self._save_state(state)
         return generated
 
     def read(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        if self.supabase is not None:
+            rows = self.supabase.select("arena_events", params={"select": "*", "order": "tick.desc", "limit": str(max(0, limit))})
+            if rows is not None:
+                return list(reversed(rows))
         try:
             rows = [json.loads(line) for line in self.event_path.read_text(encoding="utf-8").splitlines()]
         except (OSError, json.JSONDecodeError): return []

@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 
 from .values import FrozenJson, freeze_mapping, freeze_optional_text, freeze_sequence, freeze_text, thaw_json
 
@@ -236,6 +236,7 @@ class BoundedTraceSink:
         max_bytes: int = 64 * 1024,
         max_file_bytes: int = 32 * 1024 * 1024,
         history_files: int = 3,
+        on_record: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if max_records <= 0:
             raise ValueError("max_records must be positive")
@@ -249,6 +250,7 @@ class BoundedTraceSink:
         self.max_bytes = max_bytes
         self.max_file_bytes = max_file_bytes
         self.history_files = history_files
+        self.on_record = on_record
         self._max_records = max_records
         self._records: deque[tuple[int, bytes]] = deque()
         self.dropped = 0
@@ -274,6 +276,12 @@ class BoundedTraceSink:
             }
         else:
             record = {"record_type": "decision_trace", **trace_record(trace)}
+        if self.on_record is not None:
+            try:
+                self.on_record(record)
+            except Exception:
+                # Observability exports are explicitly best-effort.
+                pass
         payload = json.dumps(record, separators=(",", ":"), sort_keys=True).encode()
         return self._enqueue(trace.tick, payload, trace.planner_version)
 

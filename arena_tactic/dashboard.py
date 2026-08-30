@@ -365,6 +365,8 @@ class DashboardDataStore:
         max_bytes: int = 256 * 1024,
         recent_limit: int = 32,
         cache_seconds: float = 1.0,
+        supabase: Any | None = None,
+        writer: Any | None = None,
     ) -> None:
         self.replay_path = replay_path
         self.trace_path = trace_path or replay_path.with_name("decision-trace.jsonl")
@@ -372,23 +374,21 @@ class DashboardDataStore:
         self.max_bytes = max_bytes
         self.recent_limit = recent_limit
         self.cache_seconds = cache_seconds
+        self.supabase = supabase
         self._cached_at = 0.0
         self._cached_records: list[dict[str, Any]] = []
         self._cached_traces: list[dict[str, Any]] = []
         self._cached_memory: dict[str, Any] = {}
         self._memory_cached_at = 0.0
-        self.event_log = EventLogCollector(replay_path)
+        self.event_log = EventLogCollector(replay_path, supabase=supabase, writer=writer)
         self._lock = threading.Lock()
 
     def _records(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         with self._lock:
             if now - self._cached_at >= self.cache_seconds:
-                self._cached_records = _bounded_jsonl_tail(
-                    self.replay_path,
-                    max_bytes=self.max_bytes,
-                    limit=self.recent_limit,
-                )
+                remote = self.supabase.read_replays(self.recent_limit) if self.supabase else None
+                self._cached_records = remote if remote is not None else _bounded_jsonl_tail(self.replay_path, max_bytes=self.max_bytes, limit=self.recent_limit)
                 self._cached_traces = _bounded_jsonl_tail(
                     self.trace_path, max_bytes=self.max_bytes, limit=self.recent_limit
                 )
@@ -398,12 +398,21 @@ class DashboardDataStore:
     def _traces(self) -> list[dict[str, Any]]:
         self._records()  # refresh both bounded caches under the same TTL/lock.
         with self._lock:
+            if self.supabase is not None:
+                remote = self.supabase.select("arena_decision_traces", params={"select": "trace", "order": "tick.desc", "limit": str(self.recent_limit)})
+                if remote is not None:
+                    return [row["trace"] for row in reversed(remote) if isinstance(row.get("trace"), dict)]
             return list(self._cached_traces)
 
     def _memory(self) -> dict[str, Any]:
         now = time.monotonic()
         with self._lock:
             if now - self._memory_cached_at >= self.cache_seconds * 3:
+                if self.supabase is not None:
+                    remote = self.supabase.load_memory()
+                    if isinstance(remote, dict):
+                        self._cached_memory, self._memory_cached_at = remote, now
+                        return dict(self._cached_memory)
                 try:
                     raw = self.memory_path.read_text(encoding="utf-8")
                     self._cached_memory = json.loads(raw) if raw.strip() else {}
@@ -794,11 +803,8 @@ class DashboardDataStore:
         """Return light-weight timeline ticks and markers without bulky frames."""
         limit = max(1, min(limit, 200))
         scale = max(1, limit // self.recent_limit + 1)
-        raw_records = _bounded_jsonl_tail(
-            self.replay_path,
-            max_bytes=self.max_bytes * scale,
-            limit=limit,
-        )
+        remote = self.supabase.read_replays(limit) if self.supabase else None
+        raw_records = remote if remote is not None else _bounded_jsonl_tail(self.replay_path, max_bytes=self.max_bytes * scale, limit=limit)
         timeline_items: list[dict[str, Any]] = []
         ticks: list[int] = []
         for record in raw_records:
@@ -826,11 +832,9 @@ class DashboardDataStore:
         limit = max(1, min(limit, 200))
         # Read more data to satisfy larger limits.
         scale = max(1, limit // self.recent_limit + 1)
-        raw_records = _bounded_jsonl_tail(
-            self.replay_path,
-            max_bytes=self.max_bytes * scale,
-            limit=limit * 2 if (from_tick is not None or to_tick is not None) else limit,
-        )
+        requested = limit * 2 if (from_tick is not None or to_tick is not None) else limit
+        remote = self.supabase.read_replays(requested) if self.supabase else None
+        raw_records = remote if remote is not None else _bounded_jsonl_tail(self.replay_path, max_bytes=self.max_bytes * scale, limit=requested)
         try:
             recent = [_project_record(record) for record in raw_records]
         except Exception:
@@ -839,11 +843,8 @@ class DashboardDataStore:
 
         # Build trace lookup for this batch.
         try:
-            raw_traces = _bounded_jsonl_tail(
-                self.trace_path,
-                max_bytes=self.max_bytes * scale,
-                limit=limit * 2 if (from_tick is not None or to_tick is not None) else limit,
-            )
+            remote_traces = self.supabase.select("arena_decision_traces", params={"select": "trace", "order": "tick.desc", "limit": str(requested)}) if self.supabase else None
+            raw_traces = [row["trace"] for row in reversed(remote_traces) if isinstance(row.get("trace"), dict)] if remote_traces is not None else _bounded_jsonl_tail(self.trace_path, max_bytes=self.max_bytes * scale, limit=requested)
             traces = [item for record in raw_traces if (item := _project_trace_record(record))]
         except Exception:
             traces = []
