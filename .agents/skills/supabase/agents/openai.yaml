@@ -1,0 +1,4 @@
+interface:
+  display_name: "Arena Hero Supabase"
+  short_description: "Arena Hero 项目 Supabase 数据查询规范"
+  default_prompt: "使用 $supabase 检查 Arena Hero 的 Supabase schema 或数据，先引用项目数据字典并执行只读查询。"

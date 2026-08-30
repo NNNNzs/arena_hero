@@ -23,6 +23,7 @@ controlled object, and submits one complete Agent plan for the current Tick.
 | `Dockerfile` | Python runtime/dependency image; source/runtime paths are mounted in development |
 | `docker-compose.yml` | Development source mount, restart policy, health port, and log rotation |
 | `.agents/skills/arena-hero/` | Complete official Arena Hero skill and bundled references |
+| `.agents/skills/supabase/` | Arena Hero project-level Supabase data dictionary and read-only query guidance |
 | `.env` | Local API credential; never commit this file |
 | `.venv/` | Local Python virtual environment; never commit this directory |
 
