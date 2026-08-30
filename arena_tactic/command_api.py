@@ -35,7 +35,6 @@ class CommandApi:
         self, queue: CommandQueue, *, status_snapshot: Callable[[], Mapping[str, object]],
         admin_password: str | None = None, writes_enabled: bool = False,
         session_seconds: int = 30 * 60, secure_cookie: bool = False,
-        allow_lan: bool = False, allowed_origins: frozenset[str] = frozenset(),
     ) -> None:
         self.queue = queue
         self.status_snapshot = status_snapshot
@@ -43,8 +42,6 @@ class CommandApi:
         self.writes_enabled = writes_enabled
         self.session_seconds = session_seconds
         self.secure_cookie = secure_cookie
-        self.allow_lan = allow_lan
-        self.allowed_origins = allowed_origins
         self._sessions: dict[str, tuple[float, str]] = {}
         self._rates: dict[tuple[str, str], tuple[float, int]] = {}
         self._lock = threading.Lock()
@@ -56,8 +53,6 @@ class CommandApi:
             admin_password=os.environ.get("ARENA_HERO_COMMAND_PASSWORD"),
             writes_enabled=os.environ.get("ARENA_HERO_COMMAND_WRITE") == "1",
             secure_cookie=os.environ.get("ARENA_HERO_COMMAND_SECURE_COOKIE") == "1",
-            allow_lan=os.environ.get("ARENA_HERO_COMMAND_LAN") == "1",
-            allowed_origins=frozenset(item.strip() for item in os.environ.get("ARENA_HERO_COMMAND_ALLOWED_ORIGINS", "").split(",") if item.strip()),
         )
 
     def handle(self, method: str, raw_path: str, headers: Mapping[str, str], body: bytes,
@@ -79,8 +74,8 @@ class CommandApi:
             return self._error(HTTPStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", "too many command requests")
         if not self.writes_enabled:
             return self._error(HTTPStatus.FORBIDDEN, "WRITE_DISABLED", "command writes are disabled")
-        if not self._origin_allowed(headers, remote_host) or not self._csrf_valid(headers, session):
-            return self._error(HTTPStatus.FORBIDDEN, "CSRF_ORIGIN_REJECTED", "origin or csrf token rejected")
+        if not self._csrf_valid(headers, session):
+            return self._error(HTTPStatus.FORBIDDEN, "CSRF_REJECTED", "csrf token is invalid")
         current_tick = _current_tick(self.status_snapshot())
         try:
             if method == "DELETE" and path.startswith("/api/v1/commands/"):
@@ -179,8 +174,6 @@ class CommandApi:
     def _login(self, headers: Mapping[str, str], body: bytes, remote_host: str) -> ApiResponse:
         if not self._rate_allowed("login", remote_host, limit=10):
             return self._error(HTTPStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", "too many login attempts")
-        if not self._origin_allowed(headers, remote_host):
-            return self._error(HTTPStatus.FORBIDDEN, "ORIGIN_REJECTED", "login is limited to the local command center")
         try:
             password = _json_object(body).get("password")
         except CommandError:
@@ -241,15 +234,6 @@ class CommandApi:
                 self._sessions.pop(token, None)
                 return None
             return value[1]
-
-    def _origin_allowed(self, headers: Mapping[str, str], remote_host: str) -> bool:
-        origin = _header(headers, "Origin")
-        host = _header(headers, "Host")
-        if _loopback(remote_host):
-            return origin is None or (host is not None and origin in {f"http://{host}", f"https://{host}"})
-        if not self.allow_lan or not self.allowed_origins or origin not in self.allowed_origins:
-            return False
-        return host is not None and any(origin.endswith(f"://{host}") for origin in self.allowed_origins)
 
     @staticmethod
     def _csrf_valid(headers: Mapping[str, str], expected: str) -> bool:
@@ -322,10 +306,6 @@ def _json_object(body: bytes) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise CommandError("INVALID_BODY", "body must be a JSON object")
     return value
-
-
-def _loopback(host: str) -> bool:
-    return host in {"127.0.0.1", "::1", "localhost"}
 
 
 def _current_tick(snapshot: Mapping[str, object]) -> int | None:

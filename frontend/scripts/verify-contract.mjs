@@ -27,7 +27,7 @@ const requiredIds = [
 ]
 const missingIds = requiredIds.filter(id => !actualIds.has(id) && !componentSource.includes(id))
 assert.deepEqual(missingIds, [], `Vue components lost dashboard IDs: ${missingIds.join(', ')}`)
-for (const component of ['CommandHeader.vue', 'RosterPanel.vue', 'TacticalMapPanel.vue', 'SituationPanel.vue', 'EventDrawer.vue', 'ReplayPanel.vue']) {
+for (const component of ['CommandHeader.vue', 'CommandPasswordDialog.vue', 'RosterPanel.vue', 'TacticalMapPanel.vue', 'SituationPanel.vue', 'EventDrawer.vue', 'ReplayPanel.vue']) {
   assert.equal(fs.existsSync(path.join(componentRoot, component)), true, `missing Vue component: ${component}`)
 }
 assert.equal(fs.existsSync(path.join(frontendRoot, 'src', 'legacy', 'dashboard-controller.ts')), false, 'legacy dashboard controller still exists')
@@ -36,6 +36,7 @@ for (const endpoint of ['/api/dashboard', '/api/events', '/api/replay', '/api/ma
 }
 assert.match(mapSource, /renderTacticalMap/)
 assert.doesNotMatch(componentSource + apiSource + stateSource, /ARENA_HERO_API_KEY|Authorization:\s*Bearer|api[_-]?key\s*=/i)
+assert.match(componentSource + stateSource, /localStorage/)
 
 const buildRoot = path.join(repoRoot, 'arena_tactic', 'web', 'static', 'app')
 const builtIndex = path.join(buildRoot, 'index.html')

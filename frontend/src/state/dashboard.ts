@@ -26,6 +26,7 @@ export interface DashboardStore {
   eventCategory: Ref<string>
   eventState: Ref<EventsPayload>
   eventDrawerOpen: Ref<boolean>
+  authDialogOpen: Ref<boolean>
   csrf: Ref<string>
   commandVersion: Ref<number>
   loginState: Ref<string>
@@ -48,7 +49,10 @@ export interface DashboardStore {
   fetchEvents: () => Promise<void>
   setEventCategory: (category: string) => void
   setEventDrawer: (open: boolean) => void
-  login: (password: string) => Promise<void>
+  openAuthDialog: () => void
+  closeAuthDialog: () => void
+  clearAuth: () => void
+  login: (password: string) => Promise<boolean>
   assignTask: (alias: string, taskKind: string, priority: number, target: Cell | null) => Promise<void>
   refreshTasks: () => Promise<void>
   cancelCommand: (id: string) => Promise<void>
@@ -72,6 +76,7 @@ const configFields = [
   'patrol_radius_min', 'patrol_radius_max', 'patrol_arc_segments', 'patrol_radius_units_per_step',
   'minimum_resource_reserve', 'peacetime_resource_buffer',
 ]
+export const COMMAND_PASSWORD_STORAGE_KEY = 'arena-hero.command-password'
 
 export function provideDashboardStore(store: DashboardStore) {
   provide(storeKey, store)
@@ -99,6 +104,7 @@ export function createDashboardStore(): DashboardStore {
   const eventCategory = ref('ALL')
   const eventState = ref<EventsPayload>({ events: [], category_counts: {}, total: 0 })
   const eventDrawerOpen = ref(false)
+  const authDialogOpen = ref(false)
   const csrf = ref('')
   const commandVersion = ref(0)
   const loginState = ref('')
@@ -295,14 +301,40 @@ export function createDashboardStore(): DashboardStore {
     if (open) void fetchEvents()
   }
 
-  async function login(password: string) {
+  function readCachedPassword(): string {
+    try { return window.localStorage.getItem(COMMAND_PASSWORD_STORAGE_KEY) || '' } catch { return '' }
+  }
+
+  function cachePassword(password: string) {
+    try { window.localStorage.setItem(COMMAND_PASSWORD_STORAGE_KEY, password) } catch { /* private browsing may deny storage */ }
+  }
+
+  function openAuthDialog() { authDialogOpen.value = true }
+  function closeAuthDialog() { authDialogOpen.value = false }
+  function clearAuth() {
+    csrf.value = ''
+    taskCommands.value = []
+    commandVersion.value = 0
+    loginState.value = '已清除本机口令缓存。'
+  }
+
+  async function login(password: string): Promise<boolean> {
+    if (!password.trim()) {
+      loginState.value = '请输入管理员口令。'
+      return false
+    }
     try {
       const response = await command<JsonObject>('/api/v1/session', 'POST', { password })
       csrf.value = String(response.csrf_token || '')
       commandVersion.value = Number(response.command_version || 0)
       loginState.value = '已认证；写操作将在下一 Tick 生效。'
       await Promise.all([refreshTasks(), refreshPolicy(true)])
-    } catch { loginState.value = '认证失败或写功能未配置。' }
+      return true
+    } catch {
+      csrf.value = ''
+      loginState.value = '认证失败或写功能未配置。'
+      return false
+    }
   }
 
   async function assignTask(alias: string, taskKind: string, priority: number, target: Cell | null) {
@@ -374,6 +406,8 @@ export function createDashboardStore(): DashboardStore {
     if (running.value) return
     running.value = true
     void refresh()
+    const cachedPassword = readCachedPassword()
+    if (cachedPassword) void login(cachedPassword)
     void fetchMapMemory()
     void fetchReplayHistory()
     refreshTimer = window.setInterval(() => void refresh(), 3000)
@@ -391,9 +425,13 @@ export function createDashboardStore(): DashboardStore {
 
   const store: DashboardStore = {
     view, displayView, memory, entities, selectedAlias, selectedEntity, selectedFrame, replayFrames, replayIndex, replayLive,
-    replayTimer, lastReplayTick, eventCategory, eventState, eventDrawerOpen, csrf, commandVersion, loginState, taskState,
+    replayTimer, lastReplayTick, eventCategory, eventState, eventDrawerOpen, authDialogOpen, csrf, commandVersion, loginState, taskState,
     policyState, migrationState, taskCommands, mapTarget, mapRequest, policyPosture, policyOverrides, running, refresh, start, stop,
-    selectUnit, focusCell, focusSquad, setTargetFromMap, fetchEvents, setEventCategory, setEventDrawer, login, assignTask,
+    selectUnit, focusCell, focusSquad, setTargetFromMap, fetchEvents, setEventCategory, setEventDrawer, openAuthDialog, closeAuthDialog, clearAuth,
+    login: async (password: string) => {
+      cachePassword(password)
+      return login(password)
+    }, assignTask,
     refreshTasks, cancelCommand, cancelEntity, migrate, cancelMigration, setPolicy, triggerAnalysis, selectReplay,
     toggleReplay, loadEarlierReplay, setReplayLive,
   }

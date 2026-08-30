@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import CommandHeader from './components/CommandHeader.vue'
+import CommandPasswordDialog from './components/CommandPasswordDialog.vue'
 import EventDrawer from './components/EventDrawer.vue'
 import ReplayPanel from './components/ReplayPanel.vue'
 import RosterPanel from './components/RosterPanel.vue'
@@ -17,6 +18,7 @@ onUnmounted(() => dashboard.stop())
 <template>
   <main class="command-center">
     <CommandHeader />
+    <CommandPasswordDialog />
     <section class="operations-shell">
       <RosterPanel />
       <TacticalMapPanel />

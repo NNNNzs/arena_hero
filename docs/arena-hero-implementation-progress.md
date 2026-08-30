@@ -49,7 +49,7 @@
 ## Phase 7：安全 Command API（已实现最小闭环）
 
 - `arena_tactic/command_center.py` 提供线程安全版本化队列、可见 ASCII 幂等键、同键异体冲突、TTL、取消、准备/accepted 后 finalize 以及脱敏 AuditEvent。HTTP handler 不读取 Turn、不持有 controller、不直接改变 planner memory。
-- `arena_tactic/command_api.py` 实现 `POST /api/v1/session`、snapshot、commands、audit、policy、实体任务和 emergency-stop/resume-auto；写请求要求 session、CSRF、Origin/Host、`If-Match` 与 `Idempotency-Key`，并有固定窗口的登录/写请求限流。`ARENA_HERO_COMMAND_WRITE=1` 且配置 `ARENA_HERO_COMMAND_PASSWORD` 才开启写；默认关闭。服务默认绑定 `127.0.0.1`；局域网须同时显式设置 `ARENA_HERO_COMMAND_LAN=1` 与逗号分隔的 `ARENA_HERO_COMMAND_ALLOWED_ORIGINS`，否则仍拒绝非 loopback 请求。
+- `arena_tactic/command_api.py` 实现 `POST /api/v1/session`、snapshot、commands、audit、policy、实体任务和 emergency-stop/resume-auto；写请求要求 session、CSRF、`If-Match` 与 `Idempotency-Key`，并有固定窗口的登录/写请求限流。Origin/Host 不再参与认证或写请求校验，CSRF 仍保留。`ARENA_HERO_COMMAND_WRITE=1` 且配置 `ARENA_HERO_COMMAND_PASSWORD` 才开启写；默认关闭。服务默认绑定 `127.0.0.1`，远程暴露请通过网络层访问控制或反向代理限制。
 - `AgentRuntime` 在每个当前 Turn 预读命令，但只在调用方确认 SDK accepted 后由 `commit()` finalize。紧急停机仅在下一 Tick 为当前 Core/Units 生成显式 `WAIT`；不会停止连接或编造对象。`ASSIGN_TASK` 现支持 `HOLD_POSITION`、`RETREAT_TO_CORE`、`HARVEST_VISIBLE`、`MOVE_TO_CELL` 四种有界类型；安全优先级高于人工任务，任务及取消仅在 accepted 后写入 alias-keyed memory。`POST /api/v1/core/migrations` 同样在 accepted 后启动受限的多 Tick Core 迁移。
 - `PATCH /api/v1/policy` 现接受 allowlist 中的 `BALANCED`、`DEFENSIVE`、`ECONOMY`、`AGGRESSIVE`。命令在 accepted Tick 前保持 `QUEUED`，成功后才更新 API 读模型和持久化的 `AgentMemory.policy_state`；空白重启队列会从该 accepted memory 恢复 policy 读模型，不会覆盖已有队列命令。当 scheduler canary/planner canary 生效时，策略分别提高 Core 防御、当前可见资源采集或敌 Core 集结的 task priority/utility。人工任务和紧急/撤退安全规则仍可抢占 policy。
 - 尚缺：更多 policy 参数和可解释的组合规则、更多人工任务种类与编队任务，以及面向生产代理的更强身份体系。

@@ -116,17 +116,24 @@ def test_command_api_pause_and_resume_routes_enqueue_bounded_commands():
     assert queue.snapshot()[1].type.value == "CANCEL"
 
 
-def test_lan_command_access_requires_explicit_origin_allowlist():
+def test_command_api_does_not_validate_origin_but_keeps_csrf_protection():
     queue = CommandQueue()
-    blocked = CommandApi(queue, status_snapshot=lambda: {}, admin_password="test-password", writes_enabled=True, allow_lan=True)
-    denied = blocked.handle("POST", "/api/v1/session", {"Host": "tactic.lan", "Origin": "http://tactic.lan"},
-                            _body({"password": "test-password"}), remote_host="192.168.1.20")
-    assert denied is not None and denied.status == 403
-    allowed = CommandApi(queue, status_snapshot=lambda: {}, admin_password="test-password", writes_enabled=True,
-                         allow_lan=True, allowed_origins=frozenset({"http://tactic.lan"}))
-    accepted = allowed.handle("POST", "/api/v1/session", {"Host": "tactic.lan", "Origin": "http://tactic.lan"},
-                              _body({"password": "test-password"}), remote_host="192.168.1.20")
+    api = CommandApi(queue, status_snapshot=lambda: {}, admin_password="test-password", writes_enabled=True)
+    accepted = api.handle("POST", "/api/v1/session", {"Host": "proxy.internal", "Origin": "http://dashboard.example"},
+                          _body({"password": "test-password"}), remote_host="192.168.1.20")
     assert accepted is not None and accepted.status == 200
+    cookie, csrf = _login(api)
+    headers = _write_headers(cookie, csrf, 0, "origin-free-command-1")
+    headers["Origin"] = "http://another-dashboard.example"
+    written = api.handle("POST", "/api/v1/commands", headers, _body({"type": "EMERGENCY_STOP", "payload": {}}),
+                         remote_host="192.168.1.20")
+    assert written is not None and written.status == 202
+    missing_csrf = dict(headers)
+    missing_csrf.pop("X-CSRF-Token")
+    rejected = api.handle("POST", "/api/v1/commands", missing_csrf,
+                          _body({"type": "RESUME_AUTO", "payload": {}}), remote_host="192.168.1.20")
+    assert rejected is not None and rejected.status == 403
+    assert json.loads(rejected.body)["error"] == "CSRF_REJECTED"
 
 
 def test_accepted_manual_assignment_persists_and_replaces_only_its_current_actor():
