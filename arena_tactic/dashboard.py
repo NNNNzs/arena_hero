@@ -904,36 +904,9 @@ class DashboardDataStore:
         }
 
 
-# Kept below for backwards-compatible source history; Phase 8 serves the
-# maintained command center assets defined after this legacy shell.
-DASHBOARD_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Arena Hero · 作战控制台</title>
-<style>
-:root{color-scheme:dark;--bg:#090d12;--panel:#111821;--panel2:#151e29;--line:#263342;--text:#e8eef5;--muted:#8fa0b3;--cyan:#49d7c4;--blue:#58a6ff;--red:#ff6b7a;--amber:#f4bd61}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% -10%,#183044 0,transparent 35%),var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}main{width:min(1180px,calc(100% - 32px));margin:auto;padding:32px 0 56px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:24px;letter-spacing:.04em;margin:0 0 5px}.sub,.muted{color:var(--muted)}.status{display:flex;align-items:center;gap:9px;padding:8px 12px;border:1px solid var(--line);border-radius:99px;background:#0c1219}.dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 12px currentColor}.ok .dot{background:var(--cyan)}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:12px;padding:17px;min-width:0}.metric{grid-column:span 3}.wide{grid-column:span 8}.side{grid-column:span 4}.label{font-size:12px;color:var(--muted);letter-spacing:.08em}.value{font-size:27px;font-weight:650;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.value small{font-size:13px;color:var(--muted);font-weight:400}.section-title{font-size:15px;margin:0 0 13px}.bar{height:7px;border-radius:8px;background:#25303d;overflow:hidden;margin-top:10px}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan));width:0}.error{color:#ffc1c7;word-break:break-word}.turn{display:grid;grid-template-columns:70px 110px 1fr 90px;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line)}.turn:first-of-type{border-top:0}.tag{display:inline-block;padding:3px 8px;border-radius:5px;background:#203349;color:#b9d9ff;font-size:12px}.chips{display:flex;gap:5px;flex-wrap:wrap}.chip{color:#b9c7d6;background:#1b2632;padding:2px 7px;border-radius:4px;font-size:12px}.empty{padding:30px 10px;text-align:center;color:var(--muted)}footer{margin-top:18px;color:var(--muted);font-size:12px}@media(max-width:820px){.metric{grid-column:span 6}.wide,.side{grid-column:span 12}.turn{grid-template-columns:58px 1fr}.turn .chips,.turn .latency{grid-column:2}}@media(max-width:480px){main{width:min(100% - 20px,1180px);padding-top:20px}header{display:block}.status{margin-top:14px;width:max-content}.metric{grid-column:span 12}.value{font-size:24px}}
-</style></head><body><main><header><div><h1>ARENA HERO 作战控制台</h1><div class="sub">24/7 自主战术 Agent · 实时态势</div></div><div id="status" class="status"><span class="dot"></span><span>正在获取状态</span></div></header>
-<section class="grid"><div class="card metric"><div class="label">运行时间</div><div class="value" id="uptime">—</div></div><div class="card metric"><div class="label">最近 TICK</div><div class="value" id="tick">—</div></div><div class="card metric"><div class="label">提交成功 / 失败</div><div class="value" id="submits">—</div></div><div class="card metric"><div class="label">重连次数</div><div class="value" id="reconnects">—</div></div>
-<div class="card side"><h2 class="section-title">当前态势</h2><div class="label">策略模式</div><div class="value" id="mode">等待数据</div><div style="margin-top:17px" class="label">资源 / 容量</div><div class="value" id="resources">—</div><div class="bar"><i id="resourceBar"></i></div><div style="margin-top:17px" class="label">人口</div><div class="value" id="population">—</div></div>
-<div class="card wide"><h2 class="section-title">最近回合</h2><div id="turns" class="empty">尚无回放记录</div></div><div class="card wide"><h2 class="section-title">最近错误</h2><div id="error" class="muted">无</div></div><div class="card side"><h2 class="section-title">数据状态</h2><div id="dataState" class="muted">正在同步…</div></div></section><footer>每 3 秒刷新 · 开发挂载模式 · 数据来自本机脱敏回放 · 页面不会展示凭据或完整对象标识</footer></main>
-<script>
-const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function duration(s){s=Math.max(0,Math.floor(Number(s)||0));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return[d&&d+'天',h&&h+'时',m+'分'].filter(Boolean).join(' ')}
-function render(d){const s=d.service||{},c=d.current,online=!!s.running,connected=!!s.connected;$('status').className='status '+(online&&connected?'ok':'');$('status').lastElementChild.textContent=!online?'服务已停止':connected?'已连接 · 对战中':'服务在线 · 等待连接';$('uptime').textContent=duration(s.uptime_seconds);$('tick').textContent=s.last_tick??c?.tick??'—';$('submits').innerHTML=`${s.accepted??0} <small>/ ${s.rejected??0}</small>`;$('reconnects').textContent=s.reconnects??0;$('mode').textContent=c?.mode_label||'等待数据';$('resources').innerHTML=c?`${c.resources??'—'} <small>/ ${c.resource_capacity??'—'}</small>`:'—';$('population').textContent=c?.population??'—';const pct=c&&c.resource_capacity?Math.min(100,Math.max(0,c.resources/c.resource_capacity*100)):0;$('resourceBar').style.width=pct+'%';$('error').className=s.last_error?'error':'muted';$('error').textContent=s.last_error||'无';$('dataState').textContent=d.replay?.available?`已载入最近 ${d.replay.records} 个有效回合；最后同步 ${new Date(d.generated_at*1000).toLocaleTimeString('zh-CN')}`:'回放尚不可用；服务会继续等待首个成功提交。';const rows=(d.recent||[]).map(r=>`<div class="turn"><b>#${esc(r.tick??'—')}</b><span class="tag">${esc(r.mode_label)}</span><div class="chips">${(r.actions||[]).map(a=>`<span class="chip">${esc(a.label)} × ${esc(a.count)}</span>`).join('')||'<span class="muted">无动作</span>'}${(r.events||[]).map(e=>`<span class="chip">事件 ${esc(e.type)}</span>`).join('')}</div><span class="latency muted">${r.decision_ms==null?'—':esc(r.decision_ms.toFixed(1))+' ms'}</span></div>`).join('');$('turns').className=rows?'':'empty';$('turns').innerHTML=rows||'尚无有效回放记录';}
-async function refresh(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);render(await r.json())}catch(e){$('status').className='status';$('status').lastElementChild.textContent='状态获取失败';$('dataState').textContent='Dashboard API 暂时不可用，将自动重试。'}}refresh();setInterval(refresh,3000);
-</script></body></html>"""
-
-
 _STATIC_ROOT = Path(__file__).with_name("web") / "static"
 _APP_ROOT = Path(os.environ.get("ARENA_HERO_FRONTEND_APP_ROOT") or str(_STATIC_ROOT / "app"))
 _STATIC_TYPES = {
-    "command-center.css": "text/css; charset=utf-8",
-    "command-center.js": "application/javascript; charset=utf-8",
-    "tactical-map/layers.js": "application/javascript; charset=utf-8",
-    "tactical-map/camera.js": "application/javascript; charset=utf-8",
-    "tactical-map/radar.js": "application/javascript; charset=utf-8",
-    "tactical-map/renderers.js": "application/javascript; charset=utf-8",
-    "tactical-map/input.js": "application/javascript; charset=utf-8",
-    "tactical-map/main.js": "application/javascript; charset=utf-8",
     "pixi.min.js": "application/javascript; charset=utf-8",
 }
 
@@ -970,86 +943,3 @@ def dashboard_app_asset(path: str) -> tuple[bytes, str] | None:
         return candidate.read_bytes(), f"{content_type}; charset=utf-8" if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"} else content_type
     except OSError:
         return None
-
-
-DASHBOARD_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Arena Hero · 作战指挥中心</title><link rel="stylesheet" href="/static/command-center.css"><script src="/static/pixi.min.js"></script></head>
-<body><main class="command-center">
-<header class="command-bar">
-  <div class="brand"><span class="eyebrow">ARENA HERO</span><h1>作战指挥中心</h1></div>
-  <div class="top-metrics" aria-label="实时作战状态">
-    <div class="metric"><span>TICK</span><strong id="tick">—</strong></div>
-    <div class="metric"><span>资源 / 容量</span><strong id="resources">—</strong></div>
-    <div class="metric"><span>策略模式</span><strong id="mode">—</strong><button id="modeCausality" class="mode-causality" type="button" title="等待策略因果链">查看判定链</button></div>
-    <div class="metric"><span>单位在线</span><strong id="unitCount">—</strong></div>
-  </div>
-  <div id="status" class="status">正在获取状态</div>
-</header>
-
-<section class="operations-shell">
-  <aside class="panel unit-panel">
-    <div class="section-head"><div><span class="eyebrow">ORDER OF BATTLE</span><h2>战斗序列</h2></div><span id="unitFilterCount" class="tick">—</span></div>
-    <div id="rosterTabs" class="tab-header" style="display:flex;gap:6px;margin:8px 0;">
-      <button id="tabUnitsBtn" class="filter-btn is-active" style="flex:1;">单位列表</button>
-      <button id="tabSquadsBtn" class="filter-btn" style="flex:1;">战术编组</button>
-    </div>
-    <div id="tabUnitsView">
-      <input id="unitSearch" class="unit-search" type="search" placeholder="搜索脱敏别名…" aria-label="搜索单位">
-      <div id="unitFilters" class="unit-filters"><button class="filter-btn is-active" data-kind="ALL">全部</button><button class="filter-btn" data-kind="CORE">核心</button><button class="filter-btn" data-kind="WORKER">工人</button><button class="filter-btn" data-kind="VANGUARD">先锋</button><button class="filter-btn" data-kind="RANGER">游侠</button></div>
-      <div id="unitList" class="unit-list muted">尚无单位</div>
-    </div>
-    <div id="tabSquadsView" hidden>
-      <div class="squad-toolbar" style="display:flex;justify-content:space-between;align-items:center;margin:6px 0 8px;">
-        <span id="squadTotalStats" class="muted" style="font-size:11px;">共 0 个编组</span>
-        <div style="display:flex;gap:4px;">
-          <button id="btnExpandAllSquads" class="filter-btn" style="min-height:22px;padding:1px 6px;font-size:10px;">全部展开</button>
-          <button id="btnCollapseAllSquads" class="filter-btn" style="min-height:22px;padding:1px 6px;font-size:10px;">全部折叠</button>
-        </div>
-      </div>
-      <div id="squadList" class="squad-list muted">尚无编组数据</div>
-    </div>
-  </aside>
-
-  <section class="map-panel" aria-label="战术地图工作区">
-    <div class="map-heading"><div><span class="eyebrow">LIVE BATTLESPACE / GRID CONTROL</span><h2>战术地图</h2></div><div class="map-status"><span id="mapModeBadge" class="tag">实时态势</span><span id="mapSummary">—</span><span id="rendererStatus">渲染器待命</span></div></div>
-    <div class="map-toolbar" aria-label="地图控件">
-      <div class="tool-group"><button id="mapZoomIn" class="map-tool" title="放大">＋</button><button id="mapZoomOut" class="map-tool" title="缩小">－</button><button id="mapReset" class="map-tool" title="重置视口">归中</button></div>
-      <label class="layer-toggle"><input id="layerFog" type="checkbox" checked> 迷雾</label>
-      <label class="layer-toggle">视野 <select id="visionMode" aria-label="视野显示模式"><option value="selected">选中 + 核心</option><option value="all">全部单位</option><option value="off">关闭</option></select></label>
-      <label class="layer-toggle"><input id="layerCoordinates" type="checkbox" checked> 边尺</label>
-      <label class="layer-toggle"><input id="layerLabels" type="checkbox" checked> 标注</label>
-      <span class="map-legend"><i class="legend-unit worker"></i>工人 <i class="legend-unit vanguard"></i>先锋 <i class="legend-unit ranger"></i>游侠 <i class="legend-resource"></i>资源</span>
-      <button id="mapPickTarget" class="neutral map-order">地图选点下令</button>
-    </div>
-    <div id="map-viewport" class="map" role="application" tabindex="0" aria-label="战术地图；拖拽平移，滚轮缩放，方向键移动视口">
-      <div id="map-stage" class="map-stage"><div class="map-loading">正在初始化战术态势渲染器…</div></div>
-      <div id="map-axis-x" class="map-axis map-axis-x" aria-hidden="true"></div><div id="map-axis-y" class="map-axis map-axis-y" aria-hidden="true"></div>
-      <div class="map-reticle" aria-hidden="true"></div>
-      <div class="map-coordinate-strip"><span id="mapCenterCoordinate">中心 —</span><span id="mapCursor">光标 —</span><span id="mapSelectionCoordinate">选中 —</span><span id="mapTargetCoordinate">目标 —</span></div>
-      <div id="mapTargetMode" class="map-target-mode" hidden>选点下单 · 移动光标预览路径 · 单击锁定目标</div>
-      <div id="mapRendererState" class="map-renderer-state" hidden></div><pre id="mapDebugHud" class="map-debug-hud" hidden></pre>
-    </div>
-  </section>
-
-  <aside class="panel situation-panel">
-    <section class="situation-section"><div class="section-head"><div><span class="eyebrow">SELECTED ELEMENT</span><h2>单位状态与决策链</h2></div></div><div id="unitDetail" class="unit-detail"><div class="empty-detail">从左侧选择单位</div></div></section>
-    <section class="situation-section"><div class="section-head"><h3>附近资源点</h3><span class="resource-note">余量由协议隐藏</span></div><div id="resourceInfo" class="resource-list muted">当前无可见资源点</div></section>
-    <section class="situation-section"><h3>目标与任务概览</h3><div id="goals" class="compact-list muted">尚无决策记录</div><div id="tasks" class="compact-list muted"></div></section>
-    <details class="order-drawer" open><summary>人工任务 · 地图下令</summary><div class="detail-actions"><p class="muted">只对选中对象生效，下一权威 Tick 会重新校验。</p><div class="auth-row"><input id="password" type="password" autocomplete="current-password" placeholder="管理员口令"><button id="login" class="neutral">认证</button></div><span id="loginState" class="muted" aria-live="polite"></span><div class="task-form"><label for="taskAlias">对象</label><select id="taskAlias"><option value="">选择当前实体…</option></select><label for="taskKind">任务</label><select id="taskKind"><option value="HOLD_POSITION">原地待命</option><option value="RETREAT_TO_CORE">撤回核心</option><option value="HARVEST_VISIBLE">采集可见资源</option><option value="MOVE_TO_CELL">移动到目标</option></select><label for="taskPriority">优先级</label><select id="taskPriority"><option value="500">普通 · 500</option><option value="800" selected>高 · 800</option><option value="950">紧急 · 950</option></select><label for="taskTarget">目标坐标</label><input id="taskTarget" inputmode="numeric" placeholder="x,y（仅移动）"><button id="assign" class="primary-action">排队任务</button></div><p id="taskState" class="muted" aria-live="polite"></p><div id="taskCommands" class="command-list muted">认证后显示人工任务。</div></div></details>
-    <details class="advanced-drawer"><summary>策略与指挥设置</summary><div class="advanced-grid"><section><h3>核心迁移</h3><input id="migrationTarget" placeholder="目标 x,y"><div class="button-row"><button id="migrate" class="neutral">排队迁移</button><button id="cancelMigration" class="neutral">取消</button></div></section><section><h3>策略姿态</h3><p class="muted">生效：<span id="policyCurrent">均衡</span></p><select id="policyPosture"><option value="BALANCED">均衡</option><option value="DEFENSIVE">防御</option><option value="ECONOMY">经济</option><option value="AGGRESSIVE">进攻</option></select><button id="setPolicy" class="neutral">排队策略</button><p id="policyState" class="muted">认证后可更新。</p></section><section><h3>策略参数热更新</h3><div id="policyConfig" class="config-list muted">加载中…</div></section></div><h3>迁移分析</h3><div id="migrationAnalysis" class="compact-list muted">尚无迁移分析数据</div><div class="button-row"><button id="triggerAnalysis" class="neutral">立即扫描</button></div><p id="migrationState" class="muted"></p><h3>矿区饱和度</h3><div id="chunkSaturation" class="compact-list muted">尚无已知矿区</div><h3>命令审计</h3><div id="commands" class="compact-list muted">尚无命令</div><h3>任务切换</h3><div id="timeline" class="compact-list muted">尚无任务切换记录</div></details>
-  </aside>
-</section>
-
-<section id="eventDrawer" class="panel event-drawer" aria-label="事件日志" hidden>
-  <div class="section-head"><div><span class="eyebrow">EVENT LOG / COMBAT · HARVEST · OPERATIONS</span><h2>事件日志</h2></div><button id="eventDrawerClose" class="neutral event-drawer-close" title="收起">✕</button></div>
-  <div id="eventFilters" class="event-filters"><button class="filter-btn is-active" data-event-category="ALL">全部 <span id="eventCountAllDrawer" class="event-count">0</span></button><button class="filter-btn" data-event-category="combat">战斗 <span id="eventCountCombat" class="event-count">0</span></button><button class="filter-btn" data-event-category="harvest">采集 <span id="eventCountHarvest" class="event-count">0</span></button><button class="filter-btn" data-event-category="ops">运营 <span id="eventCountOps" class="event-count">0</span></button><button class="filter-btn" data-event-category="anomaly">异常 <span id="eventCountAnomaly" class="event-count">0</span></button></div>
-  <div id="eventLogList" class="event-log-list muted">尚无关键事件</div>
-</section>
-
-<section class="replay-panel" aria-label="作战时间轴">
-  <div class="replay-heading"><h2>作战时间轴</h2><div><span id="replayState" class="muted">等待回放快照</span><strong id="replayTick" class="tick">—</strong></div></div>
-  <div id="replayTrack" class="replay-track"><input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="回放 Tick"><div id="replayMarkers" class="replay-markers" aria-label="关键战局事件"></div><div id="replayHover" class="replay-hover" role="status" aria-live="polite" hidden></div></div>
-  <div class="replay-controls"><button id="replayStart" class="neutral" title="回到当前窗口起点">⏮</button><button id="replayPrev" class="neutral" title="上一帧；到达起点时加载更早历史">⏪</button><button id="replayPlay" class="neutral" title="播放或暂停">▶ 播放</button><button id="replayNext" class="neutral" title="下一帧">⏩</button><button id="replayLoadEarlier" class="neutral" title="加载更早的历史">↞ 更早</button><button id="replayLive" class="neutral" title="跟随实时">⏭ 实时</button><button id="eventDrawerToggle" class="neutral event-drawer-toggle" aria-expanded="false" aria-controls="eventDrawer">📜 日志 <span id="eventCountAll" class="event-count">0</span></button></div>
-</section>
-</main><script src="/static/command-center.js"></script><script src="/static/tactical-map/layers.js"></script><script src="/static/tactical-map/camera.js"></script><script src="/static/tactical-map/radar.js"></script><script src="/static/tactical-map/renderers.js"></script><script src="/static/tactical-map/input.js"></script><script src="/static/tactical-map/main.js"></script></body></html>"""

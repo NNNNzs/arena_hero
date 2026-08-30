@@ -56,10 +56,11 @@
 
 ## Phase 8：指挥中心 UI（最小可用读模型）
 
-- `arena_tactic/web/static/{command-center.css,command-center.js}` 为不依赖 CDN 的本地静态资源；`/` 展示服务、Goal、实体/行为树路径与命令状态，认证后可排队紧急停机/恢复、四种受限实体任务、Core 迁移和四种 allowlist 策略姿态。策略面板只读取 session 保护的 `/api/v1/policy`，提交仍须通过下一次 accepted Tick。
+- `frontend/` 为 Vue 3/TypeScript Dashboard 源码；`/` 展示服务、Goal、实体/行为树路径与命令状态，认证后可排队紧急停机/恢复、四种受限实体任务、Core 迁移和四种 allowlist 策略姿态。策略面板只读取 session 保护的 `/api/v1/policy`，提交仍须通过下一次 accepted Tick。
 - `DashboardDataStore` 从有界 decision-trace 尾部构造 allowlist 投影；不透传 UUID、原始 payload、Cookie、API key 或未批准字段。页面仍通过 `/api/dashboard` 只读刷新，写命令由 `/api/v1` 的 session 边界处理。
 - 页面现含本地 SVG 战术地图：仅投影当前可见的己方、敌方、资源、障碍和 Beacon 坐标，最多各 100/200 项；它不读取状态文件原文，也不显示未批准字段。
 - 任务区现同时投影 `Goal → Task → 目标锁 → 租约`，并从有界 recent trace 构造最多 100 条按 Tick 排列的只读时间线；不会暴露原始 UUID 或命令 payload。单位状态卡片按 Core、Worker、Vanguard、Ranger 分组，合并同 Tick 的位置/HP/护盾/货物与决策链（当前任务、动作、下一步、唤醒条件、阻塞和 ETA）；任务表单直接从当前脱敏实体列表选择目标，支持优先级选择、撤回 `QUEUED` 命令及为已生效人工任务排队取消。已完成本地桌面和 390px 移动端浏览器验收。
+- Dashboard 已迁移到 `frontend/` 的 Vue 3/TypeScript 组件、`DashboardStore`、`dashboardApi` 和 `useTacticalMap`；旧的后端 HTML、Command Center 静态脚本、样式和地图静态副本不再作为运行入口，Vue bundle 为 Git 忽略的构建产物，PixiJS vendor 资源继续使用本地文件。
 
 ## Phase 9：legacy 移除与验收（未达到移除门槛）
 

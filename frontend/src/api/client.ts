@@ -1,21 +1,132 @@
+export type Cell = [number, number]
+export type JsonObject = Record<string, any>
+
+export interface ServiceSnapshot {
+  running?: boolean
+  connected?: boolean
+  last_tick?: number | null
+  [key: string]: any
+}
+
+export interface DashboardEntity {
+  alias: string
+  kind?: string
+  task?: string
+  action?: string
+  status?: string
+  goal?: string
+  reason?: string
+  blocker?: string | null
+  wait_kind?: string
+  wake_condition?: string
+  position?: Cell | null
+  target_cell?: Cell | null
+  trace_tick?: number | null
+  hp?: number | null
+  shield?: number | null
+  cargo?: number | null
+  next_step?: string
+  eta_ticks?: number | null
+  waited_ticks?: number
+  state_synced?: boolean
+  assignment?: JsonObject | null
+  candidate_intents?: JsonObject[]
+  node_path?: JsonObject[]
+  [key: string]: any
+}
+
+export interface MapEntity {
+  alias?: string
+  kind?: string
+  position?: Cell | null
+  target_cell?: Cell | null
+  action?: string
+  task?: string
+  reason?: string
+  enemy?: boolean
+  [key: string]: any
+}
+
+export interface DashboardMap {
+  friendly?: MapEntity[]
+  enemies?: MapEntity[]
+  resources?: Cell[]
+  observed?: Cell[]
+  beacon?: { position?: Cell | null; status?: string | null }
+  [key: string]: any
+}
+
+export interface DashboardSnapshot {
+  tick?: number | null
+  mode?: string | null
+  mode_label?: string | null
+  resources?: number | null
+  resource_capacity?: number | null
+  population?: number | null
+  map?: DashboardMap
+  [key: string]: any
+}
+
+export interface DashboardCommandCenter {
+  command_version?: number
+  entities?: DashboardEntity[]
+  goals?: JsonObject[]
+  tasks?: JsonObject[]
+  commands?: JsonObject[]
+  timeline?: JsonObject[]
+  causality?: JsonObject
+  [key: string]: any
+}
+
+export interface SquadMember extends DashboardEntity {
+  alias: string
+}
+
+export interface Squad {
+  id: string
+  name: string
+  type?: string
+  target?: Cell | null
+  status?: string
+  members?: SquadMember[]
+  causality?: JsonObject
+  [key: string]: any
+}
+
 export interface DashboardPayload {
-  service?: Record<string, unknown>
-  current?: Record<string, unknown> | null
-  recent?: Array<Record<string, unknown>>
-  [key: string]: unknown
+  service?: ServiceSnapshot
+  current?: DashboardSnapshot | null
+  command_center?: DashboardCommandCenter
+  event_log?: EventsPayload
+  squads?: { squads?: Squad[]; assignments?: Record<string, string> }
+  policy_config?: JsonObject
+  migration_recommendation?: JsonObject
+  chunk_saturation?: Record<string, JsonObject>
+  map_memory_version?: number
+  recent?: JsonObject[]
+  [key: string]: any
 }
 
 export interface EventsPayload {
-  events?: Array<Record<string, unknown>>
+  events?: JsonObject[]
   category_counts?: Record<string, number>
   total?: number
-  [key: string]: unknown
+  matched?: number
+  [key: string]: any
+}
+
+export interface ReplayFrame {
+  tick?: number | null
+  snapshot?: DashboardSnapshot
+  command_center?: DashboardCommandCenter | null
+  markers?: JsonObject[]
+  [key: string]: any
 }
 
 export interface ReplayPayload {
-  frames?: Array<Record<string, unknown>>
+  frames?: ReplayFrame[]
   ticks?: number[]
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface MapMemoryPayload {
@@ -24,13 +135,28 @@ export interface MapMemoryPayload {
   mined?: unknown[]
   obstacles?: unknown[]
   known_resources?: unknown[]
-  [key: string]: unknown
+  [key: string]: any
 }
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json() as Promise<T>
+export interface CommandResponse extends JsonObject {
+  command_version?: number
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, { cache: 'no-store', ...init })
+  let payload: any = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+  if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`)
+  return payload as T
+}
+
+export interface CommandAuth {
+  csrf: string
+  version: number
 }
 
 export const dashboardApi = {
@@ -58,5 +184,15 @@ export const dashboardApi = {
 
   mapMemory(): Promise<MapMemoryPayload> {
     return requestJson<MapMemoryPayload>('/api/map/memory')
+  },
+
+  command<T extends CommandResponse = CommandResponse>(path: string, method: string, data: JsonObject | undefined, auth?: CommandAuth): Promise<T> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (auth?.csrf) {
+      headers['X-CSRF-Token'] = auth.csrf
+      headers['If-Match'] = `"command-version-${auth.version}"`
+      headers['Idempotency-Key'] = `ui-${crypto.randomUUID()}`
+    }
+    return requestJson<T>(path, { method, headers, body: data === undefined ? undefined : JSON.stringify(data) })
   },
 }

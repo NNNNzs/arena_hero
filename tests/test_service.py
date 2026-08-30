@@ -33,35 +33,19 @@ def test_health_endpoints_distinguish_process_liveness_from_sdk_connection(tmp_p
     assert json.loads(health_body)["last_tick"] == 123
 
 
-def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_path: Path):
+def test_root_serves_built_vue_dashboard_and_json_status_remains_compatible(tmp_path: Path, monkeypatch):
     status = ServiceStatus(connected=True, last_tick=42, accepted=7, rejected=2)
     replay = tmp_path / "missing.jsonl"
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    (app_root / "index.html").write_text('<html><title>Arena Hero · 作战指挥中心</title><div id="app"></div></html>', encoding="utf-8")
+    monkeypatch.setattr(dashboard_module, "_APP_ROOT", app_root)
     code, content_type, body = _response("/", status, replay)
     assert code == 200
     assert content_type.startswith("text/html")
     assert "作战指挥中心" in body.decode()
-    assert "policyPosture" in body.decode()
-    assert "taskPriority" in body.decode()
-    assert "单位状态与决策链" in body.decode()
-    assert "map-axis-x" in body.decode()
-    assert "visionMode" in body.decode()
-    assert "mapDebugHud" in body.decode()
-    assert "当前任务" not in body.decode()  # labels are rendered from live entity cards
-    static = _http_response("/static/command-center.js", status, DashboardDataStore(replay, cache_seconds=0))
-    assert static is not None and static[2].startswith("application/javascript") and b"setPolicy" in static[1]
-    assert b"cancelEntity" in static[1] and b"syncEntityChoices" in static[1]
-    assert "下一步" in static[1].decode() and b"state_synced" in static[1]
-    static_text = static[1].decode()
-    for chinese_label in ("当前任务", "当前动作", "下一步", "触发条件", "决策链", "执行中", "移动", "采集资源", "紧急停机"):
-        assert chinese_label in static_text
-    for dictionary_key in ("actionLabels", "statusLabels", "goalLabels", "reasonLabels", "wakeLabels", "commandLabels"):
-        assert dictionary_key in static_text
-    map_asset = _http_response("/static/tactical-map/main.js", status, DashboardDataStore(replay, cache_seconds=0))
-    assert map_asset is not None and map_asset[2].startswith("application/javascript")
-    map_text = map_asset[1].decode()
-    assert "renderTacticalMap" in map_text and "TacticalMap" in map_text
-    assert "getTacticalMapStats" in map_text and "removeChildren()" not in map_text
-    assert "refreshInFlight" in static_text and "visibilitychange" in static_text
+    assert dashboard_module.dashboard_static_asset("/static/command-center.js") is None
+    assert dashboard_module.dashboard_static_asset("/static/tactical-map/main.js") is None
 
     status_code, _, body = _response("/status", status, replay)
     payload = json.loads(body)

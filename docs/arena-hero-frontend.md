@@ -22,13 +22,13 @@ flowchart LR
 ## 功能边界
 
 Vue 应用由 `App.vue` 和六个页面 SFC 组成：`CommandHeader`、`RosterPanel`、
-`TacticalMapPanel`、`SituationPanel`、`EventDrawer` 和 `ReplayPanel`。应用负责
-页面挂载、资源构建和生命周期；兼容桥接层承接现有交互控制器，因此以下功能
-保持原有行为：
+`TacticalMapPanel`、`SituationPanel`、`EventDrawer` 和 `ReplayPanel`。共享的
+`DashboardStore` 负责轮询、回放、认证、命令版本和跨面板选择状态；组件只通过
+composable 读写状态，保持以下功能：
 
-`src/api/client.ts` 集中定义 Dashboard、事件、回放和地图记忆的 TypeScript
-响应边界；控制器通过该客户端读取数据，写命令仍保留原有会话、CSRF、版本和
-幂等键流程。
+`src/api/client.ts` 集中定义 Dashboard、事件、回放、地图记忆和命令的 TypeScript
+响应边界；所有写命令统一经过会话、CSRF、版本和幂等键流程。Pixi 地图引擎位于
+`src/map/engine/`，由 `useTacticalMap` 管理其生命周期和交互回调。
 
 - 实时 Dashboard、单位筛选、单位详情和决策链。
 - 战术编组、成员选择、编组展开与折叠。
@@ -65,15 +65,14 @@ pnpm build
 ```
 
 Vite 使用 `/static/app/` 作为资源前缀，并将构建结果写入
-`arena_tactic/web/static/app/`。Python 服务的 `/` 路由优先返回构建后的
-`index.html`；如果由测试或兼容调用直接访问且产物不存在，则返回内嵌兼容页面。
-`/static/command-center.js`
-和现有 Pixi 地图资源继续保留，方便回滚、对比和旧测试。
+`arena_tactic/web/static/app/`。Python 服务的 `/` 路由返回构建后的 `index.html`，
+旧的内嵌页面、旧控制器和旧地图静态副本已经移除；唯一保留的 `/static/pixi.min.js`
+是地图引擎所需的本地 vendor 资源。
 
 `arena_tactic/web/static/app/` 是本地构建产物，已加入 Git 忽略。直接执行
 `python3 tactic.py` 时，后端会先检查 `index.html`；缺失时使用本机 `pnpm` 安装锁定
 依赖（仅在 `node_modules/` 不存在时）并执行 `pnpm build`，构建失败则不会继续启动
-真实服务。Docker 镜像构建仍应先生成其运行时需要的 Vue 资源。
+真实服务。Docker 镜像构建阶段会自动生成其运行时需要的 Vue 资源。
 
 ## 开发验证
 

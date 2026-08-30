@@ -4,7 +4,7 @@
 
 本文档说明作战指挥中心中的战术地图如何把经过脱敏和限幅的态势投影为可交互的二维视图。它覆盖渲染、相机、图层、交互、性能与回放边界；策略决策、权威 `Turn` 和提交规则仍以 [Arena Hero Tactic 设计文档](arena-hero-tactic-design.md) 为准。
 
-代码行为最终以 `arena_tactic/web/static/tactical-map.js`、`command-center.js`、`command-center.css` 和 `arena_tactic/dashboard.py` 为准。地图是观测与受限任务输入界面，不是游戏状态源，也不参与 Agent 的实时动作决策。
+代码行为最终以 `frontend/src/map/engine/`、`frontend/src/map/useTacticalMap.ts`、`frontend/src/components/TacticalMapPanel.vue` 和 `arena_tactic/dashboard.py` 为准。地图是观测与受限任务输入界面，不是游戏状态源，也不参与 Agent 的实时动作决策。
 
 ## 2. 定位与数据边界
 
@@ -24,7 +24,7 @@
 
 ### 3.1 主路径与降级
 
-默认路径是本地 PixiJS 的 WebGL 保留场景。页面从 `/static/pixi.min.js` 加载随仓库提供的 `pixi.min.js`，不使用 CDN；随后 `tactical-map.js` 创建 `PIXI.Application`，关闭自动 ticker，交由地图的按需调度器驱动。
+默认路径是本地 PixiJS 的 WebGL 保留场景。Vue 地图 composable 从 `/static/pixi.min.js` 加载随仓库提供的 `pixi.min.js`，不使用 CDN；随后地图引擎创建 `PIXI.Application`，关闭自动 ticker，交由地图的按需调度器驱动。
 
 | --- | --- | --- |
 | 初始化 | WebGL 可用时创建 Pixi 应用、世界容器、图形层、实体容器与固定数量的雷达对象。 | Pixi 不存在、WebGL 不可用或初始化失败时创建单个 `canvas` 和 2D context。 |

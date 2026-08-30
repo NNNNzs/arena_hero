@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import CommandHeader from './components/CommandHeader.vue'
 import EventDrawer from './components/EventDrawer.vue'
 import ReplayPanel from './components/ReplayPanel.vue'
 import RosterPanel from './components/RosterPanel.vue'
 import SituationPanel from './components/SituationPanel.vue'
 import TacticalMapPanel from './components/TacticalMapPanel.vue'
-import { bootLegacyDashboard } from './legacy/boot'
+import { createDashboardStore, provideDashboardStore } from './state/dashboard'
 
-onMounted(() => {
-  void bootLegacyDashboard()
-})
+const dashboard = createDashboardStore()
+provideDashboardStore(dashboard)
+onMounted(() => dashboard.start())
+onUnmounted(() => dashboard.stop())
 </script>
 
 <template>

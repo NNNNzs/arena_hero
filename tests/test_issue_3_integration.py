@@ -226,15 +226,9 @@ def test_map_memory_exposes_persisted_obstacles_and_versions_them(tmp_path):
     assert second["version"] != first["version"]
 
 
-def test_command_center_asset_uses_real_squad_command_and_config_fields():
-    asset = dashboard_static_asset("/static/command-center.js")
-    assert asset is not None
-    text = asset[0].decode("utf-8")
-    assert "type: 'ASSIGN_SQUAD'" in text
-    assert "payload: { entity_alias: alias, squad_id: targetSquadId }" in text
-    assert "expedition_vanguards: '远征编组·先锋编制'" in text
-    assert "mining_escort_rangers: '矿区护航·游侠编制'" in text
-    assert "resource_recheck_worker_limit: '矿区护航·工兵编制'" not in text
+def test_command_center_no_longer_serves_legacy_frontend_asset():
+    assert dashboard_static_asset("/static/command-center.js") is None
+    assert dashboard_static_asset("/static/tactical-map/main.js") is None
 
 
 def test_final_capacity_allows_entering_a_cell_that_another_unit_leaves():

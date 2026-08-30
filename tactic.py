@@ -23,7 +23,7 @@ from arena_tactic.command_api import CommandApi
 from arena_tactic.command_center import CommandQueue
 from arena_tactic.domain import BoundedAuditSink, BoundedTraceSink
 from arena_tactic.context import DecisionContext
-from arena_tactic.dashboard import DASHBOARD_HTML, DashboardDataStore, dashboard_static_asset, redact_error
+from arena_tactic.dashboard import DashboardDataStore, dashboard_static_asset, redact_error
 from arena_tactic.observability import ReplayWriter, summary_line
 from arena_tactic.runtime import choose_actions
 
@@ -179,7 +179,7 @@ def _http_response(
         app_index = dashboard_static_asset("/static/app/index.html")
         if app_index is not None:
             return HTTPStatus.OK, *app_index
-        return HTTPStatus.OK, DASHBOARD_HTML.encode(), "text/html; charset=utf-8"
+        return HTTPStatus.SERVICE_UNAVAILABLE, b"Vue dashboard build is missing; restart the service to generate it.", "text/plain; charset=utf-8"
     if clean_path == "/api/dashboard":
         try:
             event_limit = int(params.get("event_limit", ["200"])[0])

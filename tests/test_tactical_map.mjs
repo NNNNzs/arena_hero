@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const browser = { location: { search: '' } };
 const context = vm.createContext({ window: browser, console, URLSearchParams });
 for (const name of ['layers.js', 'camera.js', 'radar.js', 'renderers.js', 'input.js', 'main.js']) {
-  const source = fs.readFileSync(path.resolve('arena_tactic/web/static/tactical-map', name), 'utf8');
+  const source = fs.readFileSync(path.resolve('frontend/src/map/engine', name), 'utf8');
   vm.runInContext(source, context, { filename: `tactical-map/${name}` });
 }
 const utils = browser.__TACTICAL_MAP_TEST__;
@@ -89,7 +89,7 @@ test('a 2000-cell observed stress field does not create per-cell geometry', () =
 
 test('camera state clamps unsafe zoom while preserving pan and anchor', () => {
   assert.deepEqual(plain(utils.normaliseCamera({ anchor: [8, -3], scale: 1, pan: { x: 17, y: -9 } })), {
-    anchor: [8, -3], scale: 8, pan: { x: 17, y: -9 },
+    anchor: [8, -3], scale: 4, pan: { x: 17, y: -9 },
   });
   assert.equal(utils.normaliseCamera({ scale: 999 }).scale, 56);
 });
