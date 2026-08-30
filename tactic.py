@@ -5,6 +5,8 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,7 +27,33 @@ from arena_tactic.dashboard import DASHBOARD_HTML, DashboardDataStore, dashboard
 from arena_tactic.observability import ReplayWriter, summary_line
 from arena_tactic.runtime import choose_actions
 
-__all__ = ["choose_actions", "play", "serve"]
+__all__ = ["choose_actions", "ensure_frontend_built", "play", "serve"]
+
+
+_FRONTEND_ROOT = Path(__file__).with_name("frontend")
+_DEFAULT_APP_ROOT = Path(__file__).with_name("arena_tactic") / "web" / "static" / "app"
+_FRONTEND_APP_ROOT = Path(os.environ.get("ARENA_HERO_FRONTEND_APP_ROOT") or str(_DEFAULT_APP_ROOT))
+_FRONTEND_APP_INDEX = _FRONTEND_APP_ROOT / "index.html"
+
+
+def ensure_frontend_built() -> None:
+    """Build the ignored Vue output once before the real service starts."""
+    if _FRONTEND_APP_INDEX.is_file():
+        return
+
+    package_json = _FRONTEND_ROOT / "package.json"
+    if not package_json.is_file():
+        raise RuntimeError(f"Vue frontend source is missing: {_FRONTEND_ROOT}")
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        raise RuntimeError("Vue dashboard is not built and pnpm is unavailable; install pnpm first")
+
+    print("Vue dashboard build is missing; generating it now...", flush=True)
+    if not (_FRONTEND_ROOT / "node_modules").is_dir():
+        subprocess.run([pnpm, "install", "--frozen-lockfile"], cwd=_FRONTEND_ROOT, check=True)
+    subprocess.run([pnpm, "build"], cwd=_FRONTEND_ROOT, check=True)
+    if not _FRONTEND_APP_INDEX.is_file():
+        raise RuntimeError(f"Vue build completed without creating {_FRONTEND_APP_INDEX}")
 
 
 @dataclass
@@ -148,6 +176,9 @@ def _http_response(
         asset = dashboard_static_asset(clean_path)
         return (HTTPStatus.OK, *asset) if asset is not None else None
     if clean_path == "/":
+        app_index = dashboard_static_asset("/static/app/index.html")
+        if app_index is not None:
+            return HTTPStatus.OK, *app_index
         return HTTPStatus.OK, DASHBOARD_HTML.encode(), "text/html; charset=utf-8"
     if clean_path == "/api/dashboard":
         try:
@@ -331,6 +362,7 @@ def _runtime_config_from_environment() -> AgentConfig:
 
 if __name__ == "__main__":
     try:
+        ensure_frontend_built()
         serve(
             _api_key_from_environment() or getpass("Arena Hero API key: "),
             host=os.environ.get("ARENA_HERO_HEALTH_HOST", "127.0.0.1"),

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import os
 import re
 import threading
 import time
@@ -922,6 +924,7 @@ async function refresh(){try{const r=await fetch('/api/dashboard',{cache:'no-sto
 
 
 _STATIC_ROOT = Path(__file__).with_name("web") / "static"
+_APP_ROOT = Path(os.environ.get("ARENA_HERO_FRONTEND_APP_ROOT") or str(_STATIC_ROOT / "app"))
 _STATIC_TYPES = {
     "command-center.css": "text/css; charset=utf-8",
     "command-center.js": "application/javascript; charset=utf-8",
@@ -937,12 +940,34 @@ _STATIC_TYPES = {
 
 def dashboard_static_asset(path: str) -> tuple[bytes, str] | None:
     """Return only allowlisted packaged dashboard assets; no directory traversal."""
+    if path.startswith("/static/app/"):
+        return dashboard_app_asset(path)
     name = path.removeprefix("/static/")
     content_type = _STATIC_TYPES.get(name)
     if content_type is None:
         return None
     try:
         return (_STATIC_ROOT / name).read_bytes(), content_type
+    except OSError:
+        return None
+
+
+def dashboard_app_asset(path: str) -> tuple[bytes, str] | None:
+    """Serve a built Vue asset below the isolated frontend app directory."""
+    name = path.removeprefix("/static/app/")
+    if not name or name.startswith(("/", "\\")):
+        return None
+    root = _APP_ROOT.resolve()
+    candidate = (root / name).resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    try:
+        if not candidate.is_file():
+            return None
+        content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+        if content_type == "text/javascript":
+            content_type = "application/javascript"
+        return candidate.read_bytes(), f"{content_type}; charset=utf-8" if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"} else content_type
     except OSError:
         return None
 

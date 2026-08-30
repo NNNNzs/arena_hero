@@ -4,6 +4,32 @@
 
 详细设计见 [`docs/arena-hero-tactic-design.md`](docs/arena-hero-tactic-design.md)，本次行为树/调度迁移的实际状态见 [`docs/arena-hero-implementation-progress.md`](docs/arena-hero-implementation-progress.md)。
 
+## Vue 3 控制台
+
+Dashboard 前端位于 `frontend/`，使用 Vue 3、TypeScript 和 Vite；现有
+`/api/dashboard`、回放、地图记忆和 Command API 契约保持不变。PixiJS 战术地图
+继续使用仓库内的本地资源，不依赖 CDN。构建产物写入
+`arena_tactic/web/static/app/`，由同一个 Python HTTP 服务托管：
+
+```bash
+cd frontend
+pnpm install
+pnpm typecheck
+pnpm build
+pnpm test:contract
+```
+
+开发调试可运行 `pnpm dev`，然后访问 `http://localhost:5173/static/app/`。
+Vite 会把 `/api` 和旧版 `/static` 资源代理到本机 `127.0.0.1:8787`，但会保留
+`/static/app/` 给 Vue 开发页面；后端服务仍需由操作者手动启动。
+
+构建后再按原方式运行 Python tactic 或 Docker Compose。直接启动 Python 服务时，
+如果 `arena_tactic/web/static/app/index.html` 不存在，启动流程会自动检查并执行
+Vue 构建；生成目录已加入 Git 忽略，不应提交。未生成且无法构建时，真实服务不会
+继续启动；代码中保留的内嵌 Dashboard 仅用于兼容性诊断和升级回退。新入口中的单位、
+编组、战术地图、回放、事件日志、人工任务、核心迁移和策略设置均继续复用现有
+后端接口与校验边界。
+
 ## Mac 本地运行
 
 需要 Python 3.11 或更高版本。以下步骤只使用本地虚拟环境；Docker 不是 Mac 上运行或验证 tactic 的必需步骤。

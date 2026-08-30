@@ -17,7 +17,9 @@ __pycache__/
 # Build and packaging output
 build/
 dist/
+node_modules/
 *.egg-info/
+arena_tactic/web/static/app/
 
 # Local tooling and operating-system files
 .DS_Store

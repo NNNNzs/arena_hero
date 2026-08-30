@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import arena_tactic.dashboard as dashboard_module
 from arena_tactic.dashboard import DashboardDataStore
+import tactic as tactic_module
 from tactic import ServiceStatus, _http_response, _runtime_config_from_environment
 
 
@@ -66,6 +68,47 @@ def test_root_serves_chinese_dashboard_and_json_status_remains_compatible(tmp_pa
     assert status_code == 200
     assert payload["last_tick"] == 42
     assert payload["accepted"] == 7
+
+
+def test_built_vue_assets_are_isolated_and_have_content_types(tmp_path: Path, monkeypatch):
+    app_root = tmp_path / "app"
+    (app_root / "assets").mkdir(parents=True)
+    (app_root / "index.html").write_text("<div id='app'></div>", encoding="utf-8")
+    (app_root / "assets" / "main.js").write_text("console.log('ok')", encoding="utf-8")
+    monkeypatch.setattr(dashboard_module, "_APP_ROOT", app_root)
+
+    index = dashboard_module.dashboard_static_asset("/static/app/index.html")
+    script = dashboard_module.dashboard_static_asset("/static/app/assets/main.js")
+    assert index == (b"<div id='app'></div>", "text/html; charset=utf-8")
+    assert script == (b"console.log('ok')", "application/javascript; charset=utf-8")
+    assert dashboard_module.dashboard_static_asset("/static/app/../secret.txt") is None
+
+
+def test_missing_vue_build_is_generated_with_locked_pnpm_commands(tmp_path: Path, monkeypatch):
+    frontend_root = tmp_path / "frontend"
+    frontend_root.mkdir()
+    (frontend_root / "package.json").write_text("{}", encoding="utf-8")
+    app_index = tmp_path / "app" / "index.html"
+    commands: list[tuple[list[str], Path, bool]] = []
+
+    def fake_run(command: list[str], *, cwd: Path, check: bool):
+        commands.append((command, cwd, check))
+        if command[-1] == "build":
+            app_index.parent.mkdir(parents=True)
+            app_index.write_text("built", encoding="utf-8")
+
+    monkeypatch.setattr(tactic_module, "_FRONTEND_ROOT", frontend_root)
+    monkeypatch.setattr(tactic_module, "_FRONTEND_APP_INDEX", app_index)
+    monkeypatch.setattr(tactic_module.shutil, "which", lambda name: "/usr/local/bin/pnpm")
+    monkeypatch.setattr(tactic_module.subprocess, "run", fake_run)
+
+    tactic_module.ensure_frontend_built()
+
+    assert [command[0] for command in commands] == [
+        ["/usr/local/bin/pnpm", "install", "--frozen-lockfile"],
+        ["/usr/local/bin/pnpm", "build"],
+    ]
+    assert all(cwd == frontend_root and check for _, cwd, check in commands)
 
 
 def test_dashboard_api_tolerates_missing_and_truncated_replay(tmp_path: Path):

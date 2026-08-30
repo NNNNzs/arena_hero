@@ -24,7 +24,7 @@ include = ["arena_tactic*"]
 exclude = ["runtime*", "tests*"]
 
 [tool.setuptools.package-data]
-arena_tactic = ["web/static/*"]
+arena_tactic = ["web/static/*", "web/static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,3 +1,15 @@
+FROM node:22-bookworm-slim AS frontend-build
+
+WORKDIR /build/frontend
+
+RUN corepack enable
+
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend/ ./
+RUN pnpm build
+
 FROM python:3.11-slim
 
 LABEL org.opencontainers.image.title="Arena Hero Tactic Dashboard" \
@@ -18,6 +30,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
        'arena-hero>=0.2.9,<0.3'
 
 COPY docker-entrypoint.sh /usr/local/bin/arena-hero-entrypoint.sh
+
+# Keep the generated Vue bundle outside the source bind mount used by Compose.
+COPY --from=frontend-build /build/arena_tactic/web/static/app /app/frontend-build
 
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /app/runtime \

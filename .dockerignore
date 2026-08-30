@@ -11,3 +11,5 @@ tests/
 docs/
 .agents/
 .pytest_cache/
+node_modules/
+arena_tactic/web/static/app/

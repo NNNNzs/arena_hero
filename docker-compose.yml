@@ -16,6 +16,7 @@ services:
       ARENA_HERO_HEALTH_HOST: 0.0.0.0
       ARENA_HERO_HEALTH_PORT: 8787
       ARENA_HERO_RECONNECT_DELAY: 10
+      ARENA_HERO_FRONTEND_APP_ROOT: /app/frontend-build
       PYTHONDONTWRITEBYTECODE: 1
     ports:
       # Dashboard and compatible JSON health/status endpoints share one server.

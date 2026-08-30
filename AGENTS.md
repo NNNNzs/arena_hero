@@ -12,11 +12,13 @@ controlled object, and submits one complete Agent plan for the current Tick.
 | --- | --- |
 | `tactic.py` | Minimal API key, SDK loop, submit, persistence, and safe-exit entrypoint |
 | `arena_tactic/` | Perception, memory, navigation, strategy, validation, controller allocation, and observability |
+| `frontend/` | Vue 3 + TypeScript + Vite Dashboard source and build configuration |
 | `tests/` | Strategy, SDK contract, property, replay, and performance tests |
 | `docs/arena-hero-tactic-design.md` | Overall architecture, rules mapping, recovery, and design decisions |
 | `docs/arena-hero-strategy.md` | Strategic modes, thresholds, scoring, economy, combat, and migration tables |
 | `docs/arena-hero-runtime-testing.md` | Runtime, persistence, redacted replay, metrics, test, and live-run boundaries |
 | `docs/arena-hero-service.md` | Docker Compose 24/7 operation and status endpoints |
+| `docs/arena-hero-frontend.md` | Vue Dashboard architecture, API boundary, build, and verification |
 | `pyproject.toml` | Python 3.11+ metadata and official SDK dependency |
 | `Dockerfile` | Python runtime/dependency image; source/runtime paths are mounted in development |
 | `docker-compose.yml` | Development source mount, restart policy, health port, and log rotation |
