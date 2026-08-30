@@ -7,6 +7,8 @@ import ReplayPanel from './components/ReplayPanel.vue'
 import RosterPanel from './components/RosterPanel.vue'
 import SituationPanel from './components/SituationPanel.vue'
 import TacticalMapPanel from './components/TacticalMapPanel.vue'
+import UiMessage from './components/UiMessage.vue'
+import UiModal from './components/UiModal.vue'
 import { createDashboardStore, provideDashboardStore } from './state/dashboard'
 
 const dashboard = createDashboardStore()
@@ -26,5 +28,7 @@ onUnmounted(() => dashboard.stop())
     </section>
     <EventDrawer />
     <ReplayPanel />
+    <UiModal />
+    <UiMessage />
   </main>
 </template>

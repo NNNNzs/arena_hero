@@ -13,6 +13,10 @@ export const GOAL_LABELS: Record<string, string> = {
   LEGACY_BEACON: '信标任务', HARVEST_RESOURCE: '采集资源', ECONOMY: '经济运营', DEFEND: '防守', ATTACK: '进攻',
   BEACON: '信标', LEGACY_PLAN: '传统计划', CONTROL_BEACON: '控制信标',
 }
+export const MODE_LABELS: Record<string, string> = {
+  RESPAWN: '重建模式', RECOVER: '恢复模式', DEFEND: '防守模式', ATTACK: '进攻模式',
+  BEACON: '信标模式', ECONOMY: '经济模式', RECON: '侦察模式', EXPLORE: '探索模式',
+}
 export const TASK_LABELS: Record<string, string> = {
   HARVEST: '采集资源', HARVEST_RESOURCE: '采集资源', HARVEST_VISIBLE: '采集可见资源', MOVE_TO_CELL: '移动到目标',
   RETREAT_TO_CORE: '撤回核心', HOLD_POSITION: '原地待命', BEACON_ESCORT: '护送信标', LEGACY_PLAN: '传统计划',
@@ -24,6 +28,10 @@ export const REASON_LABELS: Record<string, string> = {
   path_to_resource: '前往资源路径', preserve_worker_cargo: '保留工人货物', current_resource: '当前资源', stale: '决策已过期',
   ok: '正常', manual_task_move: '人工移动任务', unit_retreat_to_core_heal: '撤退治疗',
   unit_retreat_to_core_heal_unsafe_fallback: '撤退治疗（风险路径）', unit_retreat_to_core_heal_shelter: '撤退治疗（掩体庇护）',
+  NEXT_AUTHORITATIVE_TURN: '等待下一份权威状态', CORE_VISIBLE: '核心重新可见',
+  CORE_STABLE_AND_RECOVERED: '核心稳定且已恢复', THREAT_OUTSIDE_EXIT_DISTANCE: '威胁离开退出距离',
+  ENEMY_CORE_LOST_OR_COMBAT_FORCE_LOW: '敌方核心消失或战力不足', BEACON_UNAVAILABLE_OR_CORE_UNSAFE: '信标不可用或核心不安全',
+  ROSTER_READY_AND_NO_RESOURCE_WORK: '编组完成且暂无资源任务', RESOURCE_OR_THREAT_VISIBLE: '出现资源或威胁',
 }
 export const WAKE_LABELS: Record<string, string> = {
   CORE_RESOURCES_OR_LEGAL_ACTION: '核心资源或出现合法动作', NEXT_AUTHORITATIVE_TURN: '等待下一份权威状态', arrive_at_resource: '抵达资源点',
@@ -47,6 +55,10 @@ export function humanize(value: unknown, mapping: Record<string, string>, fallba
 export const actionLabel = (value: unknown) => humanize(value, ACTION_LABELS)
 export const statusLabel = (value: unknown) => humanize(value, STATUS_LABELS)
 export const goalLabel = (value: unknown) => humanize(value, GOAL_LABELS)
+export const modeLabel = (value: unknown) => humanize(value, MODE_LABELS, '当前策略模式')
+export function localizeStrategyText(value: unknown): string {
+  return String(value || '').replace(/\b(ATTACK|DEFEND|BEACON|ECONOMY|EXPLORE|RECOVER|RESPAWN)（[^）]+）/g, (_, mode) => modeLabel(mode))
+}
 export const taskLabel = (value: unknown) => humanize(value, TASK_LABELS)
 export const reasonLabel = (value: unknown) => humanize(value, REASON_LABELS)
 export const wakeLabel = (value: unknown) => humanize(value, WAKE_LABELS)
@@ -61,10 +73,17 @@ export function formatCell(value: unknown): string {
   return Array.isArray(value) && value.length === 2 ? `${value[0]},${value[1]}` : '—'
 }
 
-export function modeCausalityText(causality: any): string {
+export function modeCausalityLines(causality: any): string[] {
   const mode = causality?.mode
-  if (!mode) return '尚无本 Tick 的策略判定记录。'
-  const source = Array.isArray(mode.source_cell) ? ` 触发点 ${mode.source_cell.join(',')}。` : ''
-  const transition = mode.changed ? `从 ${mode.previous_mode || '未知'} 切换。` : `已持续 ${mode.duration_ticks ?? '—'} Tick。`
-  return `${mode.summary || mode.rule_id || '策略判定'} ${transition}${source} 退出条件：${mode.exit_condition || '下一份权威状态'}。`
+  if (!mode) return ['尚无本 Tick 的策略判定记录。']
+  const lines = [`当前模式：${modeLabel(mode.mode)}`, `判定依据：${mode.summary || '当前策略条件满足'}`]
+  if (mode.changed) lines.push(`模式变化：从${modeLabel(mode.previous_mode)}切换至${modeLabel(mode.mode)}`)
+  else lines.push(`持续时间：${mode.duration_ticks ?? '—'} Tick`)
+  if (Array.isArray(mode.source_cell)) lines.push(`触发点：${mode.source_cell.join(',')}`)
+  lines.push(`退出条件：${reasonLabel(mode.exit_condition) || '等待下一份权威状态'}`)
+  return lines
+}
+
+export function modeCausalityText(causality: any): string {
+  return modeCausalityLines(causality).join(' · ')
 }

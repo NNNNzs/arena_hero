@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { modeCausalityText } from '../domain/labels'
+import { modeCausalityLines, modeCausalityText } from '../domain/labels'
 import { useDashboardStore } from '../state/dashboard'
+import { useUiStore } from '../state/ui'
 
 const dashboard = useDashboardStore()
+const ui = useUiStore()
 const current = computed(() => dashboard.displayView.value?.current)
 const service = computed(() => dashboard.displayView.value?.service || {})
 const commandCenter = computed(() => dashboard.displayView.value?.command_center || {})
 const statusText = computed(() => !service.value.running ? '服务已停止' : service.value.connected ? '已连接 · 对战中' : '服务在线 · 等待连接')
+const causalityLines = computed(() => modeCausalityLines(commandCenter.value.causality))
 const causalityText = computed(() => modeCausalityText(commandCenter.value.causality))
-function showCausality() { window.alert(causalityText.value) }
+function showCausality() { ui.openModal({ eyebrow: '策略判定链', title: '当前模式判定链', lines: causalityLines.value }) }
 function openAuthDialog() { dashboard.openAuthDialog() }
 </script>
 

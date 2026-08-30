@@ -19,29 +19,38 @@
   };
   TacticalMap.createRadarPool = state => {
     state.radarPool = [];
+    if (!state.radarDomLayer) {
+      state.radarDomLayer = document.createElement('div');
+      state.radarDomLayer.className = 'map-radar-overlay';
+      state.radarDomLayer.setAttribute('aria-label', '屏幕外目标');
+      state.viewport.appendChild(state.radarDomLayer);
+      state.radarDomPool = [];
+    }
     for (let index = 0; index < LIMITS.radarMarkers; index += 1) {
       const arrow = new PIXI.Graphics();
       arrow.beginFill(0xffffff).drawPolygon([9, 0, -7, -5, -3, 0, -7, 5]).endFill();
       arrow.visible = false;
-      arrow.eventMode = 'static';
-      arrow.cursor = 'pointer';
+      arrow.eventMode = 'none';
 
       const label = new PIXI.Text('', { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 9, fill: COLOR_NUMBERS.text });
       label.visible = false;
-      label.eventMode = 'static';
-      label.cursor = 'pointer';
-
-      const onClick = () => {
-        if (entry.targetPosition) {
-          TacticalMap.focusCell?.(state, entry.targetPosition);
-          window.updateDashboardMapCursor?.(entry.targetPosition);
-        }
-      };
-      arrow.on('pointertap', onClick);
-      label.on('pointertap', onClick);
+      label.eventMode = 'none';
 
       state.radarLayer.addChild(arrow, label);
-      const entry = { arrow, label, targetPosition: null };
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'map-radar-button';
+      button.innerHTML = '<span class="map-radar-arrow" aria-hidden="true">➤</span><span class="map-radar-label"></span>';
+      const arrowNode = button.querySelector('.map-radar-arrow');
+      const labelNode = button.querySelector('.map-radar-label');
+      button.addEventListener('click', () => {
+        if (!entry.targetPosition) return;
+        TacticalMap.focusCell?.(state, entry.targetPosition);
+        window.updateDashboardMapCursor?.(entry.targetPosition);
+        window.showDashboardMessage?.(`已跳转至${entry.labelText} ${entry.targetPosition.join(',')}`, 'info');
+      });
+      state.radarDomLayer.appendChild(button);
+      const entry = { arrow, label, targetPosition: null, labelText: '', button, arrowNode, labelNode };
       state.radarPool.push(entry);
     }
   };
@@ -52,19 +61,26 @@
       if (!marker) {
         entry.arrow.visible = false;
         entry.label.visible = false;
+        entry.button.hidden = true;
         entry.targetPosition = null;
         return;
       }
       entry.targetPosition = marker.position;
+      entry.labelText = marker.label;
       const point = TacticalMap.radarPosition(state, marker.position);
       const color = marker.type === 'enemy' ? COLOR_NUMBERS.enemy : (marker.type === 'resource' ? COLOR_NUMBERS.resource : COLOR_NUMBERS.friendly);
-      entry.arrow.visible = true;
+      entry.arrow.visible = false;
       entry.arrow.tint = color;
       entry.arrow.position.set(point.x, point.y);
       entry.arrow.rotation = point.angle;
-      entry.label.visible = true;
-      entry.label.text = `${marker.label} ${point.distance}格 ➔`;
-      entry.label.position.set(clamp(point.x + 8, 6, state.size.w - 74), clamp(point.y + 7, 8, state.size.h - 18));
+      entry.label.visible = false;
+      entry.button.hidden = false;
+      entry.button.style.left = `${point.x}px`;
+      entry.button.style.top = `${point.y}px`;
+      entry.button.style.color = `#${color.toString(16).padStart(6, '0')}`;
+      entry.arrowNode.style.transform = `rotate(${point.angle}rad)`;
+      entry.labelNode.textContent = `${marker.label} ${point.distance}格`;
+      entry.button.setAttribute('aria-label', `跳转至${marker.label} ${marker.position.join(',')}，距离${point.distance}格`);
     });
   };
 })();

@@ -1,5 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import type { DashboardStore } from '../state/dashboard'
+import { showMessage } from '../state/ui'
 
 type MapWindow = Window & Record<string, any>
 
@@ -41,6 +42,7 @@ export function useTacticalMap(viewport: Ref<HTMLElement | null>, dashboard: Das
       if (node) node.hidden = !enabled
     }
     browser.setDashboardMapTarget = (cell: [number, number]) => dashboard.setTargetFromMap(cell)
+    browser.showDashboardMessage = (text: string, tone?: 'info' | 'success' | 'warning' | 'error') => showMessage(text, tone)
     browser.selectDashboardUnit = (alias: string) => dashboard.selectUnit(alias, { focusMap: false })
     render()
   }
