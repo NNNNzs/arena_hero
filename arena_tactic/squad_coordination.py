@@ -103,7 +103,7 @@ def intent_is_squad_protected(intent: ActionIntent | None) -> bool:
     if intent.action in {ActionKind.SHOOT, ActionKind.SWEEP, ActionKind.HEAL}:
         return True
     return any(token in intent.reason for token in (
-        "retreat", "heal", "critical", "emergency", "intercept_visible_threat",
+        "retreat", "heal", "critical", "emergency",
         "firing_line",
     ))
 
@@ -284,6 +284,7 @@ def coordinate_expedition_intents(
     contact_holds: bool = True,
     reason_prefix: str = "expedition",
     allow_single_maneuver: bool = False,
+    override_intercept_moves: bool = False,
 ) -> tuple[ActionIntent, ...]:
     """Replace independent Beacon movement with one complete squad order."""
     members = tuple(sorted(
@@ -311,7 +312,14 @@ def coordinate_expedition_intents(
             intent for intent in proposals if intent.actor_id != member.id
         ) + (replacement,)
     protected = {
-        unit.id for unit in members if intent_is_squad_protected(by_actor.get(unit.id))
+        unit.id
+        for unit in members
+        if intent_is_squad_protected(by_actor.get(unit.id))
+        or (
+            not override_intercept_moves
+            and by_actor.get(unit.id) is not None
+            and "intercept_visible_threat" in by_actor[unit.id].reason
+        )
     }
     detached = {
         unit.id for unit in members

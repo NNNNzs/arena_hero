@@ -8,7 +8,7 @@ from arena_hero import CoreView, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
-from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
+from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import distance, shot_range
 from ..squads import SquadPlan, SquadType
 from ..tactical_geometry import shadow_fire_advantage
@@ -85,7 +85,6 @@ def _ranger_staging_cell(
 def _plan_rangers(
     context: DecisionContext,
     memory: AgentMemory,
-    mode: StrategicMode,
     reservations: ReservationTable,
     deadline: float,
     config: AgentConfig,
@@ -212,22 +211,32 @@ def _plan_rangers(
             continue
 
         target_enemy = _best_visible_enemy(ranger, context, memory)
-        if target_enemy is not None and (
-            mode in (StrategicMode.DEFEND, StrategicMode.ATTACK)
-            or (
+        if target_enemy is not None:
+            staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
+            near_core = (
                 context.core is not None
                 and distance(target_enemy.position, context.core.position) <= config.intercept_distance
-                and ranger.id not in guard_rangers
             )
-        ):
-            staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
-            intent = _move(
-                ranger, staging, "ranger_seek_legal_firing_line", 580,
-                context=context, memory=memory, reservations=reservations,
-                deadline=deadline, config=config,
+            mobile_squad = ranger.id in (
+                expedition_rangers | mining_rangers | scout_rangers
             )
-            intents.append(intent or _wait(ranger, "firing_route_blocked"))
-            continue
+            # A base defender may adjust within the defense perimeter even
+            # when the intruder has not yet crossed the Core intercept radius.
+            # Do not turn a fixed guard into a long-range pursuer.
+            local_base_reposition = (
+                ranger.id in guard_rangers
+                and context.core is not None
+                and distance(ranger.position, context.core.position) <= config.intercept_distance
+                and distance(staging, context.core.position) <= config.intercept_distance
+            )
+            if near_core or mobile_squad or local_base_reposition:
+                intent = _move(
+                    ranger, staging, "ranger_seek_legal_firing_line", 580,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
+                )
+                intents.append(intent or _wait(ranger, "firing_route_blocked"))
+                continue
 
         cargo_yield = _yield_cargo_delivery(
             ranger, context, memory, reservations, config

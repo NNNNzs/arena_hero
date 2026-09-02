@@ -869,6 +869,7 @@ class AgentRuntime:
                 "beacon_exfil" if stage in exfil_stages else "expedition"
             ),
             allow_single_maneuver=stage in exfil_stages,
+            override_intercept_moves=True,
         )
 
     def _apply_core_migration(self, context: DecisionContext, memory: AgentMemory, proposals):

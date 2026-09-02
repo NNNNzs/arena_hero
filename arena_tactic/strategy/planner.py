@@ -68,7 +68,6 @@ def propose_intents(
         _plan_vanguards(
             context,
             memory,
-            mode,
             reservations,
             deadline,
             config,
@@ -80,7 +79,6 @@ def propose_intents(
         _plan_rangers(
             context,
             memory,
-            mode,
             reservations,
             deadline,
             config,

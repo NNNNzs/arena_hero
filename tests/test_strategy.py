@@ -8,6 +8,7 @@ from arena_tactic import (
     ranger_target_score,
 )
 from arena_tactic.context import DecisionContext
+from arena_tactic.identity import entity_alias
 from arena_tactic.models import ActionKind
 from arena_tactic.strategy.common import _unit_needs_retreat_heal
 from arena_tactic import strategy
@@ -261,6 +262,54 @@ def test_beacon_mode_intercepts_enemy_worker_near_core():
     assert vanguard_intent.reason == "intercept_visible_threat"
 
 
+def test_economy_base_defense_squad_engages_intruder_without_defend_mode():
+    """BASE_DEFENSE (基地防御) reacts to a local intruder in ECONOMY (经济模式)."""
+    guard_vanguard = unit(10, UnitType.VANGUARD, (0, 1))
+    guard_ranger = unit(11, UnitType.RANGER, (0, -1))
+    intruder = unit(200, UnitType.WORKER, (5, 0), controlled=False)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(guard_vanguard, guard_ranger),
+            enemies=(intruder,),
+            resource_cells=((2, 2),),
+        )
+    )
+
+    assert result.mode is StrategicMode.ECONOMY
+    assert next(item for item in result.intents if item.actor_id == guard_vanguard.id).reason == "intercept_visible_threat"
+    assert next(item for item in result.intents if item.actor_id == guard_ranger.id).reason == "ranger_seek_legal_firing_line"
+
+
+def test_beacon_scout_squad_engages_field_enemy_without_attack_mode():
+    """SCOUT_RECON (侦察) contacts are handled during BEACON (信标模式)."""
+    workers = tuple(unit(index, UnitType.WORKER, (index, -1)) for index in range(1, 4))
+    vanguards = tuple(unit(index + 10, UnitType.VANGUARD, (index, 1)) for index in range(1, 3))
+    scout = unit(20, UnitType.RANGER, (10, 0))
+    intruder = unit(200, UnitType.WORKER, (14, 0), controlled=False)
+    memory = AgentMemory(
+        manual_squad_assignments={
+            entity_alias(scout.id): "squad_scout_recon",
+        }
+    )
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(*workers, *vanguards, scout),
+            enemies=(intruder,),
+            beacon_position=(20, 0),
+        ),
+        memory=memory,
+    )
+
+    assert result.mode is StrategicMode.BEACON
+    intent = next(item for item in result.intents if item.actor_id == scout.id)
+    assert intent.action is ActionKind.MOVE
+    assert intent.reason == "ranger_seek_legal_firing_line"
+
+
 def test_insufficient_resources_and_respawn_clear_hidden_pressure():
     pressure = AgentMemory(last_tick=29, core_damage_streak=2, last_core_damage_tick=29)
     damaged = choose_actions(
@@ -483,8 +532,10 @@ def test_approaching_enemy_forms_intercept_without_emptying_core_guards():
     )
     tasks = second.next_memory.unit_tasks
 
-    assert sum(task["kind"] == "intercept" for task in tasks.values()) == 3  # 2 intercept + 1 guard remains; roster math updated below
-    assert sum(task["kind"] == "core_guard" for task in tasks.values()) == 2
+    # Nearby contacts now activate the local squads that can reach them; the
+    # global mode no longer caps engagement at the old intercept roster.
+    assert sum(task["kind"] == "intercept" for task in tasks.values()) >= 3
+    assert sum(task["kind"] == "core_guard" for task in tasks.values()) >= 1
     assert second.mode is not StrategicMode.DEFEND
 
 

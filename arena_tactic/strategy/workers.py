@@ -9,7 +9,7 @@ from arena_hero import CoreState, Direction, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
-from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
+from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells
 from ..squads import SquadPlan, SquadType
 from .common import (
@@ -26,7 +26,21 @@ from .common import (
     _unit_retreat_to_core,
     _wait,
 )
+from .combat import _enemy_can_attack_core
 from .mode import _core_emergency_defense
+
+
+def _workers_need_local_shelter(context: DecisionContext, memory: AgentMemory, config: AgentConfig) -> bool:
+    """Keep Workers safe from current local facts, not a remembered macro mode."""
+    core = context.core
+    return core is not None and (
+        _core_emergency_defense(context)
+        or any(
+            _enemy_can_attack_core(enemy, core, memory.obstacles)
+            or distance(enemy.position, core.position) <= config.intercept_distance
+            for enemy in context.enemies
+        )
+    )
 
 
 def _assign_unique_targets(
@@ -261,7 +275,7 @@ def _plan_workers(
     if core is None:
         return intents
     combat_ready = len(context.vanguards) >= 1 and len(context.rangers) >= 1
-    if memory.last_mode is StrategicMode.DEFEND or _core_emergency_defense(context):
+    if _workers_need_local_shelter(context, memory, config):
         for worker in sorted(context.workers, key=lambda unit: str(unit.id)):
             if (
                 worker.cargo

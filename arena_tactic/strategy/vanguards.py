@@ -9,8 +9,8 @@ from arena_hero import BeaconStatus, CoreView, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
-from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable, StrategicMode
-from ..navigation import DIRECTIONS, destination, distance
+from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
+from ..navigation import DIRECTIONS, destination, distance, shot_range
 from ..squads import SquadPlan, SquadType
 from ..tactical_geometry import best_mineral_tank_cell
 from .combat import (
@@ -57,10 +57,38 @@ def _vanguard_urgent_cell(
     )
 
 
+def _enemy_threatens_friendly(
+    enemy: CoreView | UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    config: AgentConfig,
+) -> bool:
+    """Use current local proximity, never the global strategic mode."""
+    def can_attack_unit(friendly: UnitView) -> bool:
+        if not isinstance(enemy, UnitView):
+            return False
+        if enemy.unit_type is UnitType.VANGUARD:
+            return distance(enemy.position, friendly.position) == 1
+        return (
+            enemy.unit_type is UnitType.RANGER
+            and shot_range(enemy.position, friendly.position, memory.obstacles) is not None
+        )
+
+    return (
+        context.core is not None
+        and (
+            _enemy_can_attack_core(enemy, context.core, memory.obstacles)
+            # A fixed base defender answers contacts inside the immediate
+            # perimeter.  Wider pursuit belongs to the mobile squads below.
+            or distance(enemy.position, context.core.position) <= config.defense_exit_distance
+            or any(can_attack_unit(friendly) for friendly in context.units)
+        )
+    )
+
+
 def _plan_vanguards(
     context: DecisionContext,
     memory: AgentMemory,
-    mode: StrategicMode,
     reservations: ReservationTable,
     deadline: float,
     config: AgentConfig,
@@ -126,15 +154,6 @@ def _plan_vanguards(
                 )
                 intents.append(intent or _wait(vanguard, "critical_retreat_blocked"))
             continue
-        if (
-            mode is StrategicMode.RECOVER
-            and vanguard.hp < UNIT_MAX_HP[UnitType.VANGUARD]
-            and _at_normal_core(vanguard, context)
-            and not urgent
-        ):
-            heal_cost = heal_allowances.get(vanguard.id, 0)
-            intents.append(_unit_heal_intent(vanguard, heal_cost) if heal_cost > 0 else _wait(vanguard, "healing_waits_for_resources"))
-            continue
         if _unit_needs_retreat_heal(vanguard, memory, config) and not urgent:
             if _at_normal_core(vanguard, context):
                 heal_cost = heal_allowances.get(vanguard.id, 0)
@@ -170,14 +189,13 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "hidden_attacker_search_blocked"))
             continue
 
+        mobile_or_intercept_squad = (
+            expedition_vanguards | mining_vanguards | scout_vanguards | intercept_vanguards
+        )
         target_enemy = _best_visible_enemy(vanguard, context, memory)
         if target_enemy is not None and (
-            mode is StrategicMode.DEFEND
-            or (
-                context.core is not None
-                and distance(target_enemy.position, context.core.position) <= config.intercept_distance
-                and vanguard.id in intercept_vanguards
-            )
+            vanguard.id in mobile_or_intercept_squad
+            or _enemy_threatens_friendly(target_enemy, context, memory, config)
         ):
             intent = _move(
                 vanguard, target_enemy.position, "intercept_visible_threat", 740,
@@ -188,7 +206,10 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
             continue
 
-        if mode is StrategicMode.DEFEND and context.core is not None:
+        if (
+            context.core is not None
+            and vanguard.id in (guard_vanguards | mining_vanguards)
+        ):
             occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
             occupied.discard(vanguard.position)
             tank_cell = best_mineral_tank_cell(
@@ -261,16 +282,6 @@ def _plan_vanguards(
                 "kind": "expedition_beacon",
                 "target": list(context.beacon.position),
             }
-            continue
-
-        target_enemy = _best_visible_enemy(vanguard, context, memory)
-        if target_enemy is not None and mode is StrategicMode.ATTACK:
-            intent = _move(
-                vanguard, target_enemy.position, "advance_on_high_value_enemy", 600,
-                context=context, memory=memory, reservations=reservations,
-                deadline=deadline, config=config,
-            )
-            intents.append(intent or _wait(vanguard, "enemy_approach_blocked"))
             continue
 
         cargo_yield = _yield_cargo_delivery(
