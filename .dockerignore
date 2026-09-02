@@ -11,5 +11,6 @@ tests/
 docs/
 .agents/
 .pytest_cache/
-node_modules/
+**/node_modules/
+**/dist/
 arena_tactic/web/static/app/

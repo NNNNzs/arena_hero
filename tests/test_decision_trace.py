@@ -386,6 +386,17 @@ def test_writer_rotates_by_size_and_close_preserves_current_plus_three_history_f
     assert not any(thread.name == sink.thread_name and thread.is_alive() for thread in threading.enumerate())
 
 
+def test_trace_rotation_keeps_oldest_volume_when_cloud_guard_is_not_ready(tmp_path):
+    path = tmp_path / "decision-trace.jsonl"
+    oldest = path.with_name(path.name + ".1")
+    oldest.write_text('{"tick":1}\n', encoding="utf-8")
+    path.write_text('{"tick":2}\n', encoding="utf-8")
+    sink = BoundedTraceSink(path, history_files=1, can_discard=lambda _: False)
+    assert not sink._rotate_files()
+    assert oldest.exists()
+    assert sink.close(timeout=2)
+
+
 def test_audit_writer_is_async_redacted_and_rotates_with_eight_file_budget(tmp_path):
     path = tmp_path / "audit.jsonl"
     sink = BoundedAuditSink(path, max_records=32, max_bytes=512, max_file_bytes=512)

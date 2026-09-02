@@ -89,17 +89,22 @@
   window.resetTacticalMap = () => { const core = [...state.entityModels.values()].find(model => !model.enemy && model.kind === 'CORE'); state.trackingKey = null; state.camera.anchor = core ? [...core.target] : [0, 0]; state.camera.pan = { x: 0, y: 0 }; state.camera.scale = 24; T.schedulePersist(state, true); state.scheduler.invalidate(FLAGS.CAMERA | FLAGS.SELECTION, 'reset'); };
   window.setTacticalMapLayer = (name, enabled) => { if (name === 'vision') state.layers.vision = typeof enabled === 'string' ? enabled : (enabled ? 'selected' : 'off'); else if (name in state.layers) state.layers[name] = Boolean(enabled); else return; if (!['selected', 'all', 'off'].includes(state.layers.vision)) state.layers.vision = 'selected'; syncControls(); T.schedulePersist(state); state.scheduler.invalidate(FLAGS.LAYERS | FLAGS.SELECTION, `layer:${name}`); };
   window.setTacticalVisionMode = value => window.setTacticalMapLayer('vision', value); window.setTacticalMapTargetMode = enabled => { state.pickMode = Boolean(enabled); state.previewTarget = state.pickMode ? T.currentCenterCell(state) : null; window.updateDashboardTargetMode?.(state.pickMode); T.updateCoordinateReadouts(state); state.scheduler.invalidate(FLAGS.SELECTION, state.pickMode ? 'target-mode' : 'target-cancel'); }; window.getTacticalMapStats = state.debugEnabled ? () => ({ ...state.stats, scheduler: state.scheduler.state(), entityModels: state.entityModels.size, entityViews: state.entityViews.size }) : () => null;
-  window.renderTacticalMap = view => { if (!T.ensureRenderer(state)) return; updateData(view); };
+  window.renderTacticalMap = (view, memoryData) => {
+    if (!T.ensureRenderer(state)) return;
+    if (memoryData !== undefined) state.memoryData = memoryData || null;
+    updateData(view);
+  };
   T.updateMemory = function(memoryData) {
     state.memoryData = memoryData || null;
     if (state.currentView) {
-      // Merge memory data into current view for immediate rendering.
-      state.currentView.exploredSegments = (memoryData && memoryData.explored_segments) || [];
-      state.currentView.mergedMined = (memoryData && memoryData.mined) || [];
-      state.currentView.mergedObstacles = (memoryData && memoryData.obstacles) || [];
-      state.currentView.mergedKnownResources = (memoryData && memoryData.known_resources) || [];
+      const mem = state.memoryData || {};
+      state.currentView.exploredSegments = (mem.explored_segments || []).filter(function(s) { return Array.isArray(s) && s.length === 3; });
+      state.currentView.mined = (mem.mined || []).filter(isCell).map(c => c.map(Number));
+      state.currentView.obstacles = (mem.obstacles || []).filter(isCell).map(c => c.map(Number));
+      state.currentView.knownResources = (mem.known_resources || []).filter(isCell).map(c => c.map(Number));
     }
     state.scheduler.invalidate(FLAGS.DATA, 'memory-update');
   };
+  window.updateTacticalMemory = memoryData => T.updateMemory(memoryData);
   const observer = new ResizeObserver(() => T.resizeSurface(state)); observer.observe(viewport); document.addEventListener('visibilitychange', () => { if (document.hidden) state.scheduler.cancel(); else { T.resizeSurface(state); state.scheduler.invalidate(FLAGS.ALL, 'visibility-resume'); state.scheduler.resume(); } }); window.addEventListener('beforeunload', () => T.schedulePersist(state, true), { once: true }); if (window.DashboardReplay?.selected) window.renderTacticalMap(window.DashboardReplay.selected);
 })();

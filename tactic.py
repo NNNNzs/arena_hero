@@ -37,6 +37,14 @@ _FRONTEND_APP_ROOT = Path(os.environ.get("ARENA_HERO_FRONTEND_APP_ROOT") or str(
 _FRONTEND_APP_INDEX = _FRONTEND_APP_ROOT / "index.html"
 
 
+def _history_files_from_environment() -> int:
+    """Keep 12 volumes (current + 11 history) by default: about 768 MiB replay."""
+    try:
+        return max(0, int(os.environ.get("ARENA_HERO_HISTORY_FILES", "11")))
+    except ValueError:
+        return 11
+
+
 def ensure_frontend_built() -> None:
     """Build the ignored Vue output once before the real service starts."""
     if _FRONTEND_APP_INDEX.is_file():
@@ -284,10 +292,16 @@ def play(api_key: str, *, status: ServiceStatus | None = None, stop: threading.E
     if writer is None and supabase is not None:
         writer = AsyncSupabaseWriter(supabase)
         own_writer = True
-    replay = ReplayWriter(Path(__file__).with_name("runtime") / "replay.jsonl", writer=writer)
+    history_files = _history_files_from_environment()
+    replay = ReplayWriter(
+        Path(__file__).with_name("runtime") / "replay.jsonl", history_files=history_files, writer=writer,
+        can_discard=(lambda path: writer.can_discard_history_file("replay", path)) if writer is not None else None,
+    )
     trace_sink = BoundedTraceSink(
         Path(__file__).with_name("runtime") / "decision-trace.jsonl",
+        history_files=history_files,
         on_record=(lambda record: writer.submit("trace", record)) if writer is not None else None,
+        can_discard=(lambda path: writer.can_discard_history_file("trace", path)) if writer is not None else None,
     )
     runtime = AgentRuntime(memory_store=MemoryStore(state_file, supabase=supabase, writer=writer), trace_sink=trace_sink,
                            command_queue=command_queue, config=config or _runtime_config_from_environment())

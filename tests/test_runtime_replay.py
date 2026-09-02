@@ -252,6 +252,17 @@ def test_replay_v1_rotates_by_size_without_changing_record_schema(tmp_path):
     assert all(file.stat().st_size <= 900 for file in files)
 
 
+def test_replay_rotation_keeps_oldest_volume_when_cloud_guard_is_not_ready(tmp_path):
+    writer = ReplayWriter(tmp_path / "replay.jsonl", max_file_bytes=900, history_files=1, can_discard=lambda _: False)
+    oldest = writer.path.with_name("replay.jsonl.1")
+    oldest.write_text('{"tick":1}\n', encoding="utf-8")
+    writer.path.write_bytes(b"x" * 900)
+
+    assert not writer._rotate_files()
+    assert oldest.exists()
+    assert writer.path.exists()
+
+
 def test_terminal_summary_includes_redacted_per_actor_intents_and_events():
     worker = unit(1, UnitType.WORKER, (0, 0))
     resolved_event = event(

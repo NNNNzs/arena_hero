@@ -44,13 +44,25 @@ export function useTacticalMap(viewport: Ref<HTMLElement | null>, dashboard: Das
     browser.setDashboardMapTarget = (cell: [number, number]) => dashboard.setTargetFromMap(cell)
     browser.showDashboardMessage = (text: string, tone?: 'info' | 'success' | 'warning' | 'error') => showMessage(text, tone)
     browser.selectDashboardUnit = (alias: string) => dashboard.selectUnit(alias, { focusMap: false })
+    updateMemory()
     render()
+  }
+
+  function updateMemory() {
+    if (!ready.value || disposed) return
+    const browser = window as MapWindow
+    if (dashboard.memory.value) {
+      browser.updateTacticalMemory?.(dashboard.memory.value)
+    }
   }
 
   function render() {
     if (!ready.value || disposed || !viewport.value) return
     const browser = window as MapWindow
-    browser.renderTacticalMap?.(dashboard.displayView.value)
+    if (dashboard.memory.value && browser.updateTacticalMemory) {
+      browser.updateTacticalMemory(dashboard.memory.value)
+    }
+    browser.renderTacticalMap?.(dashboard.displayView.value, dashboard.memory.value)
   }
 
   function setLayer(name: 'fog' | 'vision' | 'coordinates' | 'labels', value: boolean | string) {
@@ -81,7 +93,10 @@ export function useTacticalMap(viewport: Ref<HTMLElement | null>, dashboard: Das
 
   onMounted(() => { void loadEngine() })
   watch(() => dashboard.displayView.value, render, { deep: false })
-  watch(() => dashboard.memory.value, render)
+  watch(() => dashboard.memory.value, () => {
+    updateMemory()
+    render()
+  })
   watch(() => dashboard.mapRequest.value?.id, applyRequest)
   onBeforeUnmount(() => { disposed = true })
 

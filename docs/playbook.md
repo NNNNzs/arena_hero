@@ -172,3 +172,7 @@
   - 战术编制：信标远征大队 (`EXPEDITION_BEACON`) 先锋与游侠协同向西南信标 `[-1141, -308]` 挺进（先头梯队抵达 `[-1111..-1120, 894..1087]`）；基地防御防线 (`BASE_DEFENSE`) 卡位环防哨位；
   - 根因分析：远征支援游侠 `f66ef66baafa` 恰好停留在核心所在格 `[-898, 1573]`，导致 6 名载货工人因回矿入库格与正向通道占用（`yield_doorstep_congestion` / `no_safe_route_with_cargo`）堵在核心门前 1~3 格内无法入库；
   - 处置：通过 Command API 下发 `ASSIGN_TASK / MOVE_TO_CELL` 将核心格游侠 `entity_f66ef66baafa` 调离至侧翼 `[-894, 1577]`，指令成功于 Tick 171943 生效执行（`status: APPLIED`），释放核心入库格。同时生成全景 Markdown 战报并成功发送 HTML 邮件至 709934831@qq.com 归档。
+### 2026-09-02 | Hot Tier (热数据层) 7-day retention and Cold Tier (冷数据层) deletion guard
+- Replay and decision trace now retain **current + 11 history volumes** by default (12 volumes; replay budget about 768 MiB). Set `ARENA_HERO_HISTORY_FILES` only when an operator intentionally changes that window.
+- Before a rotated volume is discarded, `AsyncSupabaseWriter` runs a background JSONL backfill and confirms every Tick has been accepted by Supabase. While that is pending or unavailable, rotation retains the oldest volume and appends locally; the Tick loop never waits for the network.
+- Run `python scripts/prune_and_sync_history.py --dry-run --days 7` for the lifecycle audit, then omit `--dry-run` to reconcile missing replay/trace Ticks and delete only safe, expired rotated volumes. `protected-unsynced` means no deletion occurred / `未同步受保护` 表示未删除。

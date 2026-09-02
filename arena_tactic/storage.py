@@ -128,10 +128,19 @@ class SupabaseStorage:
 
 
 class AsyncSupabaseWriter:
-    """Drop-on-pressure writer; it is deliberately not a match-loop dependency."""
+    """Best-effort Tick writer plus durable, asynchronous JSONL backfill.
+
+    Tick records may still be dropped when the small live queue is full, but a
+    rotated local volume is never discarded until a separate file job has
+    successfully replayed every record in that volume.  All guard operations
+    are in-memory and return immediately.
+    """
     def __init__(self, storage: SupabaseStorage, *, max_records: int = 256) -> None:
         self.storage, self.queue = storage, queue.Queue(maxsize=max_records)
         self.closed = False
+        self._history_lock = threading.Lock()
+        self._history_pending: set[tuple[str, int, int, int]] = set()
+        self._history_synced: set[tuple[str, int, int, int]] = set()
         self.thread = threading.Thread(target=self._run, name="supabase-writer", daemon=True)
         self.thread.start()
 
@@ -144,13 +153,69 @@ class AsyncSupabaseWriter:
         except queue.Full:
             return False
 
+    @staticmethod
+    def _file_key(operation: str, path: Path) -> tuple[str, int, int, int] | None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return operation, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+    def can_discard_history_file(self, operation: str, path: Path) -> bool:
+        """Return whether *path* was fully backfilled; schedule it otherwise."""
+        key = self._file_key(operation, path)
+        if key is None:
+            return True
+        with self._history_lock:
+            if key in self._history_synced:
+                return True
+            if key in self._history_pending or self.closed:
+                return False
+            self._history_pending.add(key)
+        try:
+            self.queue.put_nowait(("history_file", (operation, path, key)))
+        except queue.Full:
+            with self._history_lock:
+                self._history_pending.discard(key)
+        return False
+
     def _run(self) -> None:
         while True:
             item = self.queue.get()
             if item is None:
                 return
             operation, record = item
-            getattr(self.storage, f"save_{operation}")(record)
+            if operation == "history_file":
+                self._sync_history_file(*record)
+            else:
+                getattr(self.storage, f"save_{operation}")(record)
+
+    def _sync_history_file(self, operation: str, path: Path, key: tuple[str, int, int, int]) -> None:
+        complete = True
+        try:
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # tolerate only a torn final crash line
+                    if not isinstance(record, dict) or not isinstance(record.get("tick"), int):
+                        continue
+                    if operation == "trace" and record.get("record_type") in {
+                        "trace_tick_summary", "trace_drop_summary",
+                    }:
+                        # These are local loss-accounting markers, not a
+                        # complete DecisionTrace and must never overwrite one.
+                        continue
+                    if not getattr(self.storage, f"save_{operation}")(record):
+                        complete = False
+                        break
+        except OSError:
+            complete = False
+        with self._history_lock:
+            self._history_pending.discard(key)
+            if complete:
+                self._history_synced.add(key)
 
     def close(self, timeout: float = 2.0) -> None:
         self.closed = True

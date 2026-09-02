@@ -7,7 +7,7 @@ import os
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from arena_hero import CoreView, UnitView
@@ -240,8 +240,9 @@ class ReplayWriter:
         self,
         path: Path,
         max_file_bytes: int = 64 * 1024 * 1024,
-        history_files: int = 3,
+        history_files: int = 11,
         writer: Any | None = None,
+        can_discard: Callable[[Path], bool] | None = None,
     ) -> None:
         if max_file_bytes <= 0:
             raise ValueError("max_file_bytes must be positive")
@@ -251,6 +252,10 @@ class ReplayWriter:
         self.max_file_bytes = max_file_bytes
         self.history_files = history_files
         self.writer = writer
+        # This callback must return promptly.  The service implementation
+        # schedules a background backfill on a miss and returns False until it
+        # has observed every JSONL record in Supabase.
+        self.can_discard = can_discard
         self._lock = threading.Lock()
 
     def append(
@@ -282,10 +287,17 @@ class ReplayWriter:
         if self.writer is not None:
             self.writer.submit("replay", record)
 
-    def _rotate_files(self) -> None:
+    def _rotate_files(self) -> bool:
+        discard_target = self.path if self.history_files == 0 else self.path.with_name(
+            f"{self.path.name}.{self.history_files}"
+        )
+        if discard_target.exists() and self.can_discard is not None and not self.can_discard(discard_target):
+            # Data safety is more important than a strict per-file ceiling.
+            # A later append retries after the asynchronous backfill finishes.
+            return False
         if self.history_files == 0:
             self.path.unlink(missing_ok=True)
-            return
+            return True
         oldest = self.path.with_name(f"{self.path.name}.{self.history_files}")
         oldest.unlink(missing_ok=True)
         for index in range(self.history_files - 1, 0, -1):
@@ -294,6 +306,7 @@ class ReplayWriter:
                 os.replace(source, self.path.with_name(f"{self.path.name}.{index + 1}"))
         if self.path.exists():
             os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
+        return True
 
 
 def replay_metrics(path: Path) -> dict[str, Any]:

@@ -235,8 +235,9 @@ class BoundedTraceSink:
         max_records: int = 256,
         max_bytes: int = 64 * 1024,
         max_file_bytes: int = 32 * 1024 * 1024,
-        history_files: int = 3,
+        history_files: int = 11,
         on_record: Callable[[dict[str, Any]], None] | None = None,
+        can_discard: Callable[[Path], bool] | None = None,
     ) -> None:
         if max_records <= 0:
             raise ValueError("max_records must be positive")
@@ -251,6 +252,7 @@ class BoundedTraceSink:
         self.max_file_bytes = max_file_bytes
         self.history_files = history_files
         self.on_record = on_record
+        self.can_discard = can_discard
         self._max_records = max_records
         self._records: deque[tuple[int, bytes]] = deque()
         self.dropped = 0
@@ -466,11 +468,18 @@ class BoundedTraceSink:
         stream.write(line)
         return stream
 
-    def _rotate_files(self) -> None:
+    def _rotate_files(self) -> bool:
         assert self.path is not None
+        discard_target = self.path if self.history_files == 0 else self.path.with_name(
+            f"{self.path.name}.{self.history_files}"
+        )
+        if discard_target.exists() and self.can_discard is not None and not self.can_discard(discard_target):
+            # The callback only enqueues/checks work; never wait for the
+            # network on this dedicated writer thread.
+            return False
         if self.history_files == 0:
             self.path.unlink(missing_ok=True)
-            return
+            return True
         oldest = self.path.with_name(f"{self.path.name}.{self.history_files}")
         oldest.unlink(missing_ok=True)
         for index in range(self.history_files - 1, 0, -1):
@@ -479,6 +488,7 @@ class BoundedTraceSink:
                 os.rename(source, self.path.with_name(f"{self.path.name}.{index + 1}"))
         if self.path.exists():
             os.rename(self.path, self.path.with_name(f"{self.path.name}.1"))
+        return True
 
     def _remember_failed_payload(self, payload: bytes) -> None:
         try:
