@@ -18,7 +18,7 @@ from ..models import (
 )
 from ..squad_coordination import coordinate_expedition_intents
 from ..squads import SQUAD_ID_BY_TYPE, SquadType, build_squad_plan
-from .common import CORE_MAX_HP, UNIT_MAX_HP, _anticipated_resources, _at_normal_core
+from .common import CORE_MAX_HP, UNIT_MAX_HP, _anticipated_resources, _at_normal_core, _evict_combat_from_core_for_cargo
 from .core_plan import _plan_core
 from .mode import choose_mode
 from .rangers import _plan_rangers
@@ -100,6 +100,13 @@ def propose_intents(
             tuple(intents),
             deadline=deadline,
         ))
+    # Post-process: evict any combat unit WAIT-ing on the core cell so
+    # that cargo workers can enter and deposit.  This catches cases the
+    # in-tree _yield_cargo_delivery call cannot reach (expedition contact
+    # hold, guard-route-blocked, healing-waits-for-resources, etc.).
+    intents = _evict_combat_from_core_for_cargo(
+        intents, context, memory, reservations, config,
+    )
     planned_unit_heals = sum(
         intent.estimated_cost
         for intent in intents

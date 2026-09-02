@@ -331,9 +331,10 @@ def coordinate_expedition_intents(
         if cohesion.extreme_split and active_members else None
     )
     center = (
-        # For an extreme split, rally behind the leading active unit.  The
-        # leader remains held while every trailing member receives a real
-        # catch-up route rather than serializing behind the pace unit.
+        # For an extreme split, trailing members rally behind the leading
+        # active unit.  The leader itself keeps advancing: holding it at the
+        # rally point turns a cross-map reinforcement delay into an indefinite
+        # expedition-wide stall.
         max(
             active_members,
             key=lambda unit: (-distance(unit.position, squad.target), unit.id.bytes),
@@ -392,13 +393,13 @@ def coordinate_expedition_intents(
         else:
             cohesion_holds.pop(f"pace_{unit.id}", None)
 
-        # During an inter-chunk split retain the forward rally leader, but do
-        # not serialize every trailing member behind the single pace unit.
-        # Each trailing member gets its own slot and can leave congestion in
-        # the same Tick.
+        # Cohesion holds are useful only for a local formation.  During an
+        # inter-chunk split, neither the front nor the reinforcements may be
+        # frozen: the front advances/guards the objective and every trailing
+        # member gets an independent catch-up route.
         if (
             unit.id in cohesion.hold_unit_ids
-            and (not cohesion.extreme_split or unit.id == extreme_rally_leader_id)
+            and not cohesion.extreme_split
         ):
             hold_key = str(unit.id)
             hold_count = cohesion_holds.get(hold_key, 0) + 1
@@ -414,7 +415,11 @@ def coordinate_expedition_intents(
         else:
             cohesion_holds.pop(str(unit.id), None)
 
-        target = slots[unit.id]
+        target = (
+            squad.target
+            if cohesion.extreme_split and unit.id == extreme_rally_leader_id
+            else slots[unit.id]
+        )
         if unit.position == target:
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 680,

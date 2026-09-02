@@ -253,14 +253,14 @@ def build_squad_plan(
         members[SquadType.SCOUT_RECON].extend(chosen)
         assigned.update(unit.id for unit in chosen)
 
-    # Remaining combat units: dynamically reinforce active strategic frontline
-    # (BEACON expedition in Beacon mode, SCOUT_RECON in peacetime), rather than
-    # endlessly stacking up and crowding the home core in BASE_DEFENSE.
+    # Dedicated expedition sizes are hard caps.  A Beacon campaign must not
+    # absorb every newly available combat unit, because that silently changes
+    # its configured formation and can leave a far-away straggler pacing the
+    # whole squad.  Keep the reserve in the defensive roster; it can still be
+    # explicitly reassigned by the operator on a later Turn.
     reserve = [unit for unit in units if unit.id not in assigned]
     if reserve:
-        if memory.last_mode is StrategicMode.BEACON:
-            members[SquadType.EXPEDITION_BEACON].extend(reserve)
-        elif memory.last_mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE):
+        if memory.last_mode in (StrategicMode.ECONOMY, StrategicMode.EXPLORE):
             members[SquadType.SCOUT_RECON].extend(reserve)
         else:
             members[SquadType.BASE_DEFENSE].extend(reserve)

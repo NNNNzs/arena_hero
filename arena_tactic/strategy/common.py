@@ -493,6 +493,7 @@ def _deploy_sidestep(
     blocked = (
         memory.obstacles
         | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
         | set(context.enemy_occupancy)
     )
     current_dist_to_target = distance(unit.position, target)
@@ -542,6 +543,56 @@ def _deploy_sidestep(
                 reserved_cell=cand,
             )
     return None
+
+
+def _evict_combat_from_core_for_cargo(
+    intents: list[ActionIntent],
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    config: AgentConfig,
+) -> list[ActionIntent]:
+    """Replace WAIT intents for combat units on the core cell with yield moves.
+
+    When a combat unit (RANGER/VANGUARD) stands on the core position and its
+    planned action is WAIT (from any branch: expedition contact hold, guard
+    route blocked, healing-waits-for-resources, holding defense ring, etc.),
+    it blocks cargo workers from entering the core to deposit resources.
+
+    This post-processing step catches ALL such WAIT-on-core cases that the
+    in-tree ``_yield_cargo_delivery`` call cannot reach.
+    """
+    if context.core is None:
+        return intents
+    core_position = context.core.position
+    combat_ids = {unit.id for unit in (*context.rangers, *context.vanguards)}
+    changed = False
+    result: list[ActionIntent] = []
+    for intent in intents:
+        if (
+            intent.action is ActionKind.WAIT
+            and intent.actor_id in combat_ids
+        ):
+            unit = context.current_objects.get(intent.actor_id)
+            if (
+                isinstance(unit, UnitView)
+                and unit.position == core_position
+            ):
+                yield_intent = _yield_cargo_delivery(
+                    unit, context, memory, reservations, config
+                )
+                if yield_intent is not None:
+                    _record_unit_task(
+                        memory, context, unit,
+                        kind="yield_cargo_delivery",
+                        target=yield_intent.target_cell or unit.position,
+                        intent=yield_intent,
+                    )
+                    result.append(yield_intent)
+                    changed = True
+                    continue
+        result.append(intent)
+    return result
 
 
 def _yield_cargo_delivery(

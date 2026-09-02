@@ -178,25 +178,29 @@ class EventLogCollector:
             if self.writer is not None:
                 for event in generated:
                     self.writer.submit("event", {**event, "description": _description(event["type"], event.get("position"), event.get("target"), event.get("values", {}))})
-            elif self.supabase is not None:
-                for event in generated:
-                    self.supabase.save_event({**event, "description": _description(event["type"], event.get("position"), event.get("target"), event.get("values", {}))})
         self._save_state(state)
         return generated
 
     def read(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        try:
+            rows = [json.loads(line) for line in self.event_path.read_text(encoding="utf-8").splitlines()]
+        except (OSError, json.JSONDecodeError):
+            rows = []
+        if rows:
+            return [row for row in rows if isinstance(row, dict)][-max(0, limit):]
         if self.supabase is not None:
             rows = self.supabase.select("arena_events", params={"select": "*", "order": "tick.desc", "limit": str(max(0, limit))})
             if rows is not None:
                 return list(reversed(rows))
-        try:
-            rows = [json.loads(line) for line in self.event_path.read_text(encoding="utf-8").splitlines()]
-        except (OSError, json.JSONDecodeError): return []
-        return [row for row in rows if isinstance(row, dict)][-max(0, limit):]
+        return []
 
     def summary(self) -> dict[str, Any]:
         self.collect()
-        rows = self.read(limit=self.max_events)
+        try:
+            rows = [json.loads(line) for line in self.event_path.read_text(encoding="utf-8").splitlines()]
+        except (OSError, json.JSONDecodeError):
+            rows = []
+        rows = [row for row in rows if isinstance(row, dict)][-self.max_events:]
         return {
             "total": len(rows),
             "counts": dict(Counter(item.get("type") for item in rows if item.get("type"))),
@@ -212,7 +216,7 @@ class EventLogCollector:
         category: str | None = None,
     ) -> dict[str, Any]:
         self.collect()
-        rows = self.read(limit=self.max_events)
+        rows = self.read(limit=min(limit, self.max_events) if (from_tick is None and to_tick is None) else self.max_events)
         total = len(rows)
         all_category_counts = dict(Counter(item.get("category") for item in rows if item.get("category")))
         all_type_counts = dict(Counter(item.get("type") for item in rows if item.get("type")))

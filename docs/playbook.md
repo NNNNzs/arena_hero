@@ -5,6 +5,16 @@
 
 ## 处置案例
 
+### 2026-09-02 Tick 208280+ | CARGO_DELIVERY_STAGNATION (载货工人回矿停滞) / SQUAD_EXPEDITION_STALL (信标远征编队停滞) 工程修复
+- **现象**：核心位于单通道口袋 `[-898, 1573]`；核心格被 CORE 与空载工人占满，唯一西向出口被两名载货工人占满，后方载货队列持续 `no_safe_route_with_cargo` (载货无安全回矿路径)。同时，Beacon expedition (信标远征打击群) 前锋与基地新兵相隔数千格，前锋被 `expedition_cohesion_hold` (远征编队凝聚等待) 长期冻结。
+- **根因分析**：工人排序把距核心一格的载货工人排在核心格空载工人前，导致 Swap Deadlock (对换死锁)。预约表只会拒绝满格入口，旧逻辑没有为满载的单通道建立可解析的离开依赖。远征协调则把 extreme split (极端分裂，成员间距超过门限) 当作普通 regroup (重新集结)，错误地让前锋也进入等待。
+- **处置动作**：
+  1. 将 `vacate_core_cell_for_delivery` (为运矿腾退核心格) 提升为最高工人规划优先级；出口已有一名友军时，继续利用每格 2 个单位的合法容量预约。
+  2. 新增有界的 `yield_delivery_corridor_congestion` (运矿走廊拥堵退让) 链：从最外层载货工开始向远离核心或侧向的安全格退避，逐层登记 departure (离开预约)，随后让核心格空载工进入刚释放的咽喉格；满格无可行出口时仍安全 WAIT (等待)，不虚构移动。
+  3. extreme split (极端分裂) 时，前锋继续向 Beacon objective (信标目标) 推进或前沿警戒；后方成员以独立槽位全速向前锋集结，不再触发全队 `expedition_cohesion_hold` (远征编队凝聚等待)。
+  4. 将 `EXPEDITION_BEACON` (信标远征打击群) 的专有先锋/游侠编制作为硬上限，reserve (预备队) 留在 `BASE_DEFENSE` (基地防御编队)，不再无上限灌入远征队。
+- **回归验证**：新增/更新单通道口袋、门口满载退让和极端分裂前锋推进测试；执行 `pytest tests/ -q` 全量验证后提交。
+
 ### 2026-08-23 Tick 157039~157350 | DEFENSE_DISENGAGED (防守单位脱离交战) 与关联误报排查处置
 - **现象**：哨兵在 Tick 157039~157050 检测到 `DEFENSE_DISENGAGED` (防守单位脱离交战)，并在长窗口观察到 `EXPLORATION_STALL` (迷雾探索停滞) 与 `PRODUCTION_FREEZE` (兵营生产冻结)。
 - **根因分析**：

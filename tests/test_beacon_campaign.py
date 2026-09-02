@@ -232,7 +232,9 @@ def test_campaign_extreme_split_advances_trailing_escort_without_mutual_hold():
     )
 
     intents = {item.actor_id: item for item in result.intents}
-    assert intents[front.id].reason == "expedition_cohesion_hold"
+    assert intents[front.id].action.value == "MOVE"
+    assert intents[front.id].reason.startswith("expedition_regroup")
+    assert intents[front.id].reserved_cell == (201, 0)
     assert intents[trailing.id].action.value == "MOVE"
     assert intents[trailing.id].reason == "expedition_regroup"
     assert intents[trailing.id].reserved_cell == (1, 0)
@@ -254,7 +256,9 @@ def test_campaign_extreme_split_releases_the_entire_trailing_group_to_march():
     ))
 
     intents = {item.actor_id: item for item in result.intents}
-    assert intents[front.id].reason == "expedition_cohesion_hold"
+    assert intents[front.id].action.value == "MOVE"
+    assert intents[front.id].reason.startswith("expedition_regroup")
+    assert intents[front.id].reserved_cell == (201, 0)
     for member in (trailing_vanguard, trailing_ranger_one, trailing_ranger_two):
         assert intents[member.id].action.value == "MOVE"
         assert intents[member.id].reason.startswith("expedition_regroup")

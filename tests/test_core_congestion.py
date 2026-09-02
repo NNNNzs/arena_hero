@@ -25,13 +25,13 @@ def test_empty_worker_vacates_core_cell_when_no_frontier():
     assert "vacate_core_cell_for_delivery" in reasons or "core_cell_vacate_blocked" in reasons
 
 
-def test_cargo_worker_prioritized_before_empty_worker():
-    """载货工人应先于空载工人获得决策预约权（排序逻辑直接验证）。"""
+def test_empty_core_worker_prioritized_before_doorstep_cargo():
+    """核心格空载工人必须先获得腾退预约权，避免对换死锁。"""
     workers_sorted = sorted(
         [("b", 0), ("a", 2)],
-        key=lambda item: (0 if item[1] else 1, item[0]),
+        key=lambda item: (0 if not item[1] else 1, item[0]),
     )
-    assert workers_sorted[0] == ("a", 2)
+    assert workers_sorted[0] == ("b", 0)
 
 
 def test_doorstep_congestion_only_one_cargo_worker_yields():
@@ -43,16 +43,22 @@ def test_doorstep_congestion_only_one_cargo_worker_yields():
     # 核心上站一个空载工人使得核心格满员
     w_core = unit(3, UnitType.WORKER, (0, 0), cargo=0)
     
-    # 周边开阔
+    # 单通道口袋：Core 只有西侧门口可走。
     memory = AgentMemory()
-    result = choose_actions(turn(owned_core=c, units=(w1, w2, w_core)), memory=memory)
+    result = choose_actions(turn(
+        owned_core=c,
+        units=(w1, w2, w_core),
+        obstacle_cells=((0, -1), (1, 0), (0, 1)),
+    ), memory=memory)
     
     intents = {i.actor_id: i for i in result.intents}
     reasons = [intents[w1.id].reason, intents[w2.id].reason]
     
-    # 应该有且仅有一名工人触发 yield_doorstep_congestion
+    # 一个门口工人退避，核心工人同 Tick 进入刚腾出的唯一出口。
     yield_count = sum(1 for r in reasons if r == "yield_doorstep_congestion")
     assert yield_count == 1, f"Expected exactly 1 yielding worker, got: {reasons}"
+    assert intents[w_core.id].reason == "vacate_core_cell_for_delivery"
+    assert intents[w_core.id].reserved_cell == (-1, 0)
 
 
 def test_idle_worker_yields_doorstep_when_no_frontier():

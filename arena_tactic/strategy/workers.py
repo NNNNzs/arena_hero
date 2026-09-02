@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Iterable
 from uuid import UUID
 
-from arena_hero import CoreState, UnitType, UnitView
+from arena_hero import CoreState, Direction, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
@@ -377,20 +377,92 @@ def _plan_workers(
     )
 
     core_pos = context.core.position
+    preempted_doorstep_ids: set[UUID] = set()
+
+    def _relieve_delivery_corridor(
+        cell: Position,
+        *,
+        depth: int = 0,
+        visited: frozenset[Position] = frozenset(),
+    ) -> bool:
+        """Create a bounded outward yield chain from a full delivery throat.
+
+        A Core in a one-cell pocket cannot trade places with a full doorstep:
+        the Worker on the Core must leave while at least one cargo Worker on
+        the doorstep leaves in the same movement graph.  Start at the far end
+        of a saturated corridor so each reservation records its departure
+        before the next Worker enters that cell.
+        """
+        if depth >= 8 or cell in visited:
+            return False
+        occupants = tuple(
+            worker for worker in context.workers
+            if worker.position == cell and worker.id not in preempted_doorstep_ids
+        )
+        if not occupants:
+            return reservations.can_reserve(cell)
+        candidate_workers = tuple(sorted(
+            (worker for worker in occupants if worker.cargo), key=lambda worker: worker.id.bytes
+        ))
+        if not candidate_workers:
+            return False
+        threats = enemy_threat_cells(context)
+        for worker in candidate_workers:
+            choices: list[tuple[int, int, str, Direction, Position]] = []
+            for direction in DIRECTIONS:
+                target = destination(cell, direction)
+                if (
+                    target == core_pos
+                    or target in memory.obstacles
+                    or target in memory.active_temporary_blocks(context.tick)
+                    or target in context.enemy_occupancy
+                    or target in threats
+                ):
+                    continue
+                # Prefer outward travel, then side lanes.  A recursive yield
+                # permits a packed westbound queue to shed one unit per cell.
+                outward_penalty = 0 if distance(target, core_pos) > distance(cell, core_pos) else 1
+                choices.append((outward_penalty, distance(target, core_pos), direction.value, direction, target))
+            for _, _, _, direction, target in sorted(choices):
+                if not reservations.can_reserve(target) and not _relieve_delivery_corridor(
+                    target, depth=depth + 1, visited=visited | {cell}
+                ):
+                    continue
+                if not reservations.reserve(target, source=cell):
+                    continue
+                preempted_doorstep_ids.add(worker.id)
+                intents.append(ActionIntent(
+                    actor_id=worker.id,
+                    is_core=False,
+                    action=ActionKind.MOVE,
+                    score=430 if depth == 0 else 410,
+                    reason="yield_doorstep_congestion" if depth == 0 else "yield_delivery_corridor_congestion",
+                    direction=direction,
+                    target_cell=target,
+                    reserved_cell=target,
+                ))
+                _record_unit_task(memory, context, worker, kind="yield_delivery_corridor", target=target, intent=intents[-1])
+                return True
+        return False
 
     def _worker_order(unit: UnitView) -> tuple[int, int, str]:
         u_cargo = unit.cargo or 0
         at_core = _at_normal_core(unit, context)
         dist = distance(unit.position, core_pos)
-        if u_cargo and dist <= 1:
-            return (0, 0, str(unit.id))
+        # The only spare Core slot is a delivery-critical resource.  An empty
+        # Worker on the Core must reserve its evacuation before doorstep cargo
+        # attempts to enter, otherwise a one-cell pocket becomes a swap wait.
         if not u_cargo and at_core:
+            return (0, 0, str(unit.id))
+        if u_cargo and dist <= 1:
             return (1, 0, str(unit.id))
         if u_cargo:
             return (2, dist, str(unit.id))
         return (3, dist, str(unit.id))
 
     for worker in sorted(context.workers, key=_worker_order):
+        if worker.id in preempted_doorstep_ids:
+            continue
         cargo = worker.cargo or 0
         if (
             cargo
@@ -549,16 +621,20 @@ def _plan_workers(
             reason = "explore_sector_frontier"
         if context.core is not None and _at_normal_core(worker, context) and not cargo:
             occupied = dict(context.enemy_occupancy)
-            vacate = next(
-                (
-                    cell
-                    for cell in sorted(destination(worker.position, direction) for direction in DIRECTIONS)
-                    if cell not in memory.obstacles
-                    and cell not in occupied
-                    and reservations.can_reserve(cell)
-                ),
-                None,
-            )
+            exit_cells = tuple(sorted(
+                cell
+                for cell in (destination(worker.position, direction) for direction in DIRECTIONS)
+                if cell not in memory.obstacles and cell not in occupied
+            ))
+            vacate = next((cell for cell in exit_cells if reservations.can_reserve(cell)), None)
+            if vacate is None:
+                # A full (2/2) unique exit needs an explicit outward yield
+                # chain.  With one occupant, ``can_reserve`` above already
+                # permits the legal two-unit destination capacity.
+                for exit_cell in exit_cells:
+                    if _relieve_delivery_corridor(exit_cell):
+                        vacate = exit_cell
+                        break
             if vacate is not None:
                 intent = _move(
                     worker, vacate, "vacate_core_cell_for_delivery", 420,
