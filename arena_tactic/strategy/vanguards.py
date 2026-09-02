@@ -171,7 +171,14 @@ def _plan_vanguards(
             continue
 
         target_enemy = _best_visible_enemy(vanguard, context, memory)
-        if target_enemy is not None and mode is StrategicMode.DEFEND:
+        if target_enemy is not None and (
+            mode is StrategicMode.DEFEND
+            or (
+                context.core is not None
+                and distance(target_enemy.position, context.core.position) <= config.intercept_distance
+                and vanguard.id in intercept_vanguards
+            )
+        ):
             intent = _move(
                 vanguard, target_enemy.position, "intercept_visible_threat", 740,
                 context=context, memory=memory, reservations=reservations,
@@ -211,6 +218,16 @@ def _plan_vanguards(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            if intent is None and context.core is not None:
+                intent = _deploy_sidestep(
+                    vanguard,
+                    intercept_enemy.position,
+                    context,
+                    memory,
+                    reservations,
+                    "intercept_approaching_core_threat",
+                    context.core.position,
+                )
             _record_unit_task(memory, context, vanguard, kind="intercept", target=intercept_enemy.position, intent=intent)
             intents.append(intent or _wait(vanguard, "intercept_route_blocked"))
             continue

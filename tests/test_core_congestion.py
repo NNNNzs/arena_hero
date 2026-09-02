@@ -61,6 +61,31 @@ def test_doorstep_congestion_only_one_cargo_worker_yields():
     assert intents[w_core.id].reserved_cell == (-1, 0)
 
 
+def test_delivery_corridor_yield_prefers_empty_side_over_occupied_lane():
+    """递送走廊让位应优先空格，不能按 DOWN/LEFT/RIGHT/UP 字符串顺序选满格。"""
+    c = core(position=(0, 0))
+    doorstep_a = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    doorstep_b = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    core_worker = unit(3, UnitType.WORKER, (0, 0))
+    # The southern lane is already full while the northern side tile is empty.
+    south_a = unit(4, UnitType.WORKER, (-1, 1), cargo=1)
+    south_b = unit(5, UnitType.WORKER, (-1, 1), cargo=1)
+
+    result = choose_actions(
+        turn(
+            owned_core=c,
+            units=(doorstep_a, doorstep_b, core_worker, south_a, south_b),
+            obstacle_cells=((0, -1), (1, 0), (0, 1)),
+        ),
+        memory=AgentMemory(),
+    )
+
+    intents = {intent.actor_id: intent for intent in result.intents}
+    yielded = [intents[worker.id] for worker in (doorstep_a, doorstep_b)]
+    yield_intent = next(intent for intent in yielded if intent.reason == "yield_doorstep_congestion")
+    assert yield_intent.reserved_cell == (-1, -1)
+
+
 def test_idle_worker_yields_doorstep_when_no_frontier():
     """空载且无探索目标的工人停留在门口时，应主动让开门口避免阻断运矿。"""
     c = core(position=(0, 0))

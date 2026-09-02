@@ -408,8 +408,8 @@ def _plan_workers(
             return False
         threats = enemy_threat_cells(context)
         for worker in candidate_workers:
-            choices: list[tuple[int, int, str, Direction, Position]] = []
-            for direction in DIRECTIONS:
+            choices: list[tuple[int, int, int, int, Position, Direction]] = []
+            for direction_index, direction in enumerate(DIRECTIONS):
                 target = destination(cell, direction)
                 if (
                     target == core_pos
@@ -421,9 +421,17 @@ def _plan_workers(
                     continue
                 # Prefer outward travel, then side lanes.  A recursive yield
                 # permits a packed westbound queue to shed one unit per cell.
+                occupancy = len(context.friendly_occupancy.get(target, ()))
                 outward_penalty = 0 if distance(target, core_pos) > distance(cell, core_pos) else 1
-                choices.append((outward_penalty, distance(target, core_pos), direction.value, direction, target))
-            for _, _, _, direction, target in sorted(choices):
+                choices.append((
+                    occupancy,
+                    outward_penalty,
+                    distance(target, core_pos),
+                    direction_index,
+                    target,
+                    direction,
+                ))
+            for _, _, _, _, target, direction in sorted(choices):
                 if not reservations.can_reserve(target) and not _relieve_delivery_corridor(
                     target, depth=depth + 1, visited=visited | {cell}
                 ):
@@ -503,7 +511,7 @@ def _plan_workers(
                     prev_cell_raw = existing_task.get("prev_cell")
                     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
                     candidates = []
-                    for direction in DIRECTIONS:
+                    for direction_index, direction in enumerate(DIRECTIONS):
                         side_cell = destination(worker.position, direction)
                         if (
                             side_cell != return_target
@@ -512,9 +520,10 @@ def _plan_workers(
                             and side_cell not in context.enemy_occupancy
                         ):
                             penalty = 5000 if prev_cell is not None and side_cell == prev_cell else 0
-                            candidates.append((penalty, direction, side_cell))
-                    candidates.sort(key=lambda item: (item[0], item[1].value))
-                    for _, direction, side_cell in candidates:
+                            occupancy = len(context.friendly_occupancy.get(side_cell, ()))
+                            candidates.append((occupancy, penalty, direction_index, side_cell, direction))
+                    candidates.sort()
+                    for _, _, _, side_cell, direction in candidates:
                         if reservations.reserve(side_cell, source=worker.position):
                             intent = ActionIntent(
                                 actor_id=worker.id,
@@ -622,9 +631,13 @@ def _plan_workers(
         if context.core is not None and _at_normal_core(worker, context) and not cargo:
             occupied = dict(context.enemy_occupancy)
             exit_cells = tuple(sorted(
-                cell
-                for cell in (destination(worker.position, direction) for direction in DIRECTIONS)
-                if cell not in memory.obstacles and cell not in occupied
+                (
+                    destination(worker.position, direction)
+                    for direction in DIRECTIONS
+                    if destination(worker.position, direction) not in memory.obstacles
+                    and destination(worker.position, direction) not in occupied
+                ),
+                key=lambda cell: (len(context.friendly_occupancy.get(cell, ())), cell),
             ))
             vacate = next((cell for cell in exit_cells if reservations.can_reserve(cell)), None)
             if vacate is None:

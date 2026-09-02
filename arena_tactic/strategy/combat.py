@@ -143,6 +143,7 @@ def ranger_target_score(
     enemy: CoreView | UnitView,
     context: DecisionContext,
     memory: AgentMemory,
+    config: AgentConfig = AgentConfig(),
 ) -> float:
     score = 100.0 if isinstance(enemy, CoreView) else 0.0
     remaining_health = enemy.hp + (enemy.shield if isinstance(enemy, CoreView) else 0)
@@ -152,6 +153,11 @@ def ranger_target_score(
         enemy, context.core, memory.obstacles
     ):
         score += 30.0
+    if (
+        context.core is not None
+        and distance(enemy.position, context.core.position) <= config.intercept_distance
+    ):
+        score += 4.0
     score += shadow_fire_advantage(ranger.position, enemy, memory.obstacles)
     firing_range = shot_range(ranger.position, enemy.position, memory.obstacles)
     score -= (

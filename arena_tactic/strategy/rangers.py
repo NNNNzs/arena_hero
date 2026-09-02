@@ -145,7 +145,7 @@ def _plan_rangers(
         target = min(
             effective_shootable,
             key=lambda enemy: (
-                -ranger_target_score(ranger, enemy, context, memory),
+                -ranger_target_score(ranger, enemy, context, memory, config),
                 enemy.id.bytes,
             ),
             default=None,
@@ -182,7 +182,7 @@ def _plan_rangers(
                 actor_id=ranger.id,
                 is_core=False,
                 action=ActionKind.SHOOT,
-                score=850 + ranger_target_score(ranger, target, context, memory),
+                score=850 + ranger_target_score(ranger, target, context, memory, config),
                 reason="highest_scoring_legal_ranger_target",
                 target_id=target.id,
                 target_cell=target.position,
@@ -212,7 +212,14 @@ def _plan_rangers(
             continue
 
         target_enemy = _best_visible_enemy(ranger, context, memory)
-        if target_enemy is not None and mode in (StrategicMode.DEFEND, StrategicMode.ATTACK):
+        if target_enemy is not None and (
+            mode in (StrategicMode.DEFEND, StrategicMode.ATTACK)
+            or (
+                context.core is not None
+                and distance(target_enemy.position, context.core.position) <= config.intercept_distance
+                and ranger.id not in guard_rangers
+            )
+        ):
             staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
             intent = _move(
                 ranger, staging, "ranger_seek_legal_firing_line", 580,

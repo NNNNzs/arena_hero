@@ -250,6 +250,19 @@ def test_detects_defense_disengaged_when_threat_is_near(tmp_path, monkeypatch):
     assert finding["evidence"][0]["units"][0]["enemy_distance"] == 8
 
 
+def test_detects_defense_disengaged_for_enemy_worker_near_core(tmp_path, monkeypatch):
+    """近核心敌方工人也应触发 DEFENSE_DISENGAGED（防守单位脱离交战）检查。"""
+    rows = []
+    for tick in range(10, 15):
+        row = _row(tick, [0, 0], mode="BEACON")
+        row["state"]["units"] = [{"id": "ranger_1", "unit_type": "RANGER", "position": [0, 0], "hp": 2}]
+        row["state"]["visible_enemies"] = [{"id": "enemy_worker", "unit_type": "WORKER", "position": [8, 0], "hp": 2}]
+        row["intents"] = [{"actor": "ranger_1", "action": "WAIT", "reason": "beacon_route_blocked"}]
+        rows.append(row)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    assert any(finding["code"] == "DEFENSE_DISENGAGED" for finding in report["findings"])
+
+
 def test_no_defense_disengaged_when_threat_is_distant(tmp_path, monkeypatch):
     """Combat unit guarding Core (distance > 16 from distant scout enemy) is not disengaged."""
     rows = []

@@ -104,6 +104,7 @@ def intent_is_squad_protected(intent: ActionIntent | None) -> bool:
         return True
     return any(token in intent.reason for token in (
         "retreat", "heal", "critical", "emergency", "intercept_visible_threat",
+        "firing_line",
     ))
 
 

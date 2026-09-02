@@ -234,6 +234,33 @@ def test_defend_ranger_moves_into_firing_position_against_visible_threat():
     assert intent.reason != "holding_defense_ring"
 
 
+def test_beacon_mode_intercepts_enemy_worker_near_core():
+    """BEACON (信标模式) must still eliminate a nearby enemy Worker (敌方工人)."""
+    carrier = unit(1, UnitType.WORKER, (10, 0))
+    guard_ranger = unit(11, UnitType.RANGER, (0, 1))
+    ranger = unit(14, UnitType.RANGER, (1, 1))
+    guard = unit(12, UnitType.VANGUARD, (0, -1))
+    vanguard = unit(13, UnitType.VANGUARD, (0, -2))
+    intruder = unit(201, UnitType.WORKER, (5, 0), controlled=False)
+
+    result = choose_actions(
+        turn(
+            owned_core=core(),
+            units=(carrier, guard_ranger, ranger, guard, vanguard),
+            enemies=(intruder,),
+            beacon_position=(10, 0),
+            beacon_status=BeaconStatus.CARRIED,
+            beacon_carrier_id=carrier.id,
+        )
+    )
+
+    assert result.mode is StrategicMode.BEACON
+    ranger_intent = next(item for item in result.intents if item.actor_id == ranger.id)
+    vanguard_intent = next(item for item in result.intents if item.actor_id == vanguard.id)
+    assert ranger_intent.reason in {"ranger_seek_legal_firing_line", "intercept_ranger_firing_line"}
+    assert vanguard_intent.reason == "intercept_visible_threat"
+
+
 def test_insufficient_resources_and_respawn_clear_hidden_pressure():
     pressure = AgentMemory(last_tick=29, core_damage_streak=2, last_core_damage_tick=29)
     damaged = choose_actions(
@@ -461,7 +488,7 @@ def test_approaching_enemy_forms_intercept_without_emptying_core_guards():
     assert second.mode is not StrategicMode.DEFEND
 
 
-def test_enemy_departure_or_lost_visibility_does_not_leave_stale_intercept():
+def test_enemy_at_intercept_boundary_is_engaged_and_lost_visibility_clears_intercept():
     combat = (
         *(unit(index, UnitType.VANGUARD, (0, index)) for index in range(1, 5)),
         *(unit(index, UnitType.RANGER, (1, index)) for index in range(5, 7)),
@@ -472,7 +499,7 @@ def test_enemy_departure_or_lost_visibility_does_not_leave_stale_intercept():
     departed = choose_actions(turn(tick=11, owned_core=core(), units=combat, enemies=(farther,)), memory=first.next_memory)
     lost = choose_actions(turn(tick=12, owned_core=core(), units=combat), memory=departed.next_memory)
 
-    assert all(task["kind"] != "intercept" for task in departed.next_memory.unit_tasks.values())
+    assert any(task["kind"] == "intercept" for task in departed.next_memory.unit_tasks.values())
     assert all(task["kind"] != "intercept" for task in lost.next_memory.unit_tasks.values())
     assert lost.mode is not StrategicMode.ATTACK
 
