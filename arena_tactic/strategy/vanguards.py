@@ -155,7 +155,8 @@ def _plan_vanguards(
                 )
                 if intent is None:
                     intent = _evacuate_doorstep_intent(
-                        vanguard, context, memory, reservations, "yield_doorstep_critical_retreat"
+                        vanguard, context, memory, reservations, "yield_doorstep_critical_retreat",
+                        max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
                 intents.append(intent or _wait(vanguard, "critical_retreat_blocked"))
             continue
@@ -167,7 +168,8 @@ def _plan_vanguards(
                 intent = _unit_retreat_to_core(vanguard, context, memory, reservations, deadline, config)
                 if intent is None:
                     intent = _evacuate_doorstep_intent(
-                        vanguard, context, memory, reservations, "yield_doorstep_retreat_heal"
+                        vanguard, context, memory, reservations, "yield_doorstep_retreat_heal",
+                        max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
                 intents.append(intent or _wait(vanguard, "unit_retreat_to_core_heal_blocked"))
             continue

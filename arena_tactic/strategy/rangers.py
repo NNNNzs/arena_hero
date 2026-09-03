@@ -162,7 +162,8 @@ def _plan_rangers(
                 )
                 if intent is None:
                     intent = _evacuate_doorstep_intent(
-                        ranger, context, memory, reservations, "yield_doorstep_critical_retreat"
+                        ranger, context, memory, reservations, "yield_doorstep_critical_retreat",
+                        max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
             continue
@@ -180,7 +181,8 @@ def _plan_rangers(
                 )
                 if intent is None:
                     intent = _evacuate_doorstep_intent(
-                        ranger, context, memory, reservations, "yield_doorstep_retreat_heal"
+                        ranger, context, memory, reservations, "yield_doorstep_retreat_heal",
+                        max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
                 intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
             continue

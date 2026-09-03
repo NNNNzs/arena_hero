@@ -17,6 +17,7 @@ from .common import (
     _EXPLORATION_SECTORS,
     _at_normal_core,
     _deploy_sidestep,
+    _evacuate_doorstep_intent,
     _move,
     _record_unit_task,
     _return_to_core,
@@ -416,7 +417,8 @@ def _plan_workers(
         if not occupants:
             return reservations.can_reserve(cell)
         candidate_workers = tuple(sorted(
-            (worker for worker in occupants if worker.cargo), key=lambda worker: worker.id.bytes
+            occupants,
+            key=lambda worker: (0 if not worker.cargo else 1, worker.id.bytes),
         ))
         if not candidate_workers:
             return False
@@ -695,43 +697,27 @@ def _plan_workers(
             if (
                 intent is None
                 and context.core is not None
-                and distance(worker.position, context.core.position) <= 1
+                and distance(worker.position, context.core.position) <= max(3, config.cargo_delivery_yield_radius)
                 and distance(worker.position, target) > 1
             ):
                 intent = _deploy_sidestep(
                     worker, target, context, memory, reservations,
                     reason + "_sidestep", context.core.position,
                 )
+            if intent is None and context.core is not None and distance(worker.position, context.core.position) <= max(3, config.cargo_delivery_yield_radius):
+                intent = _evacuate_doorstep_intent(
+                    worker, context, memory, reservations, "yield_core_doorstep_blocked", max_radius=max(3, config.cargo_delivery_yield_radius)
+                )
             _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue
 
-        if context.core is not None and distance(worker.position, context.core.position) <= 1:
-            yielded = False
-            threats = enemy_threat_cells(context)
-            for direction in DIRECTIONS:
-                step_cell = destination(worker.position, direction)
-                if (
-                    step_cell != context.core.position
-                    and step_cell not in memory.obstacles
-                    and step_cell not in memory.active_temporary_blocks(context.tick)
-                    and step_cell not in context.enemy_occupancy
-                    and step_cell not in threats
-                    and reservations.reserve(step_cell, source=worker.position)
-                ):
-                    intents.append(ActionIntent(
-                        actor_id=worker.id,
-                        is_core=False,
-                        action=ActionKind.MOVE,
-                        score=350,
-                        reason="yield_core_doorstep_idle",
-                        direction=direction,
-                        target_cell=step_cell,
-                        reserved_cell=step_cell,
-                    ))
-                    yielded = True
-                    break
-            if yielded:
+        if context.core is not None and distance(worker.position, context.core.position) <= max(3, config.cargo_delivery_yield_radius):
+            intent = _evacuate_doorstep_intent(
+                worker, context, memory, reservations, "yield_core_doorstep_idle", max_radius=max(3, config.cargo_delivery_yield_radius)
+            )
+            if intent is not None:
+                intents.append(intent)
                 continue
 
         intents.append(_wait(worker, "no_resource_or_frontier"))

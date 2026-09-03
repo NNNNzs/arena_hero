@@ -661,8 +661,10 @@ def _evacuate_doorstep_intent(
     memory: AgentMemory,
     reservations: ReservationTable,
     reason: str = "evacuate_doorstep_for_delivery",
+    *,
+    max_radius: int = 1,
 ) -> ActionIntent | None:
-    """If a combat Unit is about to idle on a Core doorstep/chokepoint exit, step outward."""
+    """If a Unit is about to idle on or near a Core doorstep/chokepoint exit, step outward."""
     if context.core is None:
         return None
     core_pos = context.core.position
@@ -672,7 +674,10 @@ def _evacuate_doorstep_intent(
         if (core_pos[0] + dx, core_pos[1] + dy) not in memory.obstacles
         and (core_pos[0] + dx, core_pos[1] + dy) not in context.enemy_occupancy
     ]
-    if unit.position not in passable_exits:
+    dist = distance(unit.position, core_pos)
+    if dist > max_radius:
+        return None
+    if max_radius <= 1 and unit.position not in passable_exits:
         return None
 
     threats = enemy_threat_cells(context)
