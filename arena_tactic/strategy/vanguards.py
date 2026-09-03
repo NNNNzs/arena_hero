@@ -27,6 +27,7 @@ from .common import (
     UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
+    _evacuate_doorstep_intent,
     _guard_slots,
     _move,
     _record_unit_task,
@@ -152,6 +153,10 @@ def _plan_vanguards(
                     vanguard, context, memory, reservations, deadline, config,
                     "critical_vanguard_retreat",
                 )
+                if intent is None:
+                    intent = _evacuate_doorstep_intent(
+                        vanguard, context, memory, reservations, "yield_doorstep_critical_retreat"
+                    )
                 intents.append(intent or _wait(vanguard, "critical_retreat_blocked"))
             continue
         if _unit_needs_retreat_heal(vanguard, memory, config) and not urgent:
@@ -160,6 +165,10 @@ def _plan_vanguards(
                 intents.append(_unit_heal_intent(vanguard, heal_cost) if heal_cost > 0 else _wait(vanguard, "healing_waits_for_resources"))
             else:
                 intent = _unit_retreat_to_core(vanguard, context, memory, reservations, deadline, config)
+                if intent is None:
+                    intent = _evacuate_doorstep_intent(
+                        vanguard, context, memory, reservations, "yield_doorstep_retreat_heal"
+                    )
                 intents.append(intent or _wait(vanguard, "unit_retreat_to_core_heal_blocked"))
             continue
         if best_cell is not None:
@@ -345,10 +354,17 @@ def _plan_vanguards(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            if intent is None:
+                intent = _evacuate_doorstep_intent(
+                    vanguard, context, memory, reservations, "yield_doorstep_guard_route"
+                )
             _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(vanguard, "guard_route_blocked"))
         else:
             if guard_target is not None:
                 _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=None)
-            intents.append(_wait(vanguard, "holding_defense_ring"))
+            intent = _evacuate_doorstep_intent(
+                vanguard, context, memory, reservations, "yield_doorstep_holding_defense"
+            )
+            intents.append(intent or _wait(vanguard, "holding_defense_ring"))
     return intents

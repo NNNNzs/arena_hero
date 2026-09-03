@@ -118,3 +118,31 @@ def test_combat_guard_vacates_core_for_returning_cargo_worker():
     assert intent.reason == "yield_cargo_delivery_sidestep"
     assert intent.reserved_cell is not None
     assert intent.reserved_cell[0] > 0
+
+
+def test_damaged_ranger_evacuates_doorstep_when_core_entry_blocked():
+    """残血游侠撤退至单通道门口且核心已满无法进入时，必须向外避让绝不堵门。"""
+    c = core(position=(0, 0))
+    # 核心格已被占满（容量 2）
+    w_core1 = unit(1, UnitType.WORKER, (0, 0), cargo=0)
+    w_core2 = unit(2, UnitType.WORKER, (0, 0), cargo=0)
+    # 单通道门口 (-1, 0) 站着残血游侠 (hp=1)
+    ranger = unit(3, UnitType.RANGER, (-1, 0), hp=1)
+
+    # 单通道口袋：Core 北、东、南为障碍，(-1, 0) 为唯一出入口
+    result = choose_actions(
+        turn(
+            owned_core=c,
+            units=(w_core1, w_core2, ranger),
+            obstacle_cells=((0, -1), (1, 0), (0, 1)),
+        ),
+        memory=AgentMemory(),
+    )
+
+    r_intent = next(intent for intent in result.intents if intent.actor_id == ranger.id)
+    assert r_intent.action.value == "MOVE"
+    assert r_intent.reason == "yield_doorstep_critical_retreat"
+    assert r_intent.reserved_cell is not None
+    assert r_intent.reserved_cell != (-1, 0)
+    assert abs(r_intent.reserved_cell[0]) + abs(r_intent.reserved_cell[1]) >= 2
+

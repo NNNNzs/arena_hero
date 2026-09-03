@@ -25,6 +25,7 @@ from .common import (
     _yield_cargo_delivery,
     _at_normal_core,
     _best_visible_enemy,
+    _evacuate_doorstep_intent,
     _guard_slots,
     _move,
     _record_unit_task,
@@ -159,6 +160,10 @@ def _plan_rangers(
                     ranger, context, memory, reservations, deadline, config,
                     "critical_ranger_retreat",
                 )
+                if intent is None:
+                    intent = _evacuate_doorstep_intent(
+                        ranger, context, memory, reservations, "yield_doorstep_critical_retreat"
+                    )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
             continue
         if _unit_needs_retreat_heal(ranger, memory, config) and not urgent:
@@ -173,6 +178,10 @@ def _plan_rangers(
                 intent = _unit_retreat_to_core(
                     ranger, context, memory, reservations, deadline, config
                 )
+                if intent is None:
+                    intent = _evacuate_doorstep_intent(
+                        ranger, context, memory, reservations, "yield_doorstep_retreat_heal"
+                    )
                 intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
             continue
         if target is not None:
@@ -318,10 +327,17 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            if intent is None:
+                intent = _evacuate_doorstep_intent(
+                    ranger, context, memory, reservations, "yield_doorstep_guard_route"
+                )
             _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(ranger, "guard_route_blocked"))
         else:
             if guard_target is not None:
                 _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=None)
-            intents.append(_wait(ranger, "holding_defense_ring"))
+            intent = _evacuate_doorstep_intent(
+                ranger, context, memory, reservations, "yield_doorstep_holding_defense"
+            )
+            intents.append(intent or _wait(ranger, "holding_defense_ring"))
     return intents

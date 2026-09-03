@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Iterable
 from uuid import UUID
 
-from arena_hero import CoreState, CoreView, UnitType, UnitView
+from arena_hero import CoreState, CoreView, Direction, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
@@ -653,3 +653,56 @@ def _yield_cargo_delivery(
         "yield_cargo_delivery",
         core_position,
     )
+
+
+def _evacuate_doorstep_intent(
+    unit: UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str = "evacuate_doorstep_for_delivery",
+) -> ActionIntent | None:
+    """If a combat Unit is about to idle on a Core doorstep/chokepoint exit, step outward."""
+    if context.core is None:
+        return None
+    core_pos = context.core.position
+    passable_exits = [
+        (core_pos[0] + dx, core_pos[1] + dy)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+        if (core_pos[0] + dx, core_pos[1] + dy) not in memory.obstacles
+        and (core_pos[0] + dx, core_pos[1] + dy) not in context.enemy_occupancy
+    ]
+    if unit.position not in passable_exits:
+        return None
+
+    threats = enemy_threat_cells(context)
+    candidates: list[tuple[int, int, int, Position, Direction]] = []
+    for direction_idx, direction in enumerate(DIRECTIONS):
+        cand = destination(unit.position, direction)
+        if (
+            cand == core_pos
+            or cand in memory.obstacles
+            or cand in memory.active_temporary_blocks(context.tick)
+            or cand in context.enemy_occupancy
+            or cand in threats
+        ):
+            continue
+        outward_penalty = 0 if distance(cand, core_pos) > distance(unit.position, core_pos) else 1
+        occupancy = len(context.friendly_occupancy.get(cand, ()))
+        candidates.append((outward_penalty, occupancy, direction_idx, cand, direction))
+
+    candidates.sort()
+    for _, _, _, cand, direction in candidates:
+        if reservations.reserve(cand, source=unit.position):
+            return ActionIntent(
+                actor_id=unit.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=410,
+                reason=reason,
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
+            )
+    return None
+
