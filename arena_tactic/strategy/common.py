@@ -510,6 +510,10 @@ def _deploy_sidestep(
         cand = destination(unit.position, direction)
         if cand in blocked:
             continue
+        # Never step INTO the core cell during deploy sidestep
+        if core_position is not None and cand == core_position:
+            continue
+
         dist_to_target = distance(cand, target)
         dist_to_core = distance(cand, core_position) if core_position is not None else 0
         if dist_to_target <= current_dist_to_target:

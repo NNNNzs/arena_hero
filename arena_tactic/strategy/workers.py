@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Iterable
+from time import perf_counter
 from uuid import UUID
 
 from arena_hero import CoreState, Direction, UnitType, UnitView
@@ -53,10 +54,20 @@ def _assign_unique_targets(
     config: AgentConfig,
 ) -> dict[str, Position]:
     units = tuple(units)
-    targets = tuple(set(targets) - blocked)
+    target_set = set(targets) - blocked
+    if len(target_set) > 8 and units:
+        candidate_pool: set[Position] = set()
+        for unit in units:
+            for t in sorted(target_set, key=lambda p: distance(unit.position, p))[:6]:
+                candidate_pool.add(t)
+        targets = tuple(candidate_pool)
+    else:
+        targets = tuple(target_set)
     candidates: list[tuple[int, str, Position, UnitView]] = []
     for unit in units:
         for target in targets:
+            if perf_counter() >= deadline:
+                break
             path_cost = bounded_path_cost(
                 unit.position,
                 target,
@@ -221,7 +232,9 @@ def _frontier_assignments(
                     ))
                 candidates: list[tuple[int, int, int, Position]] = []
                 fallback_candidates: list[tuple[int, int, int, Position]] = []
-                for _, lateral, negative_projection, cell in sorted(geometric_candidates)[:32]:
+                for _, lateral, negative_projection, cell in sorted(geometric_candidates)[:6]:
+                    if perf_counter() >= deadline:
+                        break
                     path_cost = bounded_path_cost(
                         unit.position,
                         cell,
@@ -372,21 +385,23 @@ def _plan_workers(
     recheck_workers = tuple(sorted(unassigned, key=lambda unit: str(unit.id)))[
         : config.resource_recheck_worker_limit
     ]
+    recon_deadline = min(deadline, perf_counter() + 0.05)
     reconnaissance = _assign_unique_targets(
         recheck_workers,
         remembered_targets,
         blocked=worker_blocks,
-        deadline=deadline,
+        deadline=recon_deadline,
         config=config,
     )
     still_unassigned = [
         worker for worker in unassigned if str(worker.id) not in reconnaissance
     ]
+    explore_deadline = min(deadline, perf_counter() + 0.05)
     exploration = _frontier_assignments(
         tuple(still_unassigned) + scout_workers,
         memory,
         context,
-        deadline,
+        explore_deadline,
         config,
         task_kind="explore",
     )
