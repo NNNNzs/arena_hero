@@ -209,4 +209,35 @@ def test_doorstep_cargo_workers_enter_empty_core_without_sidestep_oscillation():
     assert "yield_doorstep_congestion" not in reasons, f"Cargo worker should not yield doorstep when core is free: {reasons}"
 
 
+def test_doorstep_cargo_worker_enters_core_even_when_astar_times_out():
+    """当系统决策时间紧迫/超时导致 A* 无法完成完整寻路时，门口相邻(dist=1)的载货工兵必须直进核心，绝不卡死在等待状态。"""
+    from arena_tactic.models import ActionKind, AgentConfig, ReservationTable
+    from arena_tactic.strategy.workers import _plan_workers
+    from arena_tactic.context import DecisionContext
+
+    c = core(position=(0, 0))
+    w1 = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    w2 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+
+    t = turn(owned_core=c, units=(w1, w2))
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+    config = AgentConfig()
+    reservations = ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
+
+    # 模拟 deadline 已经过期 (deadline = 0.0)，导致 A* 内部 visited 循环或 perf_counter 立即超时
+    intents = _plan_workers(context, memory, reservations, 0.0, config, {})
+    intents_by_id = {i.actor_id: i for i in intents}
+
+    # 第一名工兵必须直进核心 (0, 0)，第二名在门口就地等待
+    w1_intent = intents_by_id[w1.id]
+    w2_intent = intents_by_id[w2.id]
+
+    actions = {w1_intent.action, w2_intent.action}
+    assert ActionKind.MOVE in actions
+    reserved_cells = [w1_intent.reserved_cell, w2_intent.reserved_cell]
+    assert (0, 0) in reserved_cells
+
+
+
 

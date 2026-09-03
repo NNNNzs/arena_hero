@@ -11,7 +11,7 @@ from arena_hero import CoreState, Direction, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells
+from ..navigation import DIRECTIONS, adjacent_direction, bounded_path_cost, destination, distance, enemy_threat_cells
 from ..squads import SquadPlan, SquadType
 from .common import (
     UNIT_MAX_HP,
@@ -572,11 +572,31 @@ def _plan_workers(
             ))
             continue
         if cargo:
-            intent = return_to_core(
-                worker, context, memory, reservations, deadline, config,
-                "return_cargo_to_core",
-            )
             return_target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
+            intent = None
+            if (
+                distance(worker.position, return_target) == 1
+                and return_target not in memory.obstacles
+                and return_target not in context.enemy_occupancy
+                and reservations.reserve(return_target, source=worker.position)
+            ):
+                direction = adjacent_direction(worker.position, return_target)
+                if direction is not None:
+                    intent = ActionIntent(
+                        actor_id=worker.id,
+                        is_core=False,
+                        action=ActionKind.MOVE,
+                        score=700,
+                        reason="return_cargo_to_core",
+                        target_cell=return_target,
+                        direction=direction,
+                        reserved_cell=return_target,
+                    )
+            if intent is None:
+                intent = return_to_core(
+                    worker, context, memory, reservations, deadline, config,
+                    "return_cargo_to_core",
+                )
             if intent is None:
                 if distance(worker.position, return_target) > 1:
                     intent = _return_to_core_sidestep(
