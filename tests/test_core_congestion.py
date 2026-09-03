@@ -146,3 +146,41 @@ def test_damaged_ranger_evacuates_doorstep_when_core_entry_blocked():
     assert r_intent.reserved_cell != (-1, 0)
     assert abs(r_intent.reserved_cell[0]) + abs(r_intent.reserved_cell[1]) >= 2
 
+
+def test_empty_core_worker_vacates_and_avoids_dead_end_pocket():
+    """单出入口核心格空载工兵腾退时，门口工兵避让必须避开死胡同口袋，实现同回合出入对换。"""
+    c = core(position=(0, 0))
+    # 核心格内有 1 个空载工兵
+    w_core = unit(1, UnitType.WORKER, (0, 0), cargo=0)
+    # 唯一门口 (-1, 0) 站着 2 个满载工兵
+    w_door1 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    w_door2 = unit(3, UnitType.WORKER, (-1, 0), cargo=1)
+    # 北面 (-1, -1) 形成死胡同口袋：周围三面是墙
+    # (-1, -2) 是墙, (0, -1) 是墙, (-2, -1) 是墙
+    # 只有南面 (-1, 1) 和西面 (-2, 0) 可以通行
+    result = choose_actions(
+        turn(
+            owned_core=c,
+            units=(w_core, w_door1, w_door2),
+            obstacle_cells=(
+                (0, -1), (1, 0), (0, 1),   # 核心北、东、南全封闭
+                (-1, -2), (-2, -1),        # 门口北侧 (-1, -1) 成为死胡同口袋
+            ),
+        ),
+        memory=AgentMemory(),
+    )
+
+    intents = {i.actor_id: i for i in result.intents}
+    # 核心工兵必须成功生成腾退指令走向 (-1, 0)
+    core_intent = intents[w_core.id]
+    assert core_intent.action.value == "MOVE"
+    assert core_intent.reason == "vacate_core_cell_for_delivery"
+    assert core_intent.reserved_cell == (-1, 0)
+
+    # 门口工兵之一必须让位，且绝不能避让进死胡同口袋 (-1, -1)
+    door_intents = [intents[uid] for uid in (w_door1.id, w_door2.id)]
+    yield_intent = next(i for i in door_intents if i.reason == "yield_doorstep_congestion")
+    assert yield_intent.reserved_cell != (-1, -1)
+    assert yield_intent.reserved_cell in ((-1, 1), (-2, 0))
+
+

@@ -435,6 +435,18 @@ def _plan_workers(
                     or target in threats
                 ):
                     continue
+                # Avoid yielding into a dead-end pocket where unit will just bounce back next tick
+                other_exits = sum(
+                    1 for d in DIRECTIONS
+                    if destination(target, d) != cell
+                    and destination(target, d) != core_pos
+                    and destination(target, d) not in memory.obstacles
+                    and destination(target, d) not in memory.active_temporary_blocks(context.tick)
+                    and destination(target, d) not in context.enemy_occupancy
+                    and destination(target, d) not in threats
+                )
+                if other_exits == 0:
+                    continue
                 # Prefer outward travel, then side lanes.  A recursive yield
                 # permits a packed westbound queue to shed one unit per cell.
                 occupancy = len(context.friendly_occupancy.get(target, ()))
@@ -488,6 +500,46 @@ def _plan_workers(
         if worker.id in preempted_doorstep_ids:
             continue
         cargo = worker.cargo or 0
+        if worker.hp < UNIT_MAX_HP[UnitType.WORKER] and _at_normal_core(worker, context):
+            heal_cost = heal_allowances.get(worker.id, 0)
+            intents.append(_unit_heal_intent(worker, heal_cost) if heal_cost > 0 else _wait(worker, "healing_waits_for_resources"))
+            continue
+        if not cargo and context.core is not None and _at_normal_core(worker, context):
+            occupied = dict(context.enemy_occupancy)
+            exit_cells = tuple(sorted(
+                (
+                    destination(worker.position, direction)
+                    for direction in DIRECTIONS
+                    if destination(worker.position, direction) not in memory.obstacles
+                    and destination(worker.position, direction) not in occupied
+                ),
+                key=lambda cell: (len(context.friendly_occupancy.get(cell, ())), cell),
+            ))
+            vacate = next((cell for cell in exit_cells if reservations.can_reserve(cell)), None)
+            if vacate is None:
+                # A full (2/2) unique exit needs an explicit outward yield chain.
+                for exit_cell in exit_cells:
+                    if _relieve_delivery_corridor(exit_cell):
+                        vacate = exit_cell
+                        break
+            if vacate is not None:
+                if reservations.reserve(vacate, source=worker.position):
+                    direction = next(d for d in DIRECTIONS if destination(worker.position, d) == vacate)
+                    intent = ActionIntent(
+                        actor_id=worker.id,
+                        is_core=False,
+                        action=ActionKind.MOVE,
+                        score=720,
+                        reason="vacate_core_cell_for_delivery",
+                        direction=direction,
+                        target_cell=vacate,
+                        reserved_cell=vacate,
+                    )
+                    _record_unit_task(memory, context, worker, kind="vacate", target=vacate, intent=intent)
+                    intents.append(intent)
+                    continue
+            intents.append(_wait(worker, "core_cell_vacate_blocked"))
+            continue
         if (
             cargo
             and core.state is CoreState.MOVING
@@ -554,11 +606,6 @@ def _plan_workers(
                             break
             _record_unit_task(memory, context, worker, kind="return", target=return_target, intent=intent)
             intents.append(intent or _wait(worker, "no_safe_route_with_cargo"))
-            continue
-
-        if worker.hp < UNIT_MAX_HP[UnitType.WORKER] and _at_normal_core(worker, context):
-            heal_cost = heal_allowances.get(worker.id, 0)
-            intents.append(_unit_heal_intent(worker, heal_cost) if heal_cost > 0 else _wait(worker, "healing_waits_for_resources"))
             continue
 
         if (
@@ -644,38 +691,6 @@ def _plan_workers(
         if target is None:
             target = exploration.get(str(worker.id))
             reason = "explore_sector_frontier"
-        if context.core is not None and _at_normal_core(worker, context) and not cargo:
-            occupied = dict(context.enemy_occupancy)
-            exit_cells = tuple(sorted(
-                (
-                    destination(worker.position, direction)
-                    for direction in DIRECTIONS
-                    if destination(worker.position, direction) not in memory.obstacles
-                    and destination(worker.position, direction) not in occupied
-                ),
-                key=lambda cell: (len(context.friendly_occupancy.get(cell, ())), cell),
-            ))
-            vacate = next((cell for cell in exit_cells if reservations.can_reserve(cell)), None)
-            if vacate is None:
-                # A full (2/2) unique exit needs an explicit outward yield
-                # chain.  With one occupant, ``can_reserve`` above already
-                # permits the legal two-unit destination capacity.
-                for exit_cell in exit_cells:
-                    if _relieve_delivery_corridor(exit_cell):
-                        vacate = exit_cell
-                        break
-            if vacate is not None:
-                intent = _move(
-                    worker, vacate, "vacate_core_cell_for_delivery", 420,
-                    context=context, memory=memory, reservations=reservations,
-                    deadline=deadline, config=config,
-                )
-                if intent is not None:
-                    _record_unit_task(memory, context, worker, kind="vacate", target=vacate, intent=intent)
-                    intents.append(intent)
-                    continue
-            intents.append(_wait(worker, "core_cell_vacate_blocked"))
-            continue
 
         if (
             not cargo
