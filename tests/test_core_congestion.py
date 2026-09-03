@@ -184,3 +184,29 @@ def test_empty_core_worker_vacates_and_avoids_dead_end_pocket():
     assert yield_intent.reserved_cell in ((-1, 1), (-2, 0))
 
 
+def test_doorstep_cargo_workers_enter_empty_core_without_sidestep_oscillation():
+    """当核心为空时，门口重叠的满载工兵必须优先进入核心入库，绝不能让路外退导致振荡。"""
+    c = core(position=(0, 0))
+    # 核心格为空，门口 (-1, 0) 站着 2 名载货工人
+    w1 = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    w2 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+
+    result = choose_actions(
+        turn(
+            owned_core=c,
+            units=(w1, w2),
+        ),
+        memory=AgentMemory(),
+    )
+
+    intents = {i.actor_id: i for i in result.intents}
+    # 至少有一名工人必须直接走入核心格 (0, 0) 进行入库
+    reasons = [intents[w1.id].reason, intents[w2.id].reason]
+    reserved_cells = [intents[w1.id].reserved_cell, intents[w2.id].reserved_cell]
+
+    assert (0, 0) in reserved_cells, f"Expected at least one worker entering core (0, 0), got: {reserved_cells}"
+    # 另一名工兵绝不能触发 yield_doorstep_congestion 外退
+    assert "yield_doorstep_congestion" not in reasons, f"Cargo worker should not yield doorstep when core is free: {reasons}"
+
+
+

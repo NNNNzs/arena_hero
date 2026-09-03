@@ -583,44 +583,17 @@ def _plan_workers(
                         worker, return_target, context, memory, reservations,
                         "return_cargo_to_core", minimum_distance=1,
                     )
-                elif (
-                    distance(worker.position, return_target) == 1
-                    and len(context.friendly_occupancy.get(worker.position, ())) >= 2
-                    and worker.id == sorted(
-                        context.friendly_occupancy.get(worker.position, ()), key=lambda unit_id: str(unit_id)
-                    )[0]
-                ):
-                    existing_task = memory.unit_tasks.get(str(worker.id), {})
-                    prev_cell_raw = existing_task.get("prev_cell")
-                    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
-                    candidates = []
-                    for direction_index, direction in enumerate(DIRECTIONS):
-                        side_cell = destination(worker.position, direction)
-                        if (
-                            side_cell != return_target
-                            and side_cell not in memory.obstacles
-                            and side_cell not in memory.active_temporary_blocks(context.tick)
-                            and side_cell not in context.enemy_occupancy
-                        ):
-                            penalty = 5000 if prev_cell is not None and side_cell == prev_cell else 0
-                            occupancy = len(context.friendly_occupancy.get(side_cell, ()))
-                            candidates.append((occupancy, penalty, direction_index, side_cell, direction))
-                    candidates.sort()
-                    for _, _, _, side_cell, direction in candidates:
-                        if reservations.reserve(side_cell, source=worker.position):
-                            intent = ActionIntent(
-                                actor_id=worker.id,
-                                is_core=False,
-                                action=ActionKind.MOVE,
-                                score=400,
-                                reason="yield_doorstep_congestion",
-                                direction=direction,
-                                target_cell=side_cell,
-                                reserved_cell=side_cell,
-                            )
-                            break
+                # Cargo worker at distance == 1: hold position and wait for
+                # the core cell to become available.  Yielding away (to
+                # distance 2) caused a ping-pong oscillation between
+                # yield_doorstep_congestion and _return_to_core_sidestep,
+                # permanently blocking cargo delivery.
             _record_unit_task(memory, context, worker, kind="return", target=return_target, intent=intent)
-            intents.append(intent or _wait(worker, "no_safe_route_with_cargo"))
+            if intent is None and distance(worker.position, return_target) <= 1:
+                wait_reason = "cargo_doorstep_wait_for_entry"
+            else:
+                wait_reason = "no_safe_route_with_cargo"
+            intents.append(intent or _wait(worker, wait_reason))
             continue
 
         if (

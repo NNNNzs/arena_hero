@@ -176,3 +176,14 @@
 - Replay and decision trace now retain **current + 11 history volumes** by default (12 volumes; replay budget about 768 MiB). Set `ARENA_HERO_HISTORY_FILES` only when an operator intentionally changes that window.
 - Before a rotated volume is discarded, `AsyncSupabaseWriter` runs a background JSONL backfill and confirms every Tick has been accepted by Supabase. While that is pending or unavailable, rotation retains the oldest volume and appends locally; the Tick loop never waits for the network.
 - Run `python scripts/prune_and_sync_history.py --dry-run --days 7` for the lifecycle audit, then omit `--dry-run` to reconcile missing replay/trace Ticks and delete only safe, expired rotated volumes. `protected-unsynced` means no deletion occurred / `未同步受保护` 表示未删除。
+
+### 2026-09-03 | Tick 216998 载货工人在核心门前让路与侧滑回矿死锁振荡修复
+- **现象**：系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 91/200。巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 5 名工人，`[WARNING] UNIT_OSCILLATION (单位往返振荡)` 涉及 4 个对象。入库成功数持续为 0。
+- **根因分析**：
+  在 `arena_tactic/strategy/workers.py` 中，当工人持有 cargo 到达核心门前（distance == 1）时，若该格有 2 名友军重叠，旧逻辑无条件强制排序在前的工人执行 `yield_doorstep_congestion` 向外侧避让 1 格（距离变为 2）。而在下一 tick，由于距离变为 2，触发了 `_return_to_core_sidestep` 重新向核心靠拢前进 1 格回到门口。两套逻辑形成 2 格高频往返振荡（Ping-Pong Oscillation）死锁，导致满载工人即便在核心格为空的情况下也反复在门前往返振荡，无法踏入核心格完成 `DEPOSIT`。
+- **处置动作**：
+  1. 移除 `workers.py` 中载货工人在门前（distance == 1）因同格重叠而盲目向外让路的 `yield_doorstep_congestion` 侧移分支；载货工人在核心门口优先预约核心格入库，若核心格暂时不可用则保持就地等待（`cargo_doorstep_wait_for_entry`），彻底根除往返振荡死锁。
+  2. 在 `tests/test_core_congestion.py` 中增加 `test_doorstep_cargo_workers_enter_empty_core_without_sidestep_oscillation` 回归测试用例。
+  3. 全量单元测试 421 项 100% 通过（`pytest tests/ -q`），按 `auto-commit` 规范提交。
+  4. 重启 Docker 容器加载最新战术逻辑生效。
+
