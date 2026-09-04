@@ -5,6 +5,17 @@
 
 ## 处置案例
 
+### 2026-09-04 Tick 219268~219277 | UNIT_OSCILLATION (单位严重振荡) Command API 干预处置闭环
+- **现象**：在 120 Tick 窗口巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)`。工兵 `entity_4de5d0e9593a` 在核心门户 `[-900, 1570]` 与 `[-900, 1569]` 之间以周期 2 往复振荡 28 次（样本 30 次）。
+- **根因分析**：工兵处于核心门口退让半径内（`cargo_delivery_yield_radius`），因基地外围被多名待命工兵（`[-900, 1568]`, `[-901, 1569]` 等）与障碍物阻隔，`_evacuate_doorstep_intent` 候选格子排序在内外两格之间来回翻转，引发周期性摆动。
+- **处置动作**：
+  1. 通过 Command API 登录获取 session 并提取 `csrf_token`。
+  2. 下发 `ASSIGN_TASK` 指令：`entity_alias: "entity_4de5d0e9593a"`, `task_kind: "HOLD_POSITION"`, `priority: 800`，配合标头 `X-CSRF-Token`、`Origin: http://127.0.0.1:8787` 与 `If-Match: "command-version-0"`。
+  3. 指令生成 ID `cmd_00000001_c27b1ec9`，在 Tick 219274 状态转为 `APPLIED`。
+- **效果验证**：
+  - 工兵在 Tick 219274 准时转入 `manual_hold_position` (等待)，摆荡立即停止。
+  - Tick 219277 重新运行 `tactical_inspector.py --ticks 10`，`UNIT_OSCILLATION`、`SQUAD_EXPEDITION_STALL`、`DECISION_LATENCY_SPIKE` 全量消除，仅余常规防守静止。
+
 ### 2026-09-02 Tick 208280+ | CARGO_DELIVERY_STAGNATION (载货工人回矿停滞) / SQUAD_EXPEDITION_STALL (信标远征编队停滞) 工程修复
 - **现象**：核心位于单通道口袋 `[-898, 1573]`；核心格被 CORE 与空载工人占满，唯一西向出口被两名载货工人占满，后方载货队列持续 `no_safe_route_with_cargo` (载货无安全回矿路径)。同时，Beacon expedition (信标远征打击群) 前锋与基地新兵相隔数千格，前锋被 `expedition_cohesion_hold` (远征编队凝聚等待) 长期冻结。
 - **根因分析**：工人排序把距核心一格的载货工人排在核心格空载工人前，导致 Swap Deadlock (对换死锁)。预约表只会拒绝满格入口，旧逻辑没有为满载的单通道建立可解析的离开依赖。远征协调则把 extreme split (极端分裂，成员间距超过门限) 当作普通 regroup (重新集结)，错误地让前锋也进入等待。
