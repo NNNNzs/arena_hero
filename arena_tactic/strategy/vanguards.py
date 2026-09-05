@@ -368,25 +368,24 @@ def _plan_vanguards(
         guard_index = ordered_guards.index(vanguard.id) if vanguard.id in guard_vanguards else 0
         guard_target = guard_slots[guard_index % len(guard_slots)] if guard_slots else None
         if guard_target is not None and vanguard.position != guard_target:
-            intent = _move(
-                vanguard, guard_target, "hold_core_defense_ring", 300,
-                context=context, memory=memory, reservations=reservations,
-                deadline=deadline, config=config,
-            )
-            if intent is None:
-                intent = _evacuate_doorstep_intent(
-                    vanguard, context, memory, reservations, "yield_doorstep_guard_route"
-                )
-            # Guard-route long-distance fallback (guard_route_blocked deadlock fix):
-            # Units far from their guard slot may fail both A* and doorstep
-            # evacuation, causing permanent WAIT deadlock.  Use incremental
-            # greedy fallback steps toward the guard target to make progress
-            # through fog and obstacles each tick.
-            if intent is None and distance(vanguard.position, guard_target) > config.long_distance_retreat_threshold:
+            # DECISION_LATENCY_SPIKE fix: units far from their guard slot
+            # must not attempt expensive A* across 1000+ fogged cells.
+            # Skip A* entirely and use lightweight greedy fallback steps.
+            if distance(vanguard.position, guard_target) > config.long_distance_retreat_threshold:
                 intent = _distant_retreat_fallback_intent(
                     vanguard, guard_target, context, memory, reservations,
                     "hold_core_defense_ring",
                 )
+            else:
+                intent = _move(
+                    vanguard, guard_target, "hold_core_defense_ring", 300,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
+                )
+                if intent is None:
+                    intent = _evacuate_doorstep_intent(
+                        vanguard, context, memory, reservations, "yield_doorstep_guard_route"
+                    )
             _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(vanguard, "guard_route_blocked"))
         else:

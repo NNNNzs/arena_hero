@@ -5,6 +5,19 @@
 
 ## 处置案例
 
+### 2026-09-05 Tick 227209 | DECISION_LATENCY_SPIKE (决策延迟激增) 超远距离守备 A* 绕过与轻量回撤优化
+- **现象**：在 120 Tick 巡检中检出 `[CRITICAL] DECISION_LATENCY_SPIKE (决策延迟激增)`，决策耗时连续 117 回合超过 2000ms（当前 2450ms~2995ms），触发“已触及决策时限”。
+- **根因分析**：
+  - 深入前线 2000 格外的远征/阵线战斗单位（如 `[-2862, 900]`、`[-2798, 946]`、`[-2621, 1166]` 等）在未接取特殊前线任务时进入 `core_guard` 回防基地环防逻辑。
+  - 旧逻辑在回防核心时总是优先调用 `_move` 尝试 A* 寻路。因为目标跨越上千格迷雾未知区域，每个单位每回合都会耗尽 `astar_node_limit = 1500` 节点后失败，再进入 fallback。十几个单位累计消耗 ~2.5s CPU，导致单 Tick 决策延迟逼近上限。
+- **处置动作**：
+  1. 修改 `arena_tactic/strategy/vanguards.py` 与 `rangers.py`：当守备单位与目标槽位距离超过 `config.long_distance_retreat_threshold` (50 格) 时，直接绕过全图 A* 寻路，直接进入轻量化贪婪递进的 `_distant_retreat_fallback_intent` 步进。
+  2. 新增单元测试 `tests/test_distant_guard_latency.py`（8 个测试用例，全绿通过）。
+- **效果验证**：
+  - 单测 `pytest tests/test_guard_route_fallback.py tests/test_distant_guard_latency.py -q` 14 passed (0.24s)。
+  - 重启服务后单 Tick 决策耗时骤降，消除超时风险。
+
+
 ### 2026-09-05 Tick 225835~225841 | SQUAD_EXPEDITION_STALL (信标打击群协同停滞) 与工兵采矿路径阻塞修复
 - **现象**：在 120 Tick 窗口巡检检出 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)` 与 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。16 名远征先锋在 2000 格外（如 `[-2800, 792]` 区域）长期停滞，reason 持续为 `mineral_tank_route_blocked`；同时基地 12 名工兵全员卡在 `resource_route_blocked` 或 `no_resource_or_frontier`。
 - **根因分析**：
