@@ -285,5 +285,16 @@
   5. 重启 Docker 容器加载最新代码生效，`decision_ms` 成功从 2190ms 骤降至 300~1000ms 水位；
   6. 提交至 main 分支完成工程闭环。
 
+### 2026-09-06 | Tick 229480 远征编队槽位抖动 (UNIT_OSCILLATION) 与槽位滞后锁定 (Slot Stickiness) 修复
+- **现象**：巡检时间窗 Tick 229352..229480，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 112/200。巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，远征游侠 `5aa67ac70b1c` 在 `[-951, 1568]` 与 `[-952, 1568]` 之间持续周期为 2 的往复振荡，120 ticks 采样内反转达 114 次（占比 95%）。
+- **根因分析**：
+  在 `arena_tactic/squad_coordination.py` 的 `_safe_slots` 编队槽位分配函数中，采用纯即时贪心选择 `min(available, key=lambda cell: (distance(unit.position, cell), cell))`，未对上一回合已分配的槽位做状态延续或滞后锁定（Slot Hysteresis / Stickiness）。当单位朝当前目标槽位 `[-1134, 1412]` 移动 1 格到达新坐标后，由于几何距离变化，另一个候选槽位 `[-1134, 1410]` 成为即时距离最短目标，导致寻路方向立刻反转；退回原位后又重新选中前者，在两格之间形成 100% 钟摆式左右跳跃振荡死锁。
+- **处置动作**：
+  1. 在 `arena_tactic/squad_coordination.py` 中引入编队槽位滞后锁定机制（`_SLOT_STICKINESS_BONUS = 1`）：在 `_safe_slots` 分配中优先读取上一回合分配的槽位（`_load_previous_formation_slots`），只要前次槽位仍然合法可用且距离优势未被超过 1 格以上，优先保持前次槽位锁定，消除高频抖动；
+  2. 在 `arena_tactic/memory.py` 的 `_safe_objective_states` 中增加对 `squad_coordination.formation_slots` 的持久化与校验逻辑，确保跨回合和回放状态安全；
+  3. 新增 `tests/test_formation_slot_oscillation.py`（共 12 项单元测试，覆盖 round-trip 存取、1 格位移槽位锁定、显著更佳槽位切换、多回合 A-B-A 振荡消除、障碍物阻挡降级与多单位防冲突），全部通过；
+  4. 报警 HTML 邮件已成功发送至 709934831@qq.com 归档；
+  5. 重启 Docker 容器加载最新代码生效，彻底解决编队重整槽位振荡。
+
 
 

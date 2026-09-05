@@ -157,6 +157,37 @@ def squad_has_combat_contact(
     return False
 
 
+_SLOT_STICKINESS_BONUS = 1  # cells — keep current slot if new best is ≤1 closer
+
+
+def _load_previous_formation_slots(memory: AgentMemory) -> dict[UUID, Position]:
+    """Load previously assigned formation slots from ``memory.objective_states``."""
+    coord = memory.objective_states.get("squad_coordination")
+    if not isinstance(coord, dict):
+        return {}
+    raw = coord.get("formation_slots")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[UUID, Position] = {}
+    for uid_str, cell in raw.items():
+        try:
+            uid = UUID(uid_str)
+            pos = (int(cell[0]), int(cell[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        result[uid] = pos
+    return result
+
+
+def _save_formation_slots(
+    memory: AgentMemory,
+    slots: dict[UUID, Position],
+) -> None:
+    """Persist current formation slot assignments into ``memory.objective_states``."""
+    coord = memory.objective_states.setdefault("squad_coordination", {})
+    coord["formation_slots"] = {str(uid): list(pos) for uid, pos in slots.items()}
+
+
 def _safe_slots(
     center: Position,
     units: tuple[UnitView, ...],
@@ -168,7 +199,16 @@ def _safe_slots(
     pace_unit_id: UUID | None,
     anchor_unit_id: UUID | None,
 ) -> dict[UUID, Position]:
-    """Assign deterministic, unique loose-formation cells around an anchor."""
+    """Assign deterministic, unique loose-formation cells around an anchor.
+
+    **Slot stickiness / anti-oscillation**: if a unit already has a previously
+    assigned slot (loaded from ``memory.objective_states``) that is still among
+    the available candidates, the unit keeps that slot unless a clearly better
+    candidate is more than ``_SLOT_STICKINESS_BONUS`` cells closer.  This
+    prevents the 2-tick alternating-slot oscillation seen in UNIT_OSCILLATION
+    incidents where the greedy nearest-cell pick flips every tick as the unit
+    drifts one cell.
+    """
     cx, cy = center
     near = tuple(destination(center, direction) for direction in DIRECTIONS)
     ranger_ring = (
@@ -185,6 +225,7 @@ def _safe_slots(
         | set(context.obstacle_cells)
         | set(context.enemy_occupancy)
     )
+    previous_slots = _load_previous_formation_slots(memory)
     used: set[Position] = set()
     slots: dict[UUID, Position] = {}
     ordered = tuple(sorted(
@@ -211,7 +252,17 @@ def _safe_slots(
         available = tuple(cell for cell in candidates if cell not in blocked and cell not in used)
         if not available:
             available = tuple(cell for cell in candidates if cell not in used) or (unit.position,)
-        slot = min(available, key=lambda cell: (distance(unit.position, cell), cell))
+        prev_slot = previous_slots.get(unit.id)
+        if prev_slot is not None and prev_slot in available and prev_slot != unit.position:
+            best_dist = min(distance(unit.position, cell) for cell in available)
+            prev_dist = distance(unit.position, prev_slot)
+            # Keep the previous slot if no candidate is significantly closer
+            if prev_dist <= best_dist + _SLOT_STICKINESS_BONUS:
+                slot = prev_slot
+            else:
+                slot = min(available, key=lambda cell: (distance(unit.position, cell), cell))
+        else:
+            slot = min(available, key=lambda cell: (distance(unit.position, cell), cell))
         slots[unit.id] = slot
         used.add(slot)
     return slots
@@ -389,6 +440,7 @@ def coordinate_expedition_intents(
         pace_unit_id=cohesion.pace_unit_id,
         anchor_unit_id=squad.anchor_unit_id,
     )
+    _save_formation_slots(memory, slots)
     cohesion_holds: dict[str, int] = memory.objective_states.setdefault("squad_cohesion_holds", {})
     planning_deadline = deadline or (perf_counter() + config.planning_budget_ms / 1_000)
     replacements: list[ActionIntent] = []

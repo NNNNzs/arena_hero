@@ -183,6 +183,18 @@ def _safe_objective_states(value: Any) -> dict[str, dict[str, Any]]:
             state["manual"] = raw["manual"]
         if state:
             states[name] = state
+    # squad_coordination: persist formation slot assignments for anti-oscillation
+    sq_raw = value.get("squad_coordination")
+    if isinstance(sq_raw, dict):
+        fs_raw = sq_raw.get("formation_slots")
+        if isinstance(fs_raw, dict):
+            safe_slots: dict[str, list[int]] = {}
+            for uid_str, cell in fs_raw.items():
+                if (isinstance(uid_str, str) and isinstance(cell, (list, tuple))
+                        and len(cell) == 2 and all(type(p) is int for p in cell)):
+                    safe_slots[uid_str] = [int(cell[0]), int(cell[1])]
+            if safe_slots and len(safe_slots) <= 16:
+                states["squad_coordination"] = {"formation_slots": safe_slots}
     return states
 
 
