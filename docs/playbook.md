@@ -235,6 +235,19 @@
   5. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
   6. 重启 Docker 容器加载最新战术逻辑生效。
 
+### 2026-09-05 | DECISION_LATENCY_SPIKE (决策延迟激增) AgentMemory.clone() deepcopy 优化
+- **现象**：在战术巡检中检出 `[CRITICAL] DECISION_LATENCY_SPIKE (决策延迟激增)`，所有 Tick 的 `decision_ms` 达到 2350~2550ms，远超 `planning_budget_ms` (500ms)，导致每个回合 `timed_out: true`。
+- **根因分析**：
+  - cProfile 分析显示，耗时瓶颈位于 `arena_tactic/memory.py` 的 `AgentMemory.clone()`。当前实现为直接调用 `copy.deepcopy(self)`。
+  - 当 `explored` 集合增长至 100,000 个坐标时，`copy.deepcopy` 遍历 10 万个坐标元组产生 700ms~1200ms 的巨大开销，叠加到每个 Tick 的决策链路中，直接导致决策超时。
+- **处置动作**：
+  1. 重写 `arena_tactic/memory.py` 中的 `clone()` 方法：用 `AgentMemory.__new__(AgentMemory)` 跳过 `__init__`，逐字段浅拷贝——不可变元组/字符串集合用 `.copy()`（10 万坐标仅需 ~4.5ms），扁平 dict 用 `.copy()`，嵌套 dict 值用 `{k: dict(v)}`，列表用 `[:]`。移除未使用的 `from copy import deepcopy` 导入。
+  2. 新增 `tests/test_memory_clone.py`（8 个测试用例）：覆盖字段完整性、集合/dict/嵌套 dict/列表的独立性变异、空内存克隆、以及 10 万坐标性能回归断言（<100ms）。
+  3. 全量单测 465 项 100% 通过（`pytest tests/ -q`）。
+- **效果验证**：
+  - clone() 耗时从 700~1200ms 降至 ~5ms（降幅 98%+），决策延迟回归至正常水位。
+  - 重启容器后 `curl http://127.0.0.1:8787/livez` 返回 `status: ok`，服务正常接入战局。
+
 ### 2026-09-05 | Tick 226521 超远距离守备单位 guard_route_blocked 路径死锁与增量回撤修复
 - **现象**：巡检时间窗 Tick 226398..226521，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。巡检检出 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)` 涉及 12 名远征队成员，`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及 24 个对象（占全军 60%）。
 - **根因分析**：
