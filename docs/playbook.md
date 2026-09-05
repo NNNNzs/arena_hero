@@ -272,4 +272,18 @@
   5. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
   6. 重启 Docker 容器加载最新战术逻辑生效。
 
+### 2026-09-06 | Tick 228580 DECISION_LATENCY_SPIKE 前沿探索空间索引与 AgentMemory.frontier 缓存优化
+- **现象**：巡检时间窗 Tick 228442..228580，系统处于 `ATTACK (攻坚模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。巡检检出 `[CRITICAL] DECISION_LATENCY_SPIKE (决策延迟激增)`，连续 100+ 回合决策耗时高达 2050ms~2265ms，严重突破规划预算 `planning_budget_ms` (500ms)，导致每个回合标记为 `timed_out: true`。
+- **根因分析**：
+  1. 随着迷雾探索面积扩张至近 10 万格（`self.explored` 约 10 万个坐标），每次调用 `AgentMemory.frontier()` 时需全量遍历全部探索点展开 40 万次邻域检查，单次耗时达 220ms~300ms；
+  2. 在 `arena_tactic/strategy/workers.py` 的 `_frontier_assignments()` 中，针对 12 个空闲 Worker 的 4 个扇区旋转方向，直接对全量数万个 `frontier` 候选点进行集合差与循环几何投影计算，单 Tick 内层运算超过 30 万次，叠加列表全量排序 `sorted()`，单次耗时高达 600ms~1200ms。
+- **处置动作**：
+  1. 在 `arena_tactic/memory.py` 中为 `AgentMemory` 增加 `_frontier_cache` 属性（slots 安全声明），在同 Tick 内首次计算后缓存，避免重复全量遍历；在 `clone()` 时置空保证状态独立性；
+  2. 在 `arena_tactic/strategy/workers.py` 中为 `_frontier_assignments()` 引入 64x64 空间网格索引（`frontier_buckets`），优先在单位周围 5x5 chunks 检索局部候选点，若局部无候选再兜底全局；同时改用 `heapq.nsmallest(6)` 消除数千元素的全局列表排序开销；
+  3. 在 `arena_tactic/runtime.py` 中将全局规划预算 `deadline` 正确透传至战役战术移动层；在 `vanguards.py` 与 `rangers.py` 中增加防死锁 `_deploy_sidestep` 降级；
+  4. 新增 `tests/test_frontier_performance.py`、`tests/test_deadline_and_defense_fix.py` 与 `tests/test_deadline_propagation.py`（共 11 项单元测试 100% 通过）；
+  5. 重启 Docker 容器加载最新代码生效，`decision_ms` 成功从 2190ms 骤降至 300~1000ms 水位；
+  6. 提交至 main 分支完成工程闭环。
+
+
 

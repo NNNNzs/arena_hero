@@ -371,6 +371,11 @@ def _plan_rangers(
                     intent = _evacuate_doorstep_intent(
                         ranger, context, memory, reservations, "yield_doorstep_guard_route"
                     )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        ranger, guard_target, context, memory,
+                        reservations, "ranger_hold_defense_ring", context.core.position,
+                    )
             _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(ranger, "guard_route_blocked"))
         else:

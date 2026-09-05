@@ -185,10 +185,11 @@ class AgentRuntime:
             except Exception:
                 core_canary_failed = True
         proposals = self._apply_beacon_campaign(
-            context, next_memory, proposals, mode
+            context, next_memory, proposals, mode,
+            deadline=deadline,
         )
-        proposals = self._apply_core_migration(context, next_memory, proposals)
-        proposals = self._apply_core_attack(context, next_memory, proposals)
+        proposals = self._apply_core_migration(context, next_memory, proposals, deadline=deadline)
+        proposals = self._apply_core_attack(context, next_memory, proposals, deadline=deadline)
         proposals = self._apply_manual_assignments(context, next_memory, proposals, deadline)
         if prepared_commands is not None and prepared_commands.emergency_halt:
             proposals = self._emergency_waits(context)
@@ -703,6 +704,8 @@ class AgentRuntime:
         memory: AgentMemory,
         proposals,
         mode: StrategicMode,
+        *,
+        deadline: float | None = None,
     ):
         """Acquire only in BEACON mode, then exfil the public carrier home."""
         if not self.config.beacon_campaign_v1 or context.core is None:
@@ -836,7 +839,7 @@ class AgentRuntime:
                     continue
                 if intent := self._objective_move(context, memory, unit, target, 620,
                                                   "beacon_campaign_escort", avoid_threats=True,
-                                                  reservations=reservations):
+                                                  reservations=reservations, deadline=deadline):
                     replacements.append(intent)
         if stage == BeaconStage.PICKUP.value and context.beacon.status is BeaconStatus.GROUND:
             candidates = sorted(
@@ -864,6 +867,7 @@ class AgentRuntime:
             self.config,
             campaign_squad,
             tuple(combined),
+            deadline=deadline,
             contact_holds=stage not in exfil_stages,
             reason_prefix=(
                 "beacon_exfil" if stage in exfil_stages else "expedition"
@@ -872,7 +876,7 @@ class AgentRuntime:
             override_intercept_moves=True,
         )
 
-    def _apply_core_migration(self, context: DecisionContext, memory: AgentMemory, proposals):
+    def _apply_core_migration(self, context: DecisionContext, memory: AgentMemory, proposals, *, deadline: float | None = None):
         """Start one safe observed leg only; later Turns drive all progress."""
         if (not self.config.core_migration_v1 and not memory.objective_states.get("migration", {}).get("manual")) or context.core is None:
             return proposals
@@ -888,7 +892,7 @@ class AgentRuntime:
                                                          "core_migration_deposit_cargo"))
                     continue
                 if intent := self._objective_move(context, memory, worker, context.core.position, 650,
-                                                  "core_migration_recall_cargo", avoid_threats=True):
+                                                  "core_migration_recall_cargo", avoid_threats=True, deadline=deadline):
                     replacements.append(intent)
             return self._replace_objective_proposals(proposals, replacements)
         if (
@@ -916,7 +920,7 @@ class AgentRuntime:
         intent = ActionIntent(context.core.id, True, ActionKind.START_MOVE, 650, "core_migration_start_safe_leg", direction=direction, reserved_cell=destination(context.core.position, direction))
         return tuple(item for item in proposals if not item.is_core) + (intent,)
 
-    def _apply_core_attack(self, context: DecisionContext, memory: AgentMemory, proposals):
+    def _apply_core_attack(self, context: DecisionContext, memory: AgentMemory, proposals, *, deadline: float | None = None):
         """Rally, engage and retreat only from this authoritative Turn."""
         if not self.config.core_attack_campaign_v1:
             return proposals
@@ -927,7 +931,7 @@ class AgentRuntime:
             replacements = [
                 intent for unit in (*context.vanguards, *context.rangers)
                 if not self._manual_safety_preempts(context, unit)
-                if (intent := self._objective_move(context, memory, unit, context.core.position, 900, "core_attack_retreat", avoid_threats=True))
+                if (intent := self._objective_move(context, memory, unit, context.core.position, 900, "core_attack_retreat", avoid_threats=True, deadline=deadline))
             ]
             return self._replace_objective_proposals(proposals, replacements)
         if stage not in {CoreAttackStage.RALLY.value, CoreAttackStage.ENGAGE.value}:
@@ -947,7 +951,7 @@ class AgentRuntime:
             for unit in (*context.vanguards, *context.rangers):
                 if unit.id in {intent.actor_id for intent in replacements} or self._manual_safety_preempts(context, unit):
                     continue
-                if intent := self._objective_move(context, memory, unit, target.position, 760, "core_attack_rally", avoid_threats=True):
+                if intent := self._objective_move(context, memory, unit, target.position, 760, "core_attack_rally", avoid_threats=True, deadline=deadline):
                     replacements.append(intent)
         return self._replace_objective_proposals(proposals, replacements)
 
@@ -968,11 +972,12 @@ class AgentRuntime:
             )))
         return available[(index - 1) % len(available)]
 
-    def _objective_move(self, context: DecisionContext, memory: AgentMemory, unit, target, score: float, reason: str, *, avoid_threats: bool, reservations: ReservationTable | None = None) -> ActionIntent | None:
+    def _objective_move(self, context: DecisionContext, memory: AgentMemory, unit, target, score: float, reason: str, *, avoid_threats: bool, reservations: ReservationTable | None = None, deadline: float | None = None) -> ActionIntent | None:
         if unit.position == target:
             return None
         reservations = reservations or ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
-        deadline = perf_counter() + self.config.planning_budget_ms / 1_000
+        if deadline is None:
+            deadline = perf_counter() + self.config.planning_budget_ms / 1_000
         direction = plan_step(actor_id=unit.id, start=unit.position, goal=target, context=context,
                               persistent_obstacles=memory.obstacles, reservations=reservations,
                               deadline=deadline, config=self.config, avoid_threats=avoid_threats)

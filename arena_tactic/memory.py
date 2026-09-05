@@ -313,6 +313,7 @@ class AgentMemory:
     accepted_ticks: int = 0
     analysis_tasks: list[dict[str, Any]] = field(default_factory=list)
     migration_recommendation: dict[str, Any] = field(default_factory=dict)
+    _frontier_cache: set[Position] | None = field(default=None, repr=False, compare=False)
 
     def clone(self) -> "AgentMemory":
         """Return a semantically equivalent independent copy of this memory.
@@ -370,15 +371,22 @@ class AgentMemory:
         m.analysis_tasks = [dict(t) for t in self.analysis_tasks]
         # --- dict (migration_recommendation) ---
         m.migration_recommendation = dict(self.migration_recommendation)
+        m._frontier_cache = None
         return m
 
     def frontier(self) -> set[Position]:
+        if self._frontier_cache is not None:
+            return self._frontier_cache
+        explored = self.explored
+        obstacles = self.obstacles
         result: set[Position] = set()
-        for x, y in self.explored:
+        add = result.add
+        for x, y in explored:
             for dx, dy in _CARDINAL:
                 cell = (x + dx, y + dy)
-                if cell not in self.explored and cell not in self.obstacles:
-                    result.add(cell)
+                if cell not in explored and cell not in obstacles:
+                    add(cell)
+        self._frontier_cache = result
         return result
 
     def active_temporary_blocks(self, tick: int) -> set[Position]:

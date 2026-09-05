@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+import heapq
 from typing import Iterable
 from time import perf_counter
 from uuid import UUID
@@ -240,6 +242,12 @@ def _frontier_assignments(
             }
         return result
 
+    # 空间网格索引：加速大规模迷雾地图下的候选点筛选（64x64 空间分桶）
+    _BUCKET_SIZE = 64
+    frontier_buckets: dict[tuple[int, int], list[Position]] = defaultdict(list)
+    for c in frontier:
+        frontier_buckets[(c[0] // _BUCKET_SIZE, c[1] // _BUCKET_SIZE)].append(c)
+
     for index, unit in enumerate(units):
         unit_id = str(unit.id)
         previous = memory.unit_tasks.get(unit_id, {})
@@ -269,26 +277,59 @@ def _frontier_assignments(
             )
             target = None
             selected_sector = sector
+            ux, uy = unit.position
+            ucx, ucy = ux // _BUCKET_SIZE, uy // _BUCKET_SIZE
+
+            # 优先在单位周围 5x5 chunks 检索未分配的局部候选点
+            local_cells: list[Position] = []
+            for dcx in range(-2, 3):
+                for dcy in range(-2, 3):
+                    local_cells.extend(frontier_buckets.get((ucx + dcx, ucy + dcy), ()))
+            use_cells = [c for c in local_cells if c not in assigned]
+            if not use_cells:
+                use_cells = [c for c in frontier if c not in assigned]
+
             for rotation in range(len(_EXPLORATION_SECTORS)):
                 candidate_sector = (sector + rotation) % len(_EXPLORATION_SECTORS)
                 vector_x, vector_y = _EXPLORATION_SECTORS[candidate_sector]
                 geometric_candidates: list[tuple[int, int, int, Position]] = []
-                for cell in frontier - assigned:
-                    delta_x = cell[0] - unit.position[0]
-                    delta_y = cell[1] - unit.position[1]
+                for cell in use_cells:
+                    delta_x = cell[0] - ux
+                    delta_y = cell[1] - uy
                     projection = delta_x * vector_x + delta_y * vector_y
                     if projection <= 0:
                         continue
                     lateral = abs(delta_x * vector_y - delta_y * vector_x)
+                    d = abs(delta_x) + abs(delta_y)
                     geometric_candidates.append((
-                        distance(unit.position, cell) + lateral,
+                        d + lateral,
                         lateral,
                         -projection,
                         cell,
                     ))
+
+                if not geometric_candidates and len(use_cells) != len(frontier):
+                    # 若局部区域在该扇区方向无候选，兜底在全量 frontier 中检索
+                    for cell in frontier:
+                        if cell in assigned:
+                            continue
+                        delta_x = cell[0] - ux
+                        delta_y = cell[1] - uy
+                        projection = delta_x * vector_x + delta_y * vector_y
+                        if projection <= 0:
+                            continue
+                        lateral = abs(delta_x * vector_y - delta_y * vector_x)
+                        d = abs(delta_x) + abs(delta_y)
+                        geometric_candidates.append((
+                            d + lateral,
+                            lateral,
+                            -projection,
+                            cell,
+                        ))
+
                 candidates: list[tuple[int, int, int, Position]] = []
                 fallback_candidates: list[tuple[int, int, int, Position]] = []
-                for _, lateral, negative_projection, cell in sorted(geometric_candidates)[:6]:
+                for _, lateral, negative_projection, cell in heapq.nsmallest(6, geometric_candidates):
                     if perf_counter() >= deadline:
                         break
                     path_cost = bounded_path_cost(

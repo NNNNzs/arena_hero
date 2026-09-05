@@ -234,6 +234,11 @@ def _plan_vanguards(
                     context=context, memory=memory, reservations=reservations,
                     deadline=deadline, config=config,
                 )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        vanguard, target_enemy.position, context, memory,
+                        reservations, "intercept_visible_threat", context.core.position,
+                    )
                 _record_unit_task(memory, context, vanguard, kind="intercept", target=target_enemy.position, intent=intent)
                 intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
                 continue
@@ -394,6 +399,11 @@ def _plan_vanguards(
                 if intent is None:
                     intent = _evacuate_doorstep_intent(
                         vanguard, context, memory, reservations, "yield_doorstep_guard_route"
+                    )
+                if intent is None and context.core is not None:
+                    intent = _deploy_sidestep(
+                        vanguard, guard_target, context, memory,
+                        reservations, "hold_core_defense_ring", context.core.position,
                     )
             _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(vanguard, "guard_route_blocked"))
