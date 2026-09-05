@@ -27,6 +27,7 @@ from .common import (
     UNIT_MAX_HP,
     _at_normal_core,
     _best_visible_enemy,
+    _critical_retreat_sidestep,
     _evacuate_doorstep_intent,
     _guard_slots,
     _move,
@@ -158,6 +159,11 @@ def _plan_vanguards(
                         vanguard, context, memory, reservations, "yield_doorstep_critical_retreat",
                         max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
+                if intent is None:
+                    intent = _critical_retreat_sidestep(
+                        vanguard, context, memory, reservations,
+                        "critical_retreat_sidestep",
+                    )
                 intents.append(intent or _wait(vanguard, "critical_retreat_blocked"))
             continue
         if _unit_needs_retreat_heal(vanguard, memory, config) and not urgent:
@@ -170,6 +176,11 @@ def _plan_vanguards(
                     intent = _evacuate_doorstep_intent(
                         vanguard, context, memory, reservations, "yield_doorstep_retreat_heal",
                         max_radius=max(3, config.cargo_delivery_yield_radius),
+                    )
+                if intent is None:
+                    intent = _critical_retreat_sidestep(
+                        vanguard, context, memory, reservations,
+                        "retreat_heal_sidestep",
                     )
                 intents.append(intent or _wait(vanguard, "unit_retreat_to_core_heal_blocked"))
             continue

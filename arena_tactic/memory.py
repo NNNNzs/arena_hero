@@ -77,13 +77,21 @@ def _safe_task(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     result: dict[str, Any] = {}
-    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick", "patrol_arc", "patrol_role", "patrol_core"):
+    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick", "patrol_arc", "patrol_role", "patrol_core", "recent_cells"):
         item = value.get(key)
         if any(word in key.lower() for word in _SENSITIVE):
             continue
         if key in {"target", "step", "patrol_core"}:
             if isinstance(item, (list, tuple)) and len(item) == 2 and all(type(part) is int for part in item):
                 result[key] = list(item)
+        elif key == "recent_cells":
+            if isinstance(item, list) and len(item) <= 10:
+                safe_cells = []
+                for cell in item:
+                    if isinstance(cell, (list, tuple)) and len(cell) == 2 and all(type(p) is int for p in cell):
+                        safe_cells.append(list(cell))
+                if safe_cells:
+                    result[key] = safe_cells
         elif key == "kind":
             if isinstance(item, str) and len(item) <= 64 and not _UUID_RE.search(item) and not any(word in item.lower() for word in _SENSITIVE):
                 result[key] = item

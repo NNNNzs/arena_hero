@@ -239,5 +239,77 @@ def test_doorstep_cargo_worker_enters_core_even_when_astar_times_out():
     assert (0, 0) in reserved_cells
 
 
+def test_evacuate_doorstep_anti_oscillation():
+    """_evacuate_doorstep_intent 必须防止在门口两格之间往复振荡。
+
+    当工兵从格子 A 移动到格子 B 后（记录 prev_cell=A），下一次 evacuate
+    必须对返回格子 A 施加高惩罚，优先选择其他方向的格子。
+    """
+    from arena_tactic.models import AgentConfig, ReservationTable
+    from arena_tactic.strategy.common import _evacuate_doorstep_intent
+
+    c = core(position=(0, 0))
+    # 工兵在门口 (-1, 0)，周围有 (-2, 0) 和 (-1, 1) 和 (-1, -1) 可选
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    # 模拟工兵刚从 (-1, 1) 移动到 (-1, 0)，prev_cell=(-1, 1)
+    t = turn(owned_core=c, units=(w,), obstacle_cells=((0, -1), (1, 0), (0, 1)))
+    from arena_tactic.context import DecisionContext
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+    memory.unit_tasks[str(w.id)] = {"prev_cell": [-1, 1]}
+    reservations = ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
+
+    intent = _evacuate_doorstep_intent(w, context, memory, reservations, "yield_core_doorstep_idle")
+    assert intent is not None
+    # 绝不能返回 (-1, 1) —— 这就是振荡的根源
+    assert intent.reserved_cell != (-1, 1), f"Should not oscillate back to prev_cell (-1, 1), got {intent.reserved_cell}"
+
+
+def test_stuck_sidestep_breaks_resource_deadlock():
+    """当工兵连续多 Tick 无法到达矿点时，_stuck_sidestep 应找到任意空闲格脱困。"""
+    from arena_tactic.models import AgentConfig, ReservationTable
+    from arena_tactic.strategy.workers import _stuck_sidestep
+    from arena_tactic.context import DecisionContext
+
+    c = core(position=(0, 0))
+    # 工兵在 (-1, 0)，目标矿点在 (5, 0)，但被障碍物围堵
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    t = turn(
+        owned_core=c, units=(w,),
+        resource_cells=((5, 0),),
+        obstacle_cells=((0, -1), (1, 0), (0, 1), (-2, 0)),  # 东、北、南封死，西面 (-2, 0) 也是墙
+    )
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+    # 模拟工兵已卡死 5 ticks（超过阈值 3）
+    memory.unit_tasks[str(w.id)] = {"kind": "resource", "target": [5, 0], "attempt_tick": context.tick - 5, "prev_cell": [-1, -1]}
+    reservations = ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
+
+    intent = _stuck_sidestep(w, (5, 0), context, memory, reservations, "resource_route_unblock")
+    # (-1, 0) 东面是核心格 (0, 0)、北面 (0, -1) 是墙、南面 (0, 1) 是墙、西面 (-2, 0) 是墙
+    # 核心格 (0, 0) 是唯一可用的相邻格（虽然距离目标更远）
+    assert intent is not None, "Stuck sidestep should find at least one free adjacent cell"
+    assert intent.reserved_cell != (-1, 0), "Must actually move, not stay in place"
+
+
+def test_stuck_sidestep_respects_threshold():
+    """_stuck_sidestep 在未达到阈值前不应激活。"""
+    from arena_tactic.models import ReservationTable
+    from arena_tactic.strategy.workers import _stuck_sidestep
+    from arena_tactic.context import DecisionContext
+
+    c = core(position=(0, 0))
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    t = turn(owned_core=c, units=(w,), obstacle_cells=((0, -1), (1, 0), (0, 1)))
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+    # 只卡了 1 tick（未达到阈值 3）
+    memory.unit_tasks[str(w.id)] = {"kind": "resource", "target": [5, 0], "attempt_tick": context.tick - 1}
+    reservations = ReservationTable({cell: len(ids) for cell, ids in context.friendly_occupancy.items()})
+
+    intent = _stuck_sidestep(w, (5, 0), context, memory, reservations, "resource_route_unblock")
+    assert intent is None, "Should not activate before threshold is reached"
+
+
 
 

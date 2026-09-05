@@ -221,8 +221,14 @@ def _is_core_defense_intent(intent: dict[str, Any]) -> bool:
     reason = str(intent.get("reason") or "").lower()
     squad = str(intent.get("squad_id") or intent.get("squad") or intent.get("assignment") or "").lower()
     return (
-        reason in {"holding_defense_ring", "hold_vanguard_mineral_tank"}
+        reason in {
+            "holding_defense_ring",
+            "hold_vanguard_mineral_tank",
+            "guard_route_blocked",
+        }
         or "core_guard" in reason
+        or "guard_route" in reason
+        or "guard" in reason and "blocked" in reason
         or "base_defense" in squad
         or "squad_base_defense" in squad
     )

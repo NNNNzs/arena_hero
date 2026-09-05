@@ -17,6 +17,7 @@ from .common import (
     UNIT_MAX_HP,
     _EXPLORATION_SECTORS,
     _at_normal_core,
+    _critical_retreat_sidestep,
     _deploy_sidestep,
     _evacuate_doorstep_intent,
     _move,
@@ -30,6 +31,61 @@ from .common import (
 )
 from .combat import _enemy_can_attack_core
 from .mode import _core_emergency_defense
+
+
+_STUCK_THRESHOLD = 3  # consecutive blocked ticks before sidestep activates
+
+
+def _stuck_sidestep(
+    worker: UnitView,
+    target: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+) -> ActionIntent | None:
+    """Break a stationary deadlock by stepping to any adjacent free cell.
+
+    When a worker has been stuck for multiple consecutive ticks trying to
+    reach *target*, this sidestep picks any legal adjacent cell — preferring
+    outward movement and avoiding the previous cell — to free up the current
+    position for other units in a congested corridor.
+    """
+    task = memory.unit_tasks.get(str(worker.id), {})
+    prev_cell_raw = task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+    # Only activate after the worker has been stuck for a few ticks.
+    attempt_tick = task.get("attempt_tick")
+    if attempt_tick is None or context.tick - attempt_tick < _STUCK_THRESHOLD:
+        return None
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+        | enemy_threat_cells(context)
+    )
+    candidates = []
+    for direction in DIRECTIONS:
+        cand = destination(worker.position, direction)
+        if cand in blocked:
+            continue
+        dist_to_target = distance(cand, target)
+        backtrack_penalty = 5000 if prev_cell is not None and cand == prev_cell else 0
+        candidates.append((backtrack_penalty + dist_to_target, direction, cand))
+    candidates.sort(key=lambda x: (x[0], x[1].value))
+    for _, direction, cand in candidates:
+        if reservations.reserve(cand, source=worker.position):
+            return ActionIntent(
+                worker.id,
+                False,
+                ActionKind.MOVE,
+                350,
+                reason,
+                target_cell=target,
+                direction=direction,
+                reserved_cell=cand,
+            )
+    return None
 
 
 def _workers_need_local_shelter(context: DecisionContext, memory: AgentMemory, config: AgentConfig) -> bool:
@@ -621,6 +677,11 @@ def _plan_workers(
             and not (_core_emergency_defense(context) and not combat_ready and not cargo)
         ):
             intent = _unit_retreat_to_core(worker, context, memory, reservations, deadline, config)
+            if intent is None:
+                intent = _critical_retreat_sidestep(
+                    worker, context, memory, reservations,
+                    "retreat_heal_sidestep",
+                )
             intents.append(intent or _wait(worker, "unit_retreat_to_core_heal_blocked"))
             continue
 
@@ -690,6 +751,13 @@ def _plan_workers(
                     _record_unit_task(memory, context, worker, kind="resource", target=target, intent=intent)
                     intents.append(intent)
                     continue
+            # When stuck for multiple consecutive ticks, attempt a local
+            # sidestep to any adjacent free cell to break deadlock.
+            intent = _stuck_sidestep(worker, target, context, memory, reservations, "resource_route_unblock")
+            if intent is not None:
+                _record_unit_task(memory, context, worker, kind="resource", target=target, intent=intent)
+                intents.append(intent)
+                continue
             if not (_at_normal_core(worker, context) and not cargo):
                 intents.append(_wait(worker, "resource_route_blocked"))
                 continue
@@ -731,6 +799,10 @@ def _plan_workers(
                 intent = _evacuate_doorstep_intent(
                     worker, context, memory, reservations, "yield_core_doorstep_blocked", max_radius=max(3, config.cargo_delivery_yield_radius)
                 )
+            # When stuck for multiple consecutive ticks, attempt a local
+            # sidestep to any adjacent free cell to break deadlock.
+            if intent is None:
+                intent = _stuck_sidestep(worker, target, context, memory, reservations, "exploration_route_unblock")
             _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue

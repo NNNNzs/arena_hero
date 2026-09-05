@@ -25,6 +25,7 @@ from .common import (
     _yield_cargo_delivery,
     _at_normal_core,
     _best_visible_enemy,
+    _critical_retreat_sidestep,
     _evacuate_doorstep_intent,
     _guard_slots,
     _move,
@@ -165,6 +166,11 @@ def _plan_rangers(
                         ranger, context, memory, reservations, "yield_doorstep_critical_retreat",
                         max_radius=max(3, config.cargo_delivery_yield_radius),
                     )
+                if intent is None:
+                    intent = _critical_retreat_sidestep(
+                        ranger, context, memory, reservations,
+                        "critical_retreat_sidestep",
+                    )
                 intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
             continue
         if _unit_needs_retreat_heal(ranger, memory, config) and not urgent:
@@ -183,6 +189,11 @@ def _plan_rangers(
                     intent = _evacuate_doorstep_intent(
                         ranger, context, memory, reservations, "yield_doorstep_retreat_heal",
                         max_radius=max(3, config.cargo_delivery_yield_radius),
+                    )
+                if intent is None:
+                    intent = _critical_retreat_sidestep(
+                        ranger, context, memory, reservations,
+                        "retreat_heal_sidestep",
                     )
                 intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
             continue

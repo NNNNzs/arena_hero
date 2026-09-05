@@ -252,7 +252,14 @@ def _distant_retreat_fallback_intent(
     reservations: ReservationTable,
     reason: str,
 ) -> ActionIntent | None:
-    """Make safe local progress when a fog-distance route home cannot be planned."""
+    """Make safe local progress when a fog-distance route home cannot be planned.
+
+    Uses a multi-tier taboo penalty on recently visited cells (``recent_cells``)
+    to break 3–4 cell oscillation loops that the legacy single ``prev_cell``
+    heuristic could not prevent.  Cells visited within the last 4 ticks receive
+    progressively heavier penalties (most-recent first); the unit is forced to
+    explore a direction it has not recently traversed.
+    """
     blocked = (
         memory.obstacles
         | memory.active_temporary_blocks(context.tick)
@@ -260,28 +267,53 @@ def _distant_retreat_fallback_intent(
         | set(context.enemy_occupancy)
     )
     threats = enemy_threat_cells(context)
-    previous = memory.unit_tasks.get(str(unit.id), {}).get("prev_cell")
-    previous_cell = tuple(previous) if isinstance(previous, (list, tuple)) and len(previous) == 2 else None
+
+    # Load recent-cell history for multi-tier anti-oscillation.
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    recent_raw = existing_task.get("recent_cells")
+    recent_cells: list[Position] = []
+    if isinstance(recent_raw, list):
+        for item in recent_raw:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and all(type(p) is int for p in item):
+                recent_cells.append((int(item[0]), int(item[1])))
+    # Backward compatibility: migrate legacy single-step prev_cell.
+    if not recent_cells:
+        prev_raw = existing_task.get("prev_cell")
+        if isinstance(prev_raw, (list, tuple)) and len(prev_raw) == 2 and all(type(p) is int for p in prev_raw):
+            recent_cells.append((int(prev_raw[0]), int(prev_raw[1])))
+
+    # Build a recency penalty map: most recent visit → highest penalty.
+    # Reversed so index 0 = most recent visit → penalty 600; older steps halve the weight.
+    _TABOO_BASE = 600
+    taboo: dict[Position, int] = {}
+    for idx, cell in enumerate(reversed(recent_cells)):
+        penalty = _TABOO_BASE >> idx  # 600, 300, 150, 75, …
+        if penalty > 0:
+            taboo[cell] = max(taboo.get(cell, 0), penalty)
+
     candidates = [
         (destination(unit.position, direction), direction)
         for direction in DIRECTIONS
         if destination(unit.position, direction) not in blocked
     ]
     # Prefer an unthreatened cell, then one that still trends home.  The strong
-    # anti-backtrack penalty prevents a blocked long-haul route becoming a
-    # two-cell oscillation while new terrain is revealed.
+    # multi-tier anti-backtrack penalty prevents blocked long-haul routes from
+    # becoming 3–4 cell oscillation loops while new terrain is revealed.
     candidates.sort(key=lambda item: (
         item[0] in threats,
-        1 if previous_cell is not None and item[0] == previous_cell else 0,
+        taboo.get(item[0], 0),
         distance(item[0], target),
         item[1].value,
     ))
     for cell, direction in candidates:
         if reservations.reserve(cell, source=unit.position):
+            # Append current position and cap at 5 recent entries.
+            new_recent = [*recent_cells, unit.position][-5:]
             memory.unit_tasks[str(unit.id)] = {
                 "kind": "distant_retreat_fallback",
                 "target": list(target),
                 "prev_cell": list(unit.position),
+                "recent_cells": [list(c) for c in new_recent],
                 "step": list(cell),
                 "attempt_tick": context.tick,
             }
@@ -476,6 +508,78 @@ def _return_to_core_sidestep(
                 target_cell=target,
                 direction=direction,
                 reserved_cell=cell,
+            )
+    return None
+
+
+def _critical_retreat_sidestep(
+    unit: UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+) -> ActionIntent | None:
+    """Emergency sidestep for a critically wounded unit whose direct retreat
+    and doorstep evacuation have both failed.
+
+    Picks any adjacent free cell — preferring toward the Core but accepting
+    any passable cell — to unblock the core entrance.  Anti-oscillation
+    penalises returning to the previous cell.
+    """
+    if context.core is None:
+        return None
+    target = (
+        context.core.destination
+        if context.core.state is CoreState.MOVING and context.core.destination
+        else context.core.position
+    )
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+        | enemy_threat_cells(context)
+    )
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
+    candidates: list[tuple[int, int, Position, Direction]] = []
+    for direction_idx, direction in enumerate(DIRECTIONS):
+        cand = destination(unit.position, direction)
+        if cand in blocked:
+            continue
+        dist_to_core = distance(cand, target)
+        dist_now = distance(unit.position, target)
+        # Prefer toward-core cells, then lateral, then outward.
+        toward_penalty = 0 if dist_to_core < dist_now else (1 if dist_to_core == dist_now else 2)
+        backtrack_penalty = 5000 if prev_cell is not None and cand == prev_cell else 0
+        candidates.append((toward_penalty + backtrack_penalty, direction_idx, cand, direction))
+
+    candidates.sort()
+    # If every candidate carries the backtrack penalty, refuse to oscillate.
+    if candidates and candidates[0][0] >= 5000:
+        return None
+    for _, _, cand, direction in candidates:
+        if reservations.reserve(cand, source=unit.position):
+            _record_unit_task(memory, context, unit, kind="critical_retreat_sidestep", target=cand, intent=ActionIntent(
+                actor_id=unit.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=755,
+                reason=reason,
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
+            ))
+            return ActionIntent(
+                actor_id=unit.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=755,
+                reason=reason,
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
             )
     return None
 
@@ -684,6 +788,12 @@ def _evacuate_doorstep_intent(
     if max_radius <= 1 and unit.position not in passable_exits:
         return None
 
+    # Anti-oscillation: read previous cell from memory to penalise returning
+    # to it, preventing 2-cell ping-pong on the core doorstep.
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
     threats = enemy_threat_cells(context)
     candidates: list[tuple[int, int, int, Position, Direction]] = []
     for direction_idx, direction in enumerate(DIRECTIONS):
@@ -698,11 +808,28 @@ def _evacuate_doorstep_intent(
             continue
         outward_penalty = 0 if distance(cand, core_pos) > distance(unit.position, core_pos) else 1
         occupancy = len(context.friendly_occupancy.get(cand, ()))
-        candidates.append((outward_penalty, occupancy, direction_idx, cand, direction))
+        # Heavy penalty to prevent oscillating back to the cell we just came from
+        backtrack_penalty = 5000 if prev_cell is not None and cand == prev_cell else 0
+        candidates.append((outward_penalty + backtrack_penalty, occupancy, direction_idx, cand, direction))
 
     candidates.sort()
+    # If every remaining candidate carries the backtrack penalty, the unit
+    # would oscillate between two cells every other tick.  Return None so
+    # the caller falls through to WAIT, which breaks the cycle.
+    if candidates and candidates[0][0] >= 5000:
+        return None
     for _, _, _, cand, direction in candidates:
         if reservations.reserve(cand, source=unit.position):
+            _record_unit_task(memory, context, unit, kind="evacuate_doorstep", target=cand, intent=ActionIntent(
+                actor_id=unit.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=410,
+                reason=reason,
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
+            ))
             return ActionIntent(
                 actor_id=unit.id,
                 is_core=False,

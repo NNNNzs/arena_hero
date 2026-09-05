@@ -395,3 +395,36 @@ def test_json_findings_and_registry_use_rule_metadata(tmp_path, monkeypatch):
     assert finding["zh_label"] == "核心正在遭受攻击"
     assert finding["recommendation"]
     assert len(report["alert_rules"]) == 15
+
+
+def test_is_core_defense_intent_recognizes_guard_route_blocked():
+    """_is_core_defense_intent must recognize guard_route_blocked as core defense,
+    preventing BEACON-mode core guards from being misclassified as expedition."""
+    assert inspector._is_core_defense_intent({"reason": "guard_route_blocked"})
+    assert inspector._is_core_defense_intent({"reason": "yield_doorstep_guard_route"})
+    assert inspector._is_core_defense_intent({"reason": "holding_defense_ring"})
+    assert inspector._is_core_defense_intent({"reason": "some_core_guard_task"})
+    assert inspector._is_core_defense_intent({"reason": "anything", "squad_id": "squad_base_defense"})
+    # Non-defense reasons must NOT match
+    assert not inspector._is_core_defense_intent({"reason": "beacon_route_blocked"})
+    assert not inspector._is_core_defense_intent({"reason": "expedition_cohesion_hold"})
+    assert not inspector._is_core_defense_intent({"reason": "explore_sector_frontier"})
+
+
+def test_guard_route_blocked_units_not_flagged_as_expedition_stall(tmp_path, monkeypatch):
+    """Core guards with guard_route_blocked must not trigger SQUAD_EXPEDITION_STALL."""
+    rows = []
+    for tick in range(100, 122):
+        row = _row(tick, [5, 5], mode="BEACON")
+        row["state"]["units"] = [
+            {"id": "guard_vg", "unit_type": "VANGUARD", "position": [-1, 0], "hp": 4},
+            {"id": "guard_rn", "unit_type": "RANGER", "position": [1, 0], "hp": 2},
+        ]
+        row["intents"] = [
+            {"actor": "guard_vg", "action": "WAIT", "reason": "guard_route_blocked", "mode": "BEACON"},
+            {"actor": "guard_rn", "action": "WAIT", "reason": "holding_defense_ring", "mode": "BEACON"},
+        ]
+        rows.append(row)
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    stall_codes = [f["code"] for f in report["findings"] if f["code"] == "SQUAD_EXPEDITION_STALL"]
+    assert stall_codes == [], f"Core guards should not trigger expedition stall: {report['findings']}"

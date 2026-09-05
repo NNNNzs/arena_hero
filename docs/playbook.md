@@ -198,3 +198,15 @@
   3. 全量单元测试 421 项 100% 通过（`pytest tests/ -q`），按 `auto-commit` 规范提交。
   4. 重启 Docker 容器加载最新战术逻辑生效。
 
+### 2026-09-05 | Tick 225160 游侠远距离撤退多格环形死循环振荡（UNIT_OSCILLATION）与门前避障重构
+- **现象**：巡检时间窗 Tick 225035..225155，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，游侠 `5c604f8a2a33` 在 `[-2598, 1176]` 附近陷入 4-Tick 极度规则的周期性环形死锁振荡（60 步内反向 29 次）：`[-2597, 1176] -> LEFT -> [-2598, 1176] -> DOWN -> [-2598, 1177] -> UP -> [-2598, 1176] -> RIGHT -> [-2597, 1176]`，任务类型为 `critical_ranger_retreat_distant_fallback`。
+- **根因分析**：
+  在 `arena_tactic/strategy/common.py` 中，`_distant_retreat_fallback_intent` 原仅记录单步 `prev_cell` 进行防回退排序（`1 if previous_cell is not None and item[0] == previous_cell else 0`）。当单位在遇到复杂障碍物凹陷时，在 3~4 格形成的局部环路中循环往复，因为当其踏入第 3 格时，第 1 格已不在 `prev_cell` 中，贪心距离评估与防回退机制失效，导致反复在 3~4 格形成的环路上无限往返。
+- **处置动作**：
+  1. 将单步 `prev_cell` 升级为记录最近走过的坐标序列 `recent_cells`（保留最近 5 格），引入多层级 Taboo 禁忌惩罚（越近访问的坐标惩罚权重越高，最高 600 并逐级减半），彻底打破 3~4 格的局部环形振荡；
+  2. 重构核心门前避让 `_evacuate_doorstep_intent` 与受损回撤 `_critical_retreat_sidestep`，加入防反向回溯禁忌门限；
+  3. 新增 `tests/test_distant_retreat_oscillation.py` 覆盖 9 项多格回环振荡与禁忌队列回归用例，扩充 `tests/test_core_congestion.py` 与 `tests/test_tactical_inspector.py`；
+  4. 全量单元测试 437 项 100% 通过（`pytest tests/ -q`），按 auto-commit 规范提交；
+  5. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
+  6. 重启 Docker 容器加载最新战术逻辑生效。
+
