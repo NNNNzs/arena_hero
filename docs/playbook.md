@@ -212,8 +212,7 @@
   4. 重启 Docker 容器加载最新战术逻辑生效。
 
 ### 2026-09-05 | Tick 225160 游侠远距离撤退多格环形死循环振荡（UNIT_OSCILLATION）与门前避障重构
-- **现象**：巡检时间窗 Tick 225035..225155，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，游侠 `5c604f8a2a33` 在 `[-2598, 1176]` 附近陷入 4-Tick 极度规则的周期性环形死锁振荡（60 步内反向 29 次）：`[-2597, 1176] -> LEFT -> [-2598, 1176] -> DOWN -> [-2598, 1177] -> UP -> [-2598, 1176] -> RIGHT -> [-2597, 1176]`，任务类型为 `critical_ranger_retreat_distant_fallback`。
-- **根因分析**：
+- **现象**：巡检时间窗 Tick 225035..225155，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，游侠 `5c604f8a2a33` 在 `[-2598, 1176]` 附近陷入 4-Tick 极度规则的周期性环形死锁振荡（60 步内反向 29 次）：`[-2597, 1176] -> LEFT -> [-2598, 1176] -> DOWN -> [-2598, 1177] -> UP -> [-2598, 1176] -> RIGHT -> [-2597, 1176]`，任务类型为 `critical_ranger_retreat_distant_fallback`。\n- **根因分析**：
   在 `arena_tactic/strategy/common.py` 中，`_distant_retreat_fallback_intent` 原仅记录单步 `prev_cell` 进行防回退排序（`1 if previous_cell is not None and item[0] == previous_cell else 0`）。当单位在遇到复杂障碍物凹陷时，在 3~4 格形成的局部环路中循环往复，因为当其踏入第 3 格时，第 1 格已不在 `prev_cell` 中，贪心距离评估与防回退机制失效，导致反复在 3~4 格形成的环路上无限往返。
 - **处置动作**：
   1. 将单步 `prev_cell` 升级为记录最近走过的坐标序列 `recent_cells`（保留最近 5 格），引入多层级 Taboo 禁忌惩罚（越近访问的坐标惩罚权重越高，最高 600 并逐级减半），彻底打破 3~4 格的局部环形振荡；
@@ -222,4 +221,15 @@
   4. 全量单元测试 437 项 100% 通过（`pytest tests/ -q`），按 auto-commit 规范提交；
   5. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
   6. 重启 Docker 容器加载最新战术逻辑生效。
+
+### 2026-09-05 | Tick 226521 超远距离守备单位 guard_route_blocked 路径死锁与增量回撤修复
+- **现象**：巡检时间窗 Tick 226398..226521，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。巡检检出 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)` 涉及 12 名远征队成员，`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及 24 个对象（占全军 60%）。
+- **根因分析**：
+  在 `arena_tactic/strategy/vanguards.py` 与 `arena_tactic/strategy/rangers.py` 中，约 10 名被分配为核心守备（`LEGACY_CORE_GUARD`）的先锋和游侠（如 `28f6d638896a`, `986c96c1179e`, `3ac3cba7cab8`, `c662bfdd181c`, `45082e9dab8f`, `7c7c18221303` 等），实际坐标分散在远达 2000 多格之外的旧战区（`[-2800, 700]` 区域）。策略层直接对其调用 `_move(unit, guard_target, "hold_core_defense_ring", 300, ...)`。由于跨越 2000+ 格的迷雾和复杂障碍物，单次 A* 寻路失败返回 None，且单位不处于 doorstep 区域，导致每回合全部 fallback 到 `_wait(unit, "guard_route_blocked")`。这导致 10 名战斗主力在远方永久死锁卡死，且长距离无效寻路计算导致决策耗时激增至 1220ms。
+- **处置动作**：
+  1. 在 `vanguards.py` 与 `rangers.py` 中引入超远距离守备单位增量回撤降级（Long-distance Guard Fallback）：当守备单位因路径阻断或距离过远寻路失败且距 `guard_target` 超过长途门限时，调用 `_distant_retreat_fallback_intent` 进行单步增量贪心逼近，穿越迷雾向核心方向移动，彻底打破原地 WAIT 死锁；
+  2. 新增 `tests/test_guard_route_fallback.py` 覆盖 6 项超远距离守备先锋与游侠解卡单测用例；
+  3. 全量测试通过，按 auto-commit 规范提交；
+  4. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
+  5. 重启 Docker 容器加载最新战术逻辑生效。
 

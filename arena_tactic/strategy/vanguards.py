@@ -23,6 +23,7 @@ from .combat import (
 )
 from .common import (
     _deploy_sidestep,
+    _distant_retreat_fallback_intent,
     _yield_cargo_delivery,
     UNIT_MAX_HP,
     _at_normal_core,
@@ -375,6 +376,16 @@ def _plan_vanguards(
             if intent is None:
                 intent = _evacuate_doorstep_intent(
                     vanguard, context, memory, reservations, "yield_doorstep_guard_route"
+                )
+            # Guard-route long-distance fallback (guard_route_blocked deadlock fix):
+            # Units far from their guard slot may fail both A* and doorstep
+            # evacuation, causing permanent WAIT deadlock.  Use incremental
+            # greedy fallback steps toward the guard target to make progress
+            # through fog and obstacles each tick.
+            if intent is None and distance(vanguard.position, guard_target) > config.long_distance_retreat_threshold:
+                intent = _distant_retreat_fallback_intent(
+                    vanguard, guard_target, context, memory, reservations,
+                    "hold_core_defense_ring",
                 )
             _record_unit_task(memory, context, vanguard, kind="core_guard", target=guard_target, intent=intent)
             intents.append(intent or _wait(vanguard, "guard_route_blocked"))
