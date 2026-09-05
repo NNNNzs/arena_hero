@@ -234,6 +234,23 @@ def _movement_reservations(
     return reservations
 
 
+_EVASION_TABOO_BASE = 9000
+
+
+def _load_recent_cells(memory: AgentMemory, unit_id_str: str) -> list[Position]:
+    """Load recent position history for a unit from ``memory.unit_tasks``."""
+    task = memory.unit_tasks.get(unit_id_str, {})
+    raw = task.get("recent_cells")
+    if not isinstance(raw, list):
+        return []
+    result: list[Position] = []
+    for item in raw:
+        if (isinstance(item, (list, tuple)) and len(item) == 2
+                and all(type(p) is int for p in item)):
+            result.append((int(item[0]), int(item[1])))
+    return result
+
+
 def _squad_evasion_step(
     unit: UnitView,
     target: Position,
@@ -249,6 +266,10 @@ def _squad_evasion_step(
     navigation.  A Beacon squad has several independently assigned slots, so
     a deterministic adjacent lane is preferable to leaving a whole departure
     group stationary behind one occupied cell.
+
+    Anti-oscillation: recently visited cells (stored in ``recent_cells`` under
+    ``memory.unit_tasks``) receive heavy taboo penalties so the unit never
+    bounces back to where it just came from.
     """
     blocked = (
         memory.obstacles
@@ -258,9 +279,17 @@ def _squad_evasion_step(
     )
     if avoid_threats:
         blocked.update(enemy_threat_cells(context))
+    # Build taboo penalties from recent position history.
+    recent = _load_recent_cells(memory, str(unit.id))
+    taboo: dict[Position, int] = {}
+    for idx, cell in enumerate(reversed(recent)):
+        penalty = _EVASION_TABOO_BASE >> idx
+        if penalty > 0:
+            taboo[cell] = max(taboo.get(cell, 0), penalty)
     ranked = sorted(
         DIRECTIONS,
         key=lambda direction: (
+            taboo.get(destination(unit.position, direction), 0),
             distance(destination(unit.position, direction), target),
             (DIRECTIONS.index(direction) - unit.id.int) % len(DIRECTIONS),
             direction.value,
@@ -459,6 +488,15 @@ def coordinate_expedition_intents(
                 avoid_threats=True,
             )
             used_evasion = direction is not None
+            if used_evasion:
+                unit_key = str(unit.id)
+                task = memory.unit_tasks.setdefault(unit_key, {})
+                recent = task.get("recent_cells")
+                if not isinstance(recent, list):
+                    recent = []
+                recent.append(list(unit.position))
+                task["recent_cells"] = [list(c) for c in recent[-5:]]
+                task["kind"] = "squad_evasion"
         if direction is None:
             replacements.append(ActionIntent(
                 unit.id, False, ActionKind.WAIT, 680, f"{reason_prefix}_formation_route_blocked",

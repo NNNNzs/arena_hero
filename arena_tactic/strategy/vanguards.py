@@ -212,22 +212,31 @@ def _plan_vanguards(
             intents.append(intent or _wait(vanguard, "hidden_attacker_search_blocked"))
             continue
 
-        mobile_or_intercept_squad = (
-            expedition_vanguards | mining_vanguards | scout_vanguards | intercept_vanguards
-        )
         target_enemy = _best_visible_enemy(vanguard, context, memory)
-        if target_enemy is not None and (
-            vanguard.id in mobile_or_intercept_squad
-            or _enemy_threatens_friendly(target_enemy, context, memory, config)
-        ):
-            intent = _move(
-                vanguard, target_enemy.position, "intercept_visible_threat", 740,
-                context=context, memory=memory, reservations=reservations,
-                deadline=deadline, config=config,
+        if target_enemy is not None:
+            dist_to_enemy = distance(vanguard.position, target_enemy.position)
+            is_expedition = vanguard.id in expedition_vanguards
+            # Expedition vanguard only intercepts threats within immediate proximity (<= intercept_distance),
+            # never abandoning the expedition advance for distant threats thousands of cells away.
+            expedition_intercept = is_expedition and dist_to_enemy <= config.intercept_distance
+            # Non-expedition vanguard intercepts threats within reasonable tactical radius (<= 16)
+            local_intercept = (
+                not is_expedition
+                and dist_to_enemy <= max(config.intercept_distance * 2, 16)
+                and (
+                    vanguard.id in (mining_vanguards | scout_vanguards | intercept_vanguards)
+                    or _enemy_threatens_friendly(target_enemy, context, memory, config)
+                )
             )
-            _record_unit_task(memory, context, vanguard, kind="intercept", target=target_enemy.position, intent=intent)
-            intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
-            continue
+            if expedition_intercept or local_intercept:
+                intent = _move(
+                    vanguard, target_enemy.position, "intercept_visible_threat", 740,
+                    context=context, memory=memory, reservations=reservations,
+                    deadline=deadline, config=config,
+                )
+                _record_unit_task(memory, context, vanguard, kind="intercept", target=target_enemy.position, intent=intent)
+                intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
+                continue
 
         if (
             context.core is not None

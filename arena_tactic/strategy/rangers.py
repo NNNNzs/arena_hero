@@ -235,14 +235,14 @@ def _plan_rangers(
 
         target_enemy = _best_visible_enemy(ranger, context, memory)
         if target_enemy is not None:
-            staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
-            near_core = (
-                context.core is not None
-                and distance(target_enemy.position, context.core.position) <= config.intercept_distance
-            )
-            mobile_squad = ranger.id in (
-                expedition_rangers | mining_rangers | scout_rangers
-            )
+            dist_to_enemy = distance(ranger.position, target_enemy.position)
+            in_tactical_range = dist_to_enemy <= max(config.intercept_distance * 2, 16)
+
+            # Expedition ranger only engages enemies within its immediate tactical radius,
+            # maintaining priority on advancing with the expedition beacon squad.
+            is_expedition = ranger.id in expedition_rangers
+            expedition_engage = is_expedition and dist_to_enemy <= max(config.intercept_distance, 8)
+
             # A base defender may adjust within the defense perimeter even
             # when the intruder has not yet crossed the Core intercept radius.
             # Do not turn a fixed guard into a long-range pursuer.
@@ -250,9 +250,26 @@ def _plan_rangers(
                 ranger.id in guard_rangers
                 and context.core is not None
                 and distance(ranger.position, context.core.position) <= config.intercept_distance
-                and distance(staging, context.core.position) <= config.intercept_distance
+                and in_tactical_range
             )
-            if near_core or mobile_squad or local_base_reposition:
+
+            # Near core defense is strictly for rangers stationed within core defensive reach
+            near_core_defender = (
+                context.core is not None
+                and distance(target_enemy.position, context.core.position) <= config.intercept_distance
+                and distance(ranger.position, context.core.position) <= config.defense_exit_distance
+                and in_tactical_range
+            )
+
+            # Non-expedition mobile squad (mining/scout) can engage within tactical range
+            mobile_engage = (
+                not is_expedition
+                and ranger.id in (mining_rangers | scout_rangers)
+                and in_tactical_range
+            )
+
+            if expedition_engage or local_base_reposition or near_core_defender or mobile_engage:
+                staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
                 intent = _move(
                     ranger, staging, "ranger_seek_legal_firing_line", 580,
                     context=context, memory=memory, reservations=reservations,

@@ -259,3 +259,17 @@
   4. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
   5. 重启 Docker 容器加载最新战术逻辑生效。
 
+### 2026-09-05 | Tick 227887 远征编队规避往返振荡 (UNIT_OSCILLATION) 与战术交战半径修复
+- **现象**：巡检时间窗 Tick 227768..227887，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 97/200。巡检检出 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)` 涉及 6 名成员，`[WARNING] UNIT_OSCILLATION (单位往返振荡)` 涉及 4 个对象（在两格之间以 58/60 的高频往复反转），以及全员工兵陷入 stuck/idle。
+- **根因分析**：
+  1. 在 `arena_tactic/squad_coordination.py` 中，当 `plan_step(...)` 规划受阻降级进入 `_squad_evasion_step` 时，规避选步未对近期访问坐标施加惩罚，导致移动一格后下回合 `plan_step` 依然受阻，规避步再次选回原位，在两格之间形成 100% 往复振荡死锁；
+  2. 在 `arena_tactic/strategy/vanguards.py` 与 `arena_tactic/strategy/rangers.py` 中，机动远征编队单位脱离核心奔赴信标途中（相距数千格），当核心附近出现敌军时，旧策略无视远征单位距离，强行将其分配去拦截或索敌超远距离敌人，导致远征单位在信标方向与敌人方向之间剧烈目标撕扯，加剧了编队协同停滞与局部振荡。
+- **处置动作**：
+  1. 在 `squad_coordination.py` 的 `_squad_evasion_step` 中引入基于 `recent_cells` 的 Taboo 历史位置惩罚（权重 `9000 >> idx`），防止规避步反向跳回；
+  2. 在 `vanguards.py` 与 `rangers.py` 中收紧远征单位的战术拦截半径（`in_tactical_range` / `expedition_intercept` / `expedition_engage`），让远征单位专注推进远征，仅对近身威胁接敌，避免跨越全图的无效拉扯；
+  3. 新增 `tests/test_squad_evasion_oscillation.py` 与 `tests/test_expedition_tactical_range.py`（共 13 项单元测试全部通过）；
+  4. 全量回归测试通过，按 auto-commit 规范提交；
+  5. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
+  6. 重启 Docker 容器加载最新战术逻辑生效。
+
+
