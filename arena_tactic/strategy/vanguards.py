@@ -231,6 +231,11 @@ def _plan_vanguards(
         if (
             context.core is not None
             and vanguard.id in (guard_vanguards | mining_vanguards)
+            # Expedition and far-from-core vanguards must never be pulled
+            # back to base mineral cells — they would stall indefinitely
+            # trying to path across thousands of cells.  (SQUAD_EXPEDITION_STALL fix)
+            and vanguard.id not in expedition_vanguards
+            and distance(vanguard.position, context.core.position) <= config.defense_exit_distance
         ):
             occupied = set(context.friendly_occupancy) | set(context.enemy_occupancy)
             occupied.discard(vanguard.position)

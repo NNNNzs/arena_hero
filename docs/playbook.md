@@ -5,6 +5,19 @@
 
 ## 处置案例
 
+### 2026-09-05 Tick 225835~225841 | SQUAD_EXPEDITION_STALL (信标打击群协同停滞) 与工兵采矿路径阻塞修复
+- **现象**：在 120 Tick 窗口巡检检出 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)` 与 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。16 名远征先锋在 2000 格外（如 `[-2800, 792]` 区域）长期停滞，reason 持续为 `mineral_tank_route_blocked`；同时基地 12 名工兵全员卡在 `resource_route_blocked` 或 `no_resource_or_frontier`。
+- **根因分析**：
+  1. `vanguards.py` 中的 `best_mineral_tank_cell`（基地矿区肉盾卡位）逻辑在检查 `vanguard.id in expedition_vanguards` 之前无条件执行，且没有距离守护。深入地图前线的远征先锋被错误判定接取基地矿区卡位，超远距离寻路失败后陷入 `mineral_tank_route_blocked` 原地永久 WAIT。
+  2. 工兵在首选矿点路径暂时被挡时，缺少针对其他可见矿点的平滑降级，导致工兵全员原地等待。
+- **处置动作**：
+  1. 修改 `arena_tactic/strategy/vanguards.py`：为基地矿区肉盾卡位增加编制守护与距离门限（`vanguard.id not in expedition_vanguards and distance(vanguard.position, context.core.position) <= config.defense_exit_distance`），严禁远征军先锋与基地外先锋接取基地矿点卡位。
+  2. 修改 `arena_tactic/strategy/workers.py`：工兵首选矿点寻路受阻时，尝试选择其他未被锁定的可见资源格（`resource_route_alt_cell`），打破路径阻塞僵局。
+  3. 新增单元测试 `tests/test_expedition_mineral_tank_guard.py`（包含 6 个测试用例，全绿通过）。
+- **效果验证**：
+  - 单测全绿通过（`pytest tests/test_expedition_mineral_tank_guard.py` 6 passed）。
+  - 热重启服务并验证 health endpoint 正常。
+
 ### 2026-09-04 Tick 219268~219277 | UNIT_OSCILLATION (单位严重振荡) Command API 干预处置闭环
 - **现象**：在 120 Tick 窗口巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)`。工兵 `entity_4de5d0e9593a` 在核心门户 `[-900, 1570]` 与 `[-900, 1569]` 之间以周期 2 往复振荡 28 次（样本 30 次）。
 - **根因分析**：工兵处于核心门口退让半径内（`cargo_delivery_yield_radius`），因基地外围被多名待命工兵（`[-900, 1568]`, `[-901, 1569]` 等）与障碍物阻隔，`_evacuate_doorstep_intent` 候选格子排序在内外两格之间来回翻转，引发周期性摆动。

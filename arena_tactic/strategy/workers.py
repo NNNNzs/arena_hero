@@ -758,6 +758,29 @@ def _plan_workers(
                 _record_unit_task(memory, context, worker, kind="resource", target=target, intent=intent)
                 intents.append(intent)
                 continue
+            # Stuck on a resource route — try an alternative visible resource
+            # cell that is not already locked by another worker, to avoid all
+            # 12 workers stalling on the same blocked path.
+            if not cargo:
+                assigned_targets = set(resource_assignments.values())
+                alt_target = min(
+                    (
+                        cell for cell in context.resource_cells
+                        if cell != target and cell not in assigned_targets
+                    ),
+                    key=lambda cell: distance(worker.position, cell),
+                    default=None,
+                )
+                if alt_target is not None:
+                    intent = _move(
+                        worker, alt_target, "resource_route_alt_cell", 750,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config, avoid_threats=True,
+                    )
+                    if intent is not None:
+                        _record_unit_task(memory, context, worker, kind="resource", target=alt_target, intent=intent)
+                        intents.append(intent)
+                        continue
             if not (_at_normal_core(worker, context) and not cargo):
                 intents.append(_wait(worker, "resource_route_blocked"))
                 continue
