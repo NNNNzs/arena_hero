@@ -372,5 +372,84 @@ def test_cargo_worker_full_core_waits_when_all_exits_blocked():
     assert intent.reason == "core_capacity_full_wait"
 
 
+def test_cargo_doorstep_worker_waits_when_core_full():
+    """满编满仓状态下载货工人在核心门口（distance=1）不应走入核心格。
+
+    根因：旧逻辑在 distance==1 时未检查满编满仓状态，直接生成 MOVE 到
+    核心格；工人踏上核心格后因满仓无法 DEPOSIT，被腾退逻辑挤出至相邻格，
+    下一 Tick 又被 MOVE 拉回核心格，形成 2-Tick 往复振荡（CARGO_DELIVERY_STAGNATION /
+    UNIT_OSCILLATION）。
+    修复后在满编满仓时应就地 WAIT (cargo_doorstep_wait_for_entry)，待核心有余量时再入库。
+    """
+    c = core(position=(0, 0))
+    cargo_w = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    # 模拟满编 40 人口，capacity = 40 * 5 = 200, resources = 200 → full
+    guards = tuple(unit(i, UnitType.VANGUARD, (i, 10)) for i in range(2, 41))
+    t = turn(
+        owned_core=c,
+        units=(cargo_w, *guards),
+        resources=200,
+        obstacle_cells=((0, -1), (1, 0), (0, 1)),  # 单通道：只有西侧门口
+    )
+    assert t.resource_space == 0, "precondition: core storage must be full"
+    assert len(t.units) == 40, "precondition: population must be at cap"
+    result = choose_actions(t, memory=AgentMemory())
+    intent = next(i for i in result.intents if i.actor_id == cargo_w.id)
+    # 绝不能 MOVE 到核心格 (0, 0) —— 这是振荡的根因
+    assert intent.action is ActionKind.WAIT, (
+        f"cargo worker at doorstep of full core must WAIT, got {intent.action}"
+    )
+    assert intent.reason == "cargo_doorstep_wait_for_entry", (
+        f"unexpected reason: {intent.reason}"
+    )
+
+
+def test_cargo_doorstep_worker_enters_core_when_space_available():
+    """核心有余量时，门口载货工人必须正常走入核心入库（回归验证）。"""
+    c = core(position=(0, 0))
+    cargo_w = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    # resources=0 → resource_space=10 (有空间)
+    t = turn(
+        owned_core=c,
+        units=(cargo_w,),
+        resources=0,
+        obstacle_cells=((0, -1), (1, 0), (0, 1)),
+    )
+    assert t.resource_space > 0, "precondition: core must have space"
+    result = choose_actions(t, memory=AgentMemory())
+    intent = next(i for i in result.intents if i.actor_id == cargo_w.id)
+    # 必须走入核心格 (0, 0)
+    assert intent.action is ActionKind.MOVE, (
+        f"cargo worker should enter core, got {intent.action}"
+    )
+    assert intent.reserved_cell == (0, 0), (
+        f"should target core cell (0, 0), got {intent.reserved_cell}"
+    )
+    assert intent.reason == "return_cargo_to_core"
+
+
+def test_cargo_doorstep_multi_worker_no_oscillation_at_full_core():
+    """多名载货工人在门口且核心满编满仓时，全部就地等待，不产生振荡。"""
+    c = core(position=(0, 0))
+    w1 = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
+    w2 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
+    guards = tuple(unit(i, UnitType.VANGUARD, (i, 10)) for i in range(3, 41))
+    t = turn(
+        owned_core=c,
+        units=(w1, w2, *guards),
+        resources=200,
+        obstacle_cells=((0, -1), (1, 0), (0, 1)),
+    )
+    assert t.resource_space == 0
+    assert len(t.units) == 40
+    result = choose_actions(t, memory=AgentMemory())
+    worker_intents = [i for i in result.intents if i.actor_id in (w1.id, w2.id)]
+    for intent in worker_intents:
+        assert intent.action is ActionKind.WAIT, (
+            f"worker {intent.actor_id} must WAIT at full core doorstep, got {intent.action}"
+        )
+        assert intent.reason == "cargo_doorstep_wait_for_entry"
+
+
 
 

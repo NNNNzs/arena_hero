@@ -399,11 +399,16 @@ def _plan_workers(
                 intents.append(ActionIntent(worker.id, False, ActionKind.DEPOSIT, 980, "emergency_deposit_at_core"))
                 continue
             if worker.cargo or combat_ready:
+                target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
+                # Skip A* pathfinding when core is full and cargo worker is at
+                # the doorstep — same oscillation guard as the normal path.
+                if worker.cargo and context.resource_space <= 0 and context.population >= config.max_population and distance(worker.position, target) <= 1:
+                    intents.append(_wait(worker, "emergency_deposit_queue_wait"))
+                    continue
                 intent = return_to_core(
                     worker, context, memory, reservations, deadline, config,
                     "emergency_worker_rally_to_core",
                 )
-                target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
                 if intent is None:
                     intent = _return_to_core_sidestep(
                         worker, target, context, memory, reservations,
@@ -709,8 +714,16 @@ def _plan_workers(
         if cargo:
             return_target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
             intent = None
+            # When core is full and cannot spend resources (e.g. max population reached),
+            # a cargo worker at distance 1 MUST NOT step onto the core cell — deposit
+            # would be rejected and the vacate logic would push the worker right back,
+            # causing a 2-tick oscillation between the core cell and an adjacent cell
+            # (the CARGO_DELIVERY_STAGNATION / UNIT_OSCILLATION pattern).
+            # Instead, hold position and wait for storage space to open.
+            core_full = context.resource_space <= 0 and context.population >= config.max_population
             if (
-                distance(worker.position, return_target) == 1
+                not core_full
+                and distance(worker.position, return_target) == 1
                 and return_target not in memory.obstacles
                 and return_target not in context.enemy_occupancy
                 and reservations.reserve(return_target, source=worker.position)
@@ -728,10 +741,16 @@ def _plan_workers(
                         reserved_cell=return_target,
                     )
             if intent is None:
-                intent = return_to_core(
-                    worker, context, memory, reservations, deadline, config,
-                    "return_cargo_to_core",
-                )
+                # Also skip A* pathfinding to the core when full and at
+                # the doorstep, to avoid the same oscillation through the
+                # _return_to_core → _move path.
+                if core_full and distance(worker.position, return_target) <= 1:
+                    intent = None
+                else:
+                    intent = return_to_core(
+                        worker, context, memory, reservations, deadline, config,
+                        "return_cargo_to_core",
+                    )
             if intent is None:
                 if distance(worker.position, return_target) > 1:
                     intent = _return_to_core_sidestep(

@@ -312,5 +312,20 @@
   4. 报警 HTML 邮件已成功发送至 709934831@qq.com 归档；
   5. 重启 Docker 容器加载最新代码生效，彻底解决编队重整槽位振荡。
 
+### 2026-09-07 | Tick 233773 满编满仓载货工人回矿停滞与往返振荡 (CARGO_DELIVERY_STAGNATION / UNIT_OSCILLATION) 修复
+- **现象**：巡检时间窗 Tick 233650..233773，系统处于 `ATTACK (攻坚模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 200/200 满仓。巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及工人 `210c98aea2ef`，`[WARNING] UNIT_OSCILLATION (单位往返振荡)` 在核心位 `[-898, 1573]` 与门口 `[-899, 1573]` 之间以 18/20 的高频往复反转，以及 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。
+- **根因分析**：
+  1. 当前基地达到 40 满编人口，核心资源储量达 200 上限，已无法再生产单位或消耗资源（生命/护盾满值）；
+  2. 在 `arena_tactic/strategy/workers.py` 的载货工人回矿逻辑中，当工人站在核心格上时因 `context.resource_space <= 0` 无法 DEPOSIT，触发 `core_capacity_full_vacate` 被腾退移出至门口相邻格；
+  3. 工人到达门口相邻格后（distance == 1），旧逻辑未校验满编满仓状态，强行判定 `distance == 1` 并生成 MOVE 进入核心格；
+  4. 进入核心格后再次判定满仓被踢出，形成“踏入核心 → 满仓腾退 → 门前再入 → 再次腾退”的 2-Tick 往复振荡与回矿停滞死循环。
+- **处置动作**：
+  1. 在 `arena_tactic/strategy/workers.py` 中增加核心满编满仓（`context.resource_space <= 0 and context.population >= config.max_population`）判断，当工人处于核心门口（distance <= 1）且核心无法容纳存矿时，跳过进入核心格的 MOVE 与 A* 寻路，就地保持等待（WAIT，理由 `cargo_doorstep_wait_for_entry`）；
+  2. 在 `arena_tactic/planning/legacy.py` 中注册 `cargo_doorstep_wait_for_entry` 的等待分类；在前端 `frontend/src/domain/labels.ts` 补充其中文显示标签；
+  3. 在 `tests/test_core_congestion.py` 中新增 3 项回归单测（满编满仓门前等待、余量恢复正常进入、多工人门口防振荡），全量通过；同时保持 `test_sdk_contract.py` SDK 契约不受影响；
+  4. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
+  5. 重启 Docker 容器加载最新代码生效，彻底消除满编满仓载货工人振荡。
+
+
 
 
