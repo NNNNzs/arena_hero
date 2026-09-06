@@ -91,7 +91,7 @@ def _record_unit_task(
     existing = memory.unit_tasks.get(str(unit.id), {})
     task = dict(existing) if existing.get("kind") == kind else {
         key: existing[key]
-        for key in ("patrol_arc", "patrol_role", "patrol_core")
+        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell")
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})

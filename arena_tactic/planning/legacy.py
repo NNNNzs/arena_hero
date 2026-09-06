@@ -54,6 +54,7 @@ _WAIT_REASONS = {
     "firing_route_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "core_migration_progresses_naturally": ("LIFECYCLE", "CORE_MOVEMENT_COMPLETES", None),
     "resources_reserved_or_no_legal_core_action": ("RESOURCE_WAIT", "CORE_RESOURCES_OR_LEGAL_ACTION", None),
+    "core_capacity_full_wait": ("RESOURCE_WAIT", "CORE_CAPACITY_AVAILABLE", 1),
     "validator_safe_fallback": ("SAFETY", "NEXT_AUTHORITATIVE_TURN", 1),
     "squad_base_defense_worker_hold": ("COHESION_HOLD", "SQUAD_ADVANCES", 1),
     "squad_base_defense_worker_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),

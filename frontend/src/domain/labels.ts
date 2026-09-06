@@ -25,7 +25,7 @@ export const REASON_LABELS: Record<string, string> = {
   resources_reserved_or_no_legal_core_action: '资源已保留或核心暂无合法动作', return_cargo_to_core: '将货物运回核心',
   continue_locked_resource_route: '锁定延续前往资源', reobserve_remembered_resource: '重新观察已记忆资源',
   explore_sector_frontier: '探索分区前沿', holding_defense_ring: '维持防守环', preferred_vanguard_to_beacon: '优先派先锋前往信标',
-  path_to_resource: '前往资源路径', preserve_worker_cargo: '保留工人货物', current_resource: '当前资源', stale: '决策已过期',
+  path_to_resource: '前往资源路径', preserve_worker_cargo: '保留工人货物', core_capacity_full_vacate: '核心满仓腾退', core_capacity_full_wait: '核心满仓等待', current_resource: '当前资源', stale: '决策已过期',
   ok: '正常', manual_task_move: '人工移动任务', unit_retreat_to_core_heal: '撤退治疗',
   unit_retreat_to_core_heal_unsafe_fallback: '撤退治疗（风险路径）', unit_retreat_to_core_heal_shelter: '撤退治疗（掩体庇护）',
   NEXT_AUTHORITATIVE_TURN: '等待下一份权威状态', CORE_VISIBLE: '核心重新可见',

@@ -320,10 +320,18 @@ def _plan_vanguards(
                         reservations, "expedition_vanguard_sidestep", context.core.position,
                     )
                 intents.append(intent or _wait(vanguard, "beacon_route_blocked"))
-            memory.unit_tasks[str(vanguard.id)] = {
+            # Preserve ``recent_cells`` and ``prev_cell`` across kind changes so that
+            # ``coordinate_expedition_intents`` anti-oscillation taboo
+            # history is not wiped every tick (UNIT_OSCILLATION fix).
+            _existing_task = memory.unit_tasks.get(str(vanguard.id), {})
+            _task: dict = {
                 "kind": "expedition_beacon",
                 "target": list(context.beacon.position),
+                "prev_cell": list(vanguard.position),
             }
+            if "recent_cells" in _existing_task:
+                _task["recent_cells"] = _existing_task["recent_cells"]
+            memory.unit_tasks[str(vanguard.id)] = _task
             continue
 
         cargo_yield = _yield_cargo_delivery(

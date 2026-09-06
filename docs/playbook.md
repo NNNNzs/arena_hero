@@ -5,6 +5,22 @@
 
 ## 处置案例
 
+### 2026-09-06 Tick 233543~233555 | CARGO_DELIVERY_STAGNATION (载货工人回矿停滞) 满仓入库死锁与 UNIT_OSCILLATION 修复
+- **现象**：在 120 Tick 巡检中检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 与 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。载货工兵 `210c98aea2ef` 携带资源到达核心格 `[-898, 1573]` 后连续 120+ Ticks 执行 `WAIT (validator_safe_fallback)` 停滞；同时先锋与游侠在远征前线出现 2~4 格往复振荡。
+- **根因分析**：
+  1. 核心资源储量已达到容量上限 `200/200`（`context.resource_space <= 0`）。策略层 `arena_tactic/strategy/workers.py` 在 `cargo and _at_normal_core` 分支中未校验 `context.resource_space > 0`，直接生成 `ActionKind.DEPOSIT` 指令；该指令被 `arena_tactic/validation.py` 因满仓判定为非法操作（`deposit_requires_stationary_core_and_space`）并剔除，在 validation 兜底中降级为 `validator_safe_fallback (WAIT)`。工兵因此陷入每回合“生成存款 -> 校验拒绝 -> 强制原地等待”的确定性死锁，长期霸占核心格阻碍通道。
+  2. 远征先锋在 `vanguards.py` 中每回合无条件重写 `task` 字典，抹除了 `coordinate_expedition_intents` 用于防振荡的 `recent_cells` 记忆，导致防振荡历史丢失。
+- **处置动作**：
+  1. 修改 `arena_tactic/strategy/workers.py`：载货工人在核心格时先校验 `context.resource_space > 0`；满仓（`resource_space <= 0`）时，寻找可用出口单元格生成 `core_capacity_full_vacate` (腾退移动让道)；若出口全被阻挡则安全转入 `core_capacity_full_wait` (满仓安全等待)。
+  2. 修改 `arena_tactic/planning/legacy.py`：为 `core_capacity_full_wait` 注册等待分类 `("RESOURCE_WAIT", "CORE_CAPACITY_AVAILABLE", 1)`。
+  3. 修改 `arena_tactic/strategy/vanguards.py` 与 `common.py`：在任务切换和重写时保留 `recent_cells` 与 `prev_cell`，维持防振荡历史连续性。
+  4. 同步更新前端标签 `frontend/src/domain/labels.ts`。
+  5. 在 `tests/test_core_congestion.py` 与 `tests/test_vanguard_recent_cells_preservation.py` 中补充 21 项回归单元测试。
+- **效果验证**：
+  - 针对性单测与全量核心单测全部通过（466 passed）。
+  - 重启容器（`docker compose restart arena-hero`）使修复热生效。
+
+
 ### 2026-09-05 Tick 227209 | DECISION_LATENCY_SPIKE (决策延迟激增) 超远距离守备 A* 绕过与轻量回撤优化
 - **现象**：在 120 Tick 巡检中检出 `[CRITICAL] DECISION_LATENCY_SPIKE (决策延迟激增)`，决策耗时连续 117 回合超过 2000ms（当前 2450ms~2995ms），触发“已触及决策时限”。
 - **根因分析**：

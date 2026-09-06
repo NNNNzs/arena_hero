@@ -1,6 +1,7 @@
 """核心格拥堵死锁修复的回归测试。"""
 from arena_tactic import choose_actions
 from arena_tactic.memory import AgentMemory
+from arena_tactic.models import ActionKind
 from .factories import core, turn, unit
 from arena_hero import UnitType
 
@@ -309,6 +310,66 @@ def test_stuck_sidestep_respects_threshold():
 
     intent = _stuck_sidestep(w, (5, 0), context, memory, reservations, "resource_route_unblock")
     assert intent is None, "Should not activate before threshold is reached"
+
+
+def test_cargo_worker_at_full_core_vacates_instead_of_deadlock():
+    """满仓入库死锁修复：载货工人在核心格且 resource_space=0 时，必须腾退而非生成被拒绝的 DEPOSIT。
+
+    根因：旧逻辑未检查 context.resource_space > 0，直接生成 DEPOSIT 意图，
+    被 validation 拦截降级为 validator_safe_fallback WAIT，工人陷入死锁。
+    修复后应生成 core_capacity_full_vacate (腾退移动) 或 core_capacity_full_wait (安全等待)。
+    """
+    c = core(position=(0, 0))
+    # 载货工人站在核心格上
+    cargo_w = unit(1, UnitType.WORKER, (0, 0), cargo=1)
+    # 1 个工人 → population=1 → resource_capacity=max(10, 5)=10
+    # 设 resources=10 → resource_space=0 (满仓)
+    t = turn(owned_core=c, units=(cargo_w,), resources=10)
+    assert t.resource_space == 0, "precondition: core storage must be full"
+    result = choose_actions(t, memory=AgentMemory())
+    intent = next(i for i in result.intents if i.actor_id == cargo_w.id)
+    # 绝不能是 validator_safe_fallback (死锁) 或 DEPOSIT (会被 validation 拒绝)
+    assert intent.reason != "validator_safe_fallback", (
+        "cargo worker must not fall back to validator_safe_fallback deadlock"
+    )
+    assert intent.action is not ActionKind.DEPOSIT, (
+        "DEPOSIT at full core is rejected by validator, must not be generated"
+    )
+    # 应为合理腾退或等待
+    assert intent.reason in {"core_capacity_full_vacate", "core_capacity_full_wait"}, (
+        f"unexpected reason: {intent.reason}"
+    )
+
+
+def test_cargo_worker_deposits_normally_when_core_has_space():
+    """回归验证：resource_space > 0 时，载货工人在核心格正常 DEPOSIT。"""
+    c = core(position=(0, 0))
+    cargo_w = unit(1, UnitType.WORKER, (0, 0), cargo=1)
+    # resources=0 → resource_space=10 (有空间)
+    t = turn(owned_core=c, units=(cargo_w,), resources=0)
+    assert t.resource_space > 0, "precondition: core must have space"
+    result = choose_actions(t, memory=AgentMemory())
+    intent = next(i for i in result.intents if i.actor_id == cargo_w.id)
+    assert intent.action is ActionKind.DEPOSIT
+    assert intent.reason == "preserve_worker_cargo"
+
+
+def test_cargo_worker_full_core_waits_when_all_exits_blocked():
+    """满仓且核心四周全被障碍封闭时，载货工人应安全 WAIT 而非崩溃。"""
+    c = core(position=(0, 0))
+    cargo_w = unit(1, UnitType.WORKER, (0, 0), cargo=1)
+    # 四面全障碍：无法腾退
+    t = turn(
+        owned_core=c,
+        units=(cargo_w,),
+        resources=10,
+        obstacle_cells=((0, -1), (1, 0), (0, 1), (-1, 0)),
+    )
+    assert t.resource_space == 0
+    result = choose_actions(t, memory=AgentMemory())
+    intent = next(i for i in result.intents if i.actor_id == cargo_w.id)
+    assert intent.action is ActionKind.WAIT
+    assert intent.reason == "core_capacity_full_wait"
 
 
 

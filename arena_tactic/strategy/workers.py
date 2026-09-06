@@ -660,13 +660,51 @@ def _plan_workers(
             intents.append(_wait(worker, "deposit_waits_for_core_migration"))
             continue
         if cargo and _at_normal_core(worker, context):
-            intents.append(ActionIntent(
-                actor_id=worker.id,
-                is_core=False,
-                action=ActionKind.DEPOSIT,
-                score=950,
-                reason="preserve_worker_cargo",
+            if context.resource_space > 0:
+                intents.append(ActionIntent(
+                    actor_id=worker.id,
+                    is_core=False,
+                    action=ActionKind.DEPOSIT,
+                    score=950,
+                    reason="preserve_worker_cargo",
+                ))
+                continue
+            # Core is full (resource_space <= 0); vacate the core cell to
+            # unblock returning cargo workers.  Reuse the same pattern as
+            # the empty-worker vacate block above.
+            occupied = dict(context.enemy_occupancy)
+            exit_cells = tuple(sorted(
+                (
+                    destination(worker.position, direction)
+                    for direction in DIRECTIONS
+                    if destination(worker.position, direction) not in memory.obstacles
+                    and destination(worker.position, direction) not in occupied
+                ),
+                key=lambda cell: (len(context.friendly_occupancy.get(cell, ())), cell),
             ))
+            vacate = next((cell for cell in exit_cells if reservations.can_reserve(cell)), None)
+            if vacate is None:
+                for exit_cell in exit_cells:
+                    if _relieve_delivery_corridor(exit_cell):
+                        vacate = exit_cell
+                        break
+            if vacate is not None:
+                if reservations.reserve(vacate, source=worker.position):
+                    direction = next(d for d in DIRECTIONS if destination(worker.position, d) == vacate)
+                    intent = ActionIntent(
+                        actor_id=worker.id,
+                        is_core=False,
+                        action=ActionKind.MOVE,
+                        score=940,
+                        reason="core_capacity_full_vacate",
+                        direction=direction,
+                        target_cell=vacate,
+                        reserved_cell=vacate,
+                    )
+                    _record_unit_task(memory, context, worker, kind="vacate", target=vacate, intent=intent)
+                    intents.append(intent)
+                    continue
+            intents.append(_wait(worker, "core_capacity_full_wait"))
             continue
         if cargo:
             return_target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
