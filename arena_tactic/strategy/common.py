@@ -740,6 +740,12 @@ def _yield_cargo_doorstep_for_combat(
     This function detects the pattern and replaces ``cargo_doorstep_wait_for_entry``
     WAIT intents for cargo workers adjacent to the core with outward MOVE intents,
     breaking the deterministic swap deadlock.
+
+    **Cascade evacuation**: When distance-1 doorstep workers cannot yield because
+    all adjacent cells are saturated (2/2 each, as in high-density corridor
+    congestion), outer-ring workers (distance 2–3) are evacuated further outward
+    first to create space.  This is essential for pocket terrain with a long
+    packed corridor where 10+ cargo workers queue up at distance 1–3.
     """
     if context.core is None:
         return intents
@@ -752,8 +758,14 @@ def _yield_cargo_doorstep_for_combat(
         | threats
     )
 
-    result: list[ActionIntent] = []
-    for intent in intents:
+    # Pre-pass: cascade evacuation of outer-ring cargo workers (distance 2-3)
+    # to free cells for distance-1 doorstep workers.
+    result = _cascade_corridor_evacuation(
+        intents, context, memory, reservations, blocked, core_position,
+    )
+
+    final: list[ActionIntent] = []
+    for intent in result:
         if (
             intent.action is ActionKind.WAIT
             and intent.reason == "cargo_doorstep_wait_for_entry"
@@ -774,10 +786,155 @@ def _yield_cargo_doorstep_for_combat(
                         target=yield_intent.target_cell or unit.position,
                         intent=yield_intent,
                     )
-                    result.append(yield_intent)
+                    final.append(yield_intent)
                     continue
-        result.append(intent)
+        final.append(intent)
+    return final
+
+
+def _cascade_corridor_evacuation(
+    intents: list[ActionIntent],
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    blocked: set[Position],
+    core_position: Position,
+) -> list[ActionIntent]:
+    """Evacuate outer-ring cargo workers outward to break high-density corridor congestion.
+
+    In pocket terrain with a long packed corridor, all cells adjacent to the
+    doorstep (distance 1) may be saturated at 2/2 capacity with cargo workers
+    (``no_safe_route_with_cargo`` or ``cargo_doorstep_wait_for_entry``).  The
+    existing ``_force_doorstep_yield`` cannot reserve any cell because every
+    candidate is full.
+
+    This function scans for cargo workers at distance 2-3 whose WAIT reason
+    indicates corridor congestion and forces them outward (to distance 3-4+),
+    creating free cells for distance-1 workers to yield into.  Workers already
+    at distance >= 4 are not affected (they are beyond the congestion zone).
+
+    The evacuation processes distance 3 first (outermost congestion ring),
+    then distance 2, ensuring space cascades inward.
+    """
+    result = list(intents)
+    existing_tasks = memory.unit_tasks
+
+    # Build lookup: actor_id -> index in result list for intent replacement.
+    intent_index: dict = {}
+    for idx, intent in enumerate(result):
+        intent_index[intent.actor_id] = idx
+
+    # Process distance 3 first (outermost ring), then distance 2.
+    # This ensures space flows inward: distance 3 yields → distance 2 gets
+    # space → distance 1 gets space.
+    for ring_distance in (3, 2):
+        for idx, intent in enumerate(result):
+            if (
+                intent.action is not ActionKind.WAIT
+                or intent.reason not in (
+                    "no_safe_route_with_cargo",
+                    "cargo_doorstep_wait_for_entry",
+                )
+            ):
+                continue
+            unit = context.current_objects.get(intent.actor_id)
+            if (
+                not isinstance(unit, UnitView)
+                or not unit.cargo
+                or distance(unit.position, core_position) != ring_distance
+            ):
+                continue
+            existing_task = existing_tasks.get(str(unit.id), {})
+            prev_cell_raw = existing_task.get("prev_cell")
+            prev_cell = (
+                tuple(prev_cell_raw)
+                if isinstance(prev_cell_raw, (list, tuple))
+                and len(prev_cell_raw) == 2
+                else None
+            )
+
+            cascade_intent = _cascade_yield_outward(
+                unit, core_position, context, memory, reservations,
+                blocked, prev_cell,
+            )
+            if cascade_intent is not None:
+                _record_unit_task(
+                    memory, context, unit,
+                    kind="yield_corridor_for_combat",
+                    target=cascade_intent.target_cell or unit.position,
+                    intent=cascade_intent,
+                )
+                result[idx] = cascade_intent
+
     return result
+
+
+def _cascade_yield_outward(
+    worker: UnitView,
+    core_position: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    blocked: set[Position],
+    prev_cell: Position | None,
+) -> ActionIntent | None:
+    """Move a cargo worker outward from a congested corridor ring.
+
+    Selects the best adjacent cell that is:
+    - Not the core position
+    - Not blocked (obstacles, enemy, threats)
+    - At the same or greater distance from core (outward or lateral)
+    - Not the previous cell (anti-oscillation)
+    - Has at least one usable exit besides the worker's current cell (dead-end guard)
+    """
+    current_dist = distance(worker.position, core_position)
+
+    candidates: list[tuple[int, int, int, Position, Direction]] = []
+    for direction_idx, direction in enumerate(DIRECTIONS):
+        cand = destination(worker.position, direction)
+        if cand == core_position or cand in blocked:
+            continue
+        cand_dist = distance(cand, core_position)
+        if cand_dist < current_dist:
+            continue  # Don't move closer to core (would worsen congestion)
+        # Dead-end guard: cell must have at least one non-blocked exit besides
+        # the cell we came from and the core.
+        other_exits = sum(
+            1 for d in DIRECTIONS
+            if destination(cand, d) != worker.position
+            and destination(cand, d) != core_position
+            and destination(cand, d) not in blocked
+        )
+        if other_exits == 0:
+            continue
+        outward_bonus = 1 if cand_dist > current_dist else 0
+        backtrack_penalty = 5000 if prev_cell is not None and cand == prev_cell else 0
+        occupancy = len(context.friendly_occupancy.get(cand, ()))
+        candidates.append((
+            backtrack_penalty + (1 - outward_bonus) + occupancy,
+            cand_dist,
+            direction_idx,
+            cand,
+            direction,
+        ))
+
+    candidates.sort()
+    # If every candidate carries the backtrack penalty, avoid oscillation.
+    if candidates and candidates[0][0] >= 5000:
+        return None
+    for _, _, _, cand, direction in candidates:
+        if reservations.reserve(cand, source=worker.position):
+            return ActionIntent(
+                actor_id=worker.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=420,
+                reason="yield_corridor_for_combat",
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
+            )
+    return None
 
 
 def _force_doorstep_yield(

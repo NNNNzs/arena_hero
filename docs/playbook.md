@@ -370,7 +370,23 @@
   4. **告警闭环**：异常报警 HTML 邮件已成功发送至 709934831@qq.com；
   5. 重启 Docker 容器加载最新代码生效。
 
-### 2026-09-08 | Tick 239451 单通道口袋核心格战斗单位死锁疏散 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY) 修复
+### 2026-09-08 | Tick 240120 口袋地形高密度走廊群聚级联疏散 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY) 修复
+- **现象**：巡检时间窗 Tick 240110~240120，系统处于 `ATTACK (进攻模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 196/200。检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 10 名载货工人回矿停滞超 500 Ticks；`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及先锋 `6ee037b7b2bc` 滞留在核心格 `[-898, 1573]` 超 500 Ticks。
+- **根因分析**：
+  1. 核心 `[-898, 1573]` 处于绝壁单通道口袋地形（北、东、南三面障碍物，西侧 `[-899, 1573]` 为唯一通道）；
+  2. 先锋 `6ee037b7b2bc` 滞留在核心格，西侧门口被工人占用，执行 `patrol_route_blocked` -> WAIT；
+  3. 门前 `[-899, 1573]` 有 2 名载货工人因核心格有友军单位无法进库，执行 `cargo_doorstep_wait_for_entry` -> WAIT；
+  4. 外围走廊（[-899, 1572], [-899, 1574], [-900, 1573], [-901, 1573]）塞满了另外 8 名载货工人，每格 2 人均已达到 friendly_occupancy 上限 2/2；
+  5. 此前 Tick 239451 新增的 `_yield_cargo_doorstep_for_combat` 仅针对距离核心 1 格的工兵尝试向相邻格避让；但在此类高密度群聚场景下，门口工兵所有相邻候选格全被外围载货工兵塞满（2/2），`reservations.reserve` 预约全部失败，导致门口工兵无法向外避让，先锋无法走出核心格，形成高密度走廊双向群死锁。
+- **处置动作**：
+  1. **应急干预与告警**：通过 Command API 下发指令疏导外围工兵，并即时向 `709934831@qq.com` 投递 HTML 战况异常告警邮件；
+  2. **工程根治**：
+     - 在 `arena_tactic/strategy/common.py` 中新增 `_cascade_corridor_evacuation` 与 `_cascade_yield_outward` 级联疏散机制；
+     - 当检测到战斗单位滞留核心格时，采用由外向内（优先扫描距离 3、再扫描距离 2）的外围走廊工兵退避机制，将外围工兵向走廊更深处或侧向空地腾退，打破 2/2 饱和堵塞，为门口（距离 1）工兵让出预约空间；
+     - 门口工兵成功预约腾退后，核心格战斗单位成功执行 `deploy_sidestep` 走出核心格，全面打通回矿通道；
+  3. **测试验证**：新增 `tests/test_high_density_corridor.py`（8 项单元测试，覆盖高密度走廊级联疏散、多方向腾退、防死胡同、防反向振荡等场景），全部 8 项测试全绿通过（总耗时 0.23s）；
+  4. **服务生效**：按 auto-commit 规范提交代码至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
 - **现象**：巡检时间窗 Tick 239451，系统处于 `ECONOMY (经济模式)`，核心坐标 `[-898, 1573]`，人口 40 满编。巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 10 名载货工人连续多回合无法完成资源入库（DEPOSIT），全部滞留堵塞在核心门口外围通道；`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及先锋 `entity_6ee037b7b2bc` 位于核心格 `[-898, 1573]` 连续 60+ Ticks 执行 WAIT，状态原因为 `patrol_route_blocked`。
 - **根因分析**：
   1. 核心 `[-898, 1573]` 处于绝壁单通道口袋地形，东、北、南三面不可通行，西侧唯一通道是 `[-899, 1573]`；
