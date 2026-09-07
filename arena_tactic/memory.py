@@ -72,6 +72,39 @@ def _persisted_task_key(value: str) -> str:
     return alias or ""
 
 
+def _resolve_unit_task(
+    unit_tasks: dict[str, dict[str, Any]], unit_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Look up a unit's task dict by raw UUID, raw hex ID, or entity_ alias.
+
+    Returns ``(resolved_key, task)``. ``resolved_key`` is the actual key
+    found in *unit_tasks*. ``(None, None)`` when no entry matches.
+    """
+    if unit_id in unit_tasks:
+        return unit_id, unit_tasks[unit_id]
+    alias = f"entity_{unit_id}"
+    if alias in unit_tasks:
+        return alias, unit_tasks[alias]
+    if unit_id.startswith("entity_"):
+        stripped = unit_id[len("entity_"):]
+        if stripped in unit_tasks:
+            return stripped, unit_tasks[stripped]
+    alias_from_uuid = _persisted_task_key(unit_id)
+    if alias_from_uuid and alias_from_uuid in unit_tasks:
+        return alias_from_uuid, unit_tasks[alias_from_uuid]
+    return None, None
+
+
+def _resolve_and_pop_unit_task(
+    unit_tasks: dict[str, dict[str, Any]], unit_id: str
+) -> dict[str, Any] | None:
+    """Remove and return a unit's task dict, trying both key formats."""
+    resolved, task = _resolve_unit_task(unit_tasks, unit_id)
+    if resolved is not None:
+        unit_tasks.pop(resolved, None)
+    return task
+
+
 def _safe_task(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -546,7 +579,7 @@ class AgentMemory:
                 core_damaged = True
             if event.actor_id is not None and event.event_type == "UNIT_MOVE_FAILED":
                 unit_id = str(event.actor_id)
-                task = next_memory.unit_tasks.get(unit_id)
+                task_key, task = _resolve_unit_task(next_memory.unit_tasks, unit_id)
                 attempted_cell: Position | None = None
                 if task is not None and isinstance(task.get("step"), list):
                     step = task["step"]
@@ -566,11 +599,12 @@ class AgentMemory:
                     rotated.pop("target", None)
                     rotated.pop("step", None)
                     rotated.pop("attempt_tick", None)
-                    next_memory.unit_tasks[unit_id] = rotated
+                    if task_key is not None:
+                        next_memory.unit_tasks[task_key] = rotated
                 else:
-                    next_memory.unit_tasks.pop(unit_id, None)
+                    _resolve_and_pop_unit_task(next_memory.unit_tasks, unit_id)
             elif event.actor_id is not None and event.event_type == "UNIT_MOVE_SUCCEEDED":
-                task = next_memory.unit_tasks.get(str(event.actor_id))
+                _, task = _resolve_unit_task(next_memory.unit_tasks, str(event.actor_id))
                 if task is not None:
                     task.pop("step", None)
                     task.pop("attempt_tick", None)

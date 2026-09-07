@@ -5,6 +5,19 @@
 
 ## 处置案例
 
+### 2026-09-07 Tick 238538~238587 | INEFFECTIVE_STATIONARY (先锋移动冲突卡死) Command API 干预脱困与死锁阻断
+- **现象**：在 120 Tick 窗口巡检检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。远征军先锋 `2aada0b86a43` 位于 `[-1253, -755]`，连续 70+ Ticks 移动失败，每次都收到服务端返回的 `UNIT_MOVE_FAILED (reason: MOVE_CONTESTED)`，陷入机械原地踏步。
+- **根因分析**：
+  1. 单位在执行 `squad_evasion` 任务时向冲突坐标持续发起移动，但目标格存在未知阻挡或坐标争夺。
+  2. 策略底层在 `memory.py` 处理 `UNIT_MOVE_FAILED` 时，`unit_tasks.get(unit_id)` 因键名携带 `entity_` 前缀未命中，且任务内未持久化记录 `step`，导致 `temporary_blocks` 无法将冲突格加入冷却，单位陷入无法自愈的无限重试死锁。
+- **处置动作**：
+  1. 通过 Command API 登录并向 `entity_2aada0b86a43` 下发高优先级（priority 950）的 `MOVE_TO_CELL` 手动调度指令，引导其向 `[-1254, -755]` 避让脱困。
+  2. 指令于 Tick 238584 生效应用（`status: APPLIED`），单位成功中断原有的死锁循环，后续回合不再产生连续 `UNIT_MOVE_FAILED (MOVE_CONTESTED)` 报错。
+  3. 已向山哥邮箱发送异常战报，并记录该策略缺陷待后续工程任务彻底修复。
+- **效果验证**：
+  - 检查 Replay 与 Decision Trace：Tick 238585 之后该单位 `UNIT_MOVE_FAILED` 报错归零，成功阻断死锁。
+
+
 ### 2026-09-06 Tick 233543~233555 | CARGO_DELIVERY_STAGNATION (载货工人回矿停滞) 满仓入库死锁与 UNIT_OSCILLATION 修复
 - **现象**：在 120 Tick 巡检中检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 与 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。载货工兵 `210c98aea2ef` 携带资源到达核心格 `[-898, 1573]` 后连续 120+ Ticks 执行 `WAIT (validator_safe_fallback)` 停滞；同时先锋与游侠在远征前线出现 2~4 格往复振荡。
 - **根因分析**：
