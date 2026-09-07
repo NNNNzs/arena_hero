@@ -155,6 +155,22 @@ def _safe_cell_map(value: Any) -> dict[Position, int]:
     return result
 
 
+def _safe_last_move_attempt(value: Any) -> dict[str, Position]:
+    """Parse ``{alias: [x, y]}`` for per-unit last attempted move targets."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Position] = {}
+    for alias, raw in value.items():
+        if not isinstance(alias, str) or not _EVENT_ID_RE.fullmatch(alias):
+            continue
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            continue
+        if not all(type(axis) is int for axis in raw):
+            continue
+        result[alias] = (int(raw[0]), int(raw[1]))
+    return result
+
+
 def _safe_enemy_tracks(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
@@ -345,6 +361,10 @@ class AgentMemory:
     resource_recheck_cooldowns: dict[Position, int] = field(default_factory=dict)
     enemy_tracks: dict[str, dict[str, Any]] = field(default_factory=dict)
     temporary_blocks: dict[Position, int] = field(default_factory=dict)
+    # Track each unit's last attempted move target cell so that
+    # UNIT_MOVE_FAILED can fall back when unit_tasks lacks "step".
+    # Keyed by raw unit-id string (str(unit.id)).
+    last_move_attempt: dict[str, Position] = field(default_factory=dict)
     retreating_unit_ids: set[str] = field(default_factory=set)
     unit_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     manual_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -401,6 +421,7 @@ class AgentMemory:
         m.resource_recheck_failures = self.resource_recheck_failures.copy()
         m.resource_recheck_cooldowns = self.resource_recheck_cooldowns.copy()
         m.temporary_blocks = self.temporary_blocks.copy()
+        m.last_move_attempt = self.last_move_attempt.copy()
         m.event_counts = self.event_counts.copy()
         m.manual_squad_assignments = self.manual_squad_assignments.copy()
         # --- dicts of dicts (values are flat dicts of primitives / lists-of-primitives) ---
@@ -585,6 +606,10 @@ class AgentMemory:
                     step = task["step"]
                     if len(step) == 2:
                         attempted_cell = int(step[0]), int(step[1])
+                # Fallback: use last recorded move attempt when unit_tasks
+                # has no step (e.g. dynamically dispatched expedition units).
+                if attempted_cell is None:
+                    attempted_cell = next_memory.last_move_attempt.get(unit_id)
                 if attempted_cell is not None:
                     if event.reason_code == "MOVE_BLOCKED_TERRAIN":
                         next_memory.obstacles.add(attempted_cell)
@@ -631,6 +656,7 @@ class AgentMemory:
                 )
             ):
                 next_memory.unit_tasks.clear()
+                next_memory.last_move_attempt.clear()
                 next_memory.enemy_tracks.clear()
                 next_memory.manual_squad_assignments.clear()
                 next_memory.explored.clear()
@@ -662,6 +688,9 @@ class AgentMemory:
         next_memory.retreating_unit_ids.intersection_update(current_unit_ids)
         next_memory.unit_tasks = {
             unit_id: task for unit_id, task in next_memory.unit_tasks.items() if unit_id in current_unit_ids
+        }
+        next_memory.last_move_attempt = {
+            unit_id: cell for unit_id, cell in next_memory.last_move_attempt.items() if unit_id in current_unit_ids
         }
 
         if context.tick > next_memory.last_tick:
@@ -711,6 +740,11 @@ class AgentMemory:
             "resource_recheck_cooldowns": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.resource_recheck_cooldowns.items())},
             "enemy_tracks": _safe_enemy_tracks(self.enemy_tracks),
             "temporary_blocks": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.temporary_blocks.items())},
+            "last_move_attempt": {
+                alias: list(cell)
+                for unit_id, cell in sorted(self.last_move_attempt.items())
+                if (alias := _persisted_task_key(unit_id))
+            },
             "retreating_unit_ids": [alias for unit_id in sorted(self.retreating_unit_ids) if (alias := _persisted_task_key(unit_id))],
             "unit_tasks": {
                 alias: _safe_task(task)
@@ -776,6 +810,7 @@ class AgentMemory:
             resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
             enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
             temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
+            last_move_attempt=_safe_last_move_attempt(data.get("last_move_attempt", {})),
             retreating_unit_ids=retreating_ids,
             unit_tasks={
                 alias: _safe_task(task)

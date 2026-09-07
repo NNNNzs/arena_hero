@@ -339,6 +339,22 @@
   4. 报警 HTML 邮件成功发送至 709934831@qq.com 归档；
   5. 重启 Docker 容器加载最新代码生效，彻底消除满编满仓载货工人振荡。
 
+### 2026-09-07 | Tick 238776 远征先锋移动争夺死锁 (MOVE_CONTESTED / INEFFECTIVE_STATIONARY) 与移动目标记录兜底修复
+- **现象**：巡检时间窗 Tick 238636..238776，系统处于 `BEACON (信标模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 200/200 满仓。巡检检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`，远征先锋 `2aada0b86a43` 在坐标 `[-1257, -762]` 连续 115 个 Tick 原地移动失败（`failed_moves = 115`，失败原因全为 `MOVE_CONTESTED`），尝试向上移动到 `[-1257, -763]` 陷入长达 115 回合的原地顶牛死锁。
+- **根因分析**：
+  1. 目标格 `[-1257, -763]` 存在敌方单位或敌方同时尝试移入该格，触发 `UNIT_MOVE_FAILED`（原因码 `MOVE_CONTESTED`）；
+  2. 在 `arena_tactic/memory.py` 中处理 `UNIT_MOVE_FAILED` 事件时，仅从 `unit_tasks` 中提取 `task["step"]` 作为 `attempted_cell` 记录到 `temporary_blocks` 冷却。但远征先锋等动态编组单位未在 `unit_tasks` 中记录持久化 `step`，导致 `attempted_cell` 始终为 `None`；
+  3. 目标格未能加入 `temporary_blocks`（或 `obstacles`），寻路策略在后续回合因目标格曼哈顿距离最近且无障碍标记，持续重复向同一格移动碰撞，导致陷入 100+ 回合连续撞击的无法自愈死锁。
+- **处置动作**：
+  1. **应急干预**：通过 Command API 下发 `ASSIGN_TASK` 移动脱困指令；同时单位在 Tick 238773 识别到隐匿敌军转入 `SWEEP` 横扫打击命中目标格，打破物理僵局；
+  2. **工程根治**：
+     - 在 `arena_tactic/runtime.py` 中记录每个单位最新意图所保留的目标格 `next_memory.last_move_attempt[unit_id] = intent.reserved_cell`；
+     - 在 `arena_tactic/memory.py` 中增加 `last_move_attempt` 属性与持久化回放支持，当 `UNIT_MOVE_FAILED` 发生且 `unit_tasks` 无 `step` 时，自动回退使用 `last_move_attempt` 中的目标格；
+     - 确保 `MOVE_BLOCKED_TERRAIN`（永久加入 `obstacles`）和 `MOVE_CONTESTED` 等非地形失败（加入 `temporary_blocks` 冷却）均能正确对争夺格实施冷却避让，彻底杜绝此类无任务标记单位的反复碰撞顶牛死锁；
+  3. **测试验证**：新增 `tests/test_move_failed_fallback.py`（8 项单元测试，覆盖无 task、空 step、非地形争夺冷却、地形永久障碍、多单位隔离与往复阻断等场景），全量单测 516 项 100% 通过；
+  4. **告警闭环**：异常报警 HTML 邮件已成功发送至 709934831@qq.com；
+  5. 重启 Docker 容器加载最新代码生效。
+
 
 
 

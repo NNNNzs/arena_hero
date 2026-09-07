@@ -198,6 +198,11 @@ class AgentRuntime:
         else:
             intents, rejected = validate_intents(proposals, context, self.config)
             apply_intents(turn, intents)
+        # Record each unit's last attempted move target cell so that
+        # UNIT_MOVE_FAILED can fall back to it when unit_tasks lacks "step".
+        for intent in intents:
+            if intent.action is ActionKind.MOVE and intent.reserved_cell is not None:
+                next_memory.last_move_attempt[str(intent.actor_id)] = intent.reserved_cell
         elapsed_ms = (perf_counter() - started) * 1_000
         waits = tuple(
             sorted({intent.reason for intent in intents if intent.action.value == "WAIT"})
