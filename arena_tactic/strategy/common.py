@@ -669,12 +669,19 @@ def _evict_combat_from_core_for_cargo(
 
     This post-processing step catches ALL such WAIT-on-core cases that the
     in-tree ``_yield_cargo_delivery`` call cannot reach.
+
+    Additionally, when the combat unit's yield fails because the only exit
+    corridor is blocked by cargo workers waiting at the doorstep
+    (``cargo_doorstep_wait_for_entry``), this function forces those cargo
+    workers to yield outward, breaking the deterministic swap deadlock in
+    single-exit pocket terrain.
     """
     if context.core is None:
         return intents
     core_position = context.core.position
     combat_ids = {unit.id for unit in (*context.rangers, *context.vanguards)}
     changed = False
+    combat_stuck_on_core = False
     result: list[ActionIntent] = []
     for intent in intents:
         if (
@@ -699,8 +706,147 @@ def _evict_combat_from_core_for_cargo(
                     result.append(yield_intent)
                     changed = True
                     continue
+                # Combat unit on core could not yield — flag for doorstep
+                # corridor relief below.
+                combat_stuck_on_core = True
+        result.append(intent)
+
+    # Pocket deadlock relief: when a combat unit is stuck on the core and
+    # cargo workers are blocking the only exit by waiting at the doorstep,
+    # force those cargo workers to yield outward so the combat unit can
+    # leave on the next tick.
+    if combat_stuck_on_core:
+        result = _yield_cargo_doorstep_for_combat(
+            result, context, memory, reservations, config,
+        )
+    return result
+
+
+def _yield_cargo_doorstep_for_combat(
+    intents: list[ActionIntent],
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    config: AgentConfig,
+) -> list[ActionIntent]:
+    """Force cargo workers at the doorstep to yield outward for a stuck combat unit.
+
+    In a single-exit pocket terrain, the following deadlock can occur:
+    - Core cell is full (CORE + combat unit, 2/2)
+    - The only exit is blocked by cargo workers waiting to enter (2/2)
+    - The combat unit cannot ``_deploy_sidestep`` because all exits are full
+    - Cargo workers won't move because they're waiting for core space
+
+    This function detects the pattern and replaces ``cargo_doorstep_wait_for_entry``
+    WAIT intents for cargo workers adjacent to the core with outward MOVE intents,
+    breaking the deterministic swap deadlock.
+    """
+    if context.core is None:
+        return intents
+    core_position = context.core.position
+    threats = enemy_threat_cells(context)
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+        | threats
+    )
+
+    result: list[ActionIntent] = []
+    for intent in intents:
+        if (
+            intent.action is ActionKind.WAIT
+            and intent.reason == "cargo_doorstep_wait_for_entry"
+        ):
+            unit = context.current_objects.get(intent.actor_id)
+            if (
+                isinstance(unit, UnitView)
+                and unit.cargo
+                and distance(unit.position, core_position) == 1
+            ):
+                yield_intent = _force_doorstep_yield(
+                    unit, core_position, context, memory, reservations, blocked,
+                )
+                if yield_intent is not None:
+                    _record_unit_task(
+                        memory, context, unit,
+                        kind="yield_corridor_for_combat",
+                        target=yield_intent.target_cell or unit.position,
+                        intent=yield_intent,
+                    )
+                    result.append(yield_intent)
+                    continue
         result.append(intent)
     return result
+
+
+def _force_doorstep_yield(
+    worker: UnitView,
+    core_position: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    blocked: set[Position],
+) -> ActionIntent | None:
+    """Move a cargo worker outward from the core doorstep to break a pocket deadlock.
+
+    Selects the best adjacent free cell preferring outward movement (away from
+    core), avoiding dead-end pockets, and penalising the previous cell to
+    prevent oscillation.
+    """
+    existing_task = memory.unit_tasks.get(str(worker.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+
+    candidates: list[tuple[int, int, int, Position, Direction]] = []
+    for direction_idx, direction in enumerate(DIRECTIONS):
+        cand = destination(worker.position, direction)
+        if (
+            cand == core_position
+            or cand in blocked
+            or cand in context.enemy_occupancy
+        ):
+            continue
+        # Avoid dead-end pockets: cell must have at least one non-blocked
+        # exit besides the cell we came from and the core.
+        other_exits = sum(
+            1 for d in DIRECTIONS
+            if destination(cand, d) != worker.position
+            and destination(cand, d) != core_position
+            and destination(cand, d) not in blocked
+            and destination(cand, d) not in context.enemy_occupancy
+        )
+        if other_exits == 0:
+            continue
+        dist_from_core = distance(cand, core_position)
+        outward_bonus = 1 if dist_from_core > distance(worker.position, core_position) else 0
+        backtrack_penalty = 5000 if prev_cell is not None and cand == prev_cell else 0
+        occupancy = len(context.friendly_occupancy.get(cand, ()))
+        candidates.append((
+            backtrack_penalty + (1 - outward_bonus) + occupancy,
+            distance(cand, core_position),
+            direction_idx,
+            cand,
+            direction,
+        ))
+
+    candidates.sort()
+    # If every candidate carries the backtrack penalty, avoid oscillation.
+    if candidates and candidates[0][0] >= 5000:
+        return None
+    for _, _, _, cand, direction in candidates:
+        if reservations.reserve(cand, source=worker.position):
+            return ActionIntent(
+                actor_id=worker.id,
+                is_core=False,
+                action=ActionKind.MOVE,
+                score=420,
+                reason="yield_corridor_for_combat",
+                direction=direction,
+                target_cell=cand,
+                reserved_cell=cand,
+            )
+    return None
 
 
 def _yield_cargo_delivery(

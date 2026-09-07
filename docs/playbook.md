@@ -5,6 +5,21 @@
 
 ## 处置案例
 
+### 2026-09-08 Tick 239451 | CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY (绝壁单通道口袋战斗单位卡核心导致工人回矿死锁) 修复
+- **现象**：在 120 Tick 巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 与 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。核心位于绝壁单通道口袋 `[-898, 1573]`，核心格被 CORE 与先锋 `6ee037b7b2bc` 占满（2/2），先锋执行 `patrol` 无法离开核心（`patrol_route_blocked`）；同时西向唯一通道格 `[-899, 1573]` 被 2 名载货工人占满（2/2，`cargo_doorstep_wait_for_entry`），后方 10 名载货工人全线堵死。
+- **根因分析**：
+  1. 核心口袋单出口地形下，战斗单位在核心格上尝试 `_deploy_sidestep` 离开，但门口被 2 名等待入库的工兵占满，无法找到空闲邻格；
+  2. 载货工兵因核心格占满（CORE + 战斗单位）无法入库，在门口持续 `cargo_doorstep_wait_for_entry`；
+  3. `_evict_combat_from_core_for_cargo` 未能在战斗单位无法离开时，反向调度门口等待的载货工兵向外让道，形成确定性对换死锁（Swap Deadlock）。
+- **处置动作**：
+  1. 向用户邮箱发送战况异常告警邮件。
+  2. 在 `arena_tactic/strategy/common.py` 中新增 `_yield_cargo_doorstep_for_combat` 与 `_force_doorstep_yield`：当战斗单位卡在核心格无法让道且门口有载货工兵时，强制调度门口工兵向外侧安全格退让（`yield_corridor_for_combat`），打破对换死锁。
+  3. 新增针对性回归测试 `tests/test_pocket_deadlock.py`（7 项用例全绿通过）。
+  4. 重启 Docker 容器使修复热生效。
+- **效果验证**：
+  - 单测 `pytest tests/test_pocket_deadlock.py -q` 7 passed。
+  - Docker 热重载后服务正常。
+
 ### 2026-09-07 Tick 238538~238587 | INEFFECTIVE_STATIONARY (先锋移动冲突卡死) Command API 干预脱困与死锁阻断
 - **现象**：在 120 Tick 窗口巡检检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。远征军先锋 `2aada0b86a43` 位于 `[-1253, -755]`，连续 70+ Ticks 移动失败，每次都收到服务端返回的 `UNIT_MOVE_FAILED (reason: MOVE_CONTESTED)`，陷入机械原地踏步。
 - **根因分析**：
@@ -355,6 +370,19 @@
   4. **告警闭环**：异常报警 HTML 邮件已成功发送至 709934831@qq.com；
   5. 重启 Docker 容器加载最新代码生效。
 
+### 2026-09-08 | Tick 239451 单通道口袋核心格战斗单位死锁疏散 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY) 修复
+- **现象**：巡检时间窗 Tick 239451，系统处于 `ECONOMY (经济模式)`，核心坐标 `[-898, 1573]`，人口 40 满编。巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 10 名载货工人连续多回合无法完成资源入库（DEPOSIT），全部滞留堵塞在核心门口外围通道；`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及先锋 `entity_6ee037b7b2bc` 位于核心格 `[-898, 1573]` 连续 60+ Ticks 执行 WAIT，状态原因为 `patrol_route_blocked`。
+- **根因分析**：
+  1. 核心 `[-898, 1573]` 处于绝壁单通道口袋地形，东、北、南三面不可通行，西侧唯一通道是 `[-899, 1573]`；
+  2. 核心格 `[-898, 1573]` 已被 CORE 与先锋占满（容量 2/2），门口格子 `[-899, 1573]` 被 2 名载货工人占满（2/2，持续处于 `cargo_doorstep_wait_for_entry`）；
+  3. 先锋要走出去执行 patrol，但西门格满载进不去，`_deploy_sidestep` 返回 None → `patrol_route_blocked`；
+  4. 工人要进核心存矿，但核心格已满 2/2 → `cargo_doorstep_wait_for_entry`；
+  5. `_evict_combat_from_core_for_cargo` 只尝试让先锋 sidestep，四周被工人占满则放弃；`_yield_cargo_delivery` 不会主动让门口工人退让让先锋出来。双方形成确定性对换死锁（Swap Deadlock）。
+- **处置动作**：
+  1. 在 `arena_tactic/strategy/common.py` 中新增 `_yield_cargo_doorstep_for_combat` 函数与 `_force_doorstep_yield` 辅助函数：当 `_evict_combat_from_core_for_cargo` 检测到战斗单位（VANGUARD/RANGER）在核心格且其 `_yield_cargo_delivery` sidestep 失败时，扫描意图列表中所有 `cargo_doorstep_wait_for_entry` 的门口载货工人，将其 WAIT 意图替换为向外退让的 MOVE 意图（`yield_corridor_for_combat`），从而释放门口格子，下一回合战斗单位可成功 `deploy_sidestep` 走出核心格，彻底破除死锁；
+  2. 退让函数内置防死胡同检测（候选格至少需有 1 个非墙非核心出口）和 `prev_cell` 防振荡机制（5000 分惩罚），确保工人不会走入死胡同或在两格之间往返振荡；
+  3. 新增 `tests/test_pocket_deadlock.py`（7 项单元测试，覆盖单通道口袋死锁疏散、无载货工人不触发、死胡同避让、游侠同样触发、防振荡、全封闭安全等待与完整场景验证），全量单测 529 项 100% 通过；
+  4. 重启 Docker 容器加载最新代码生效。
 
 
 
