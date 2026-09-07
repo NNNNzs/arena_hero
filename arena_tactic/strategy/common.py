@@ -766,10 +766,19 @@ def _yield_cargo_doorstep_for_combat(
 
     final: list[ActionIntent] = []
     for intent in result:
-        if (
+        # Match WAIT intents from doorstep cargo workers (original behavior).
+        is_wait_doorstep = (
             intent.action is ActionKind.WAIT
             and intent.reason == "cargo_doorstep_wait_for_entry"
-        ):
+        )
+        # Match MOVE intents from doorstep cargo workers already oscillating
+        # with yield_corridor_for_combat — re-evaluate their yield direction
+        # now that the cascade may have freed outer cells.
+        is_move_yield = (
+            intent.action is ActionKind.MOVE
+            and intent.reason == "yield_corridor_for_combat"
+        )
+        if is_wait_doorstep or is_move_yield:
             unit = context.current_objects.get(intent.actor_id)
             if (
                 isinstance(unit, UnitView)
@@ -829,13 +838,26 @@ def _cascade_corridor_evacuation(
     # space → distance 1 gets space.
     for ring_distance in (3, 2):
         for idx, intent in enumerate(result):
-            if (
-                intent.action is not ActionKind.WAIT
-                or intent.reason not in (
+            # Match WAIT intents from blocked cargo workers (original behavior).
+            is_wait_blocked = (
+                intent.action is ActionKind.WAIT
+                and intent.reason in (
                     "no_safe_route_with_cargo",
                     "cargo_doorstep_wait_for_entry",
                 )
-            ):
+            )
+            # Match MOVE intents from cargo workers oscillating in the
+            # corridor between yield_corridor_for_combat and
+            # return_cargo_to_core_sidestep — these are stuck in a
+            # MOVE-based oscillation that the WAIT-only filter cannot break.
+            is_move_oscillating = (
+                intent.action is ActionKind.MOVE
+                and intent.reason in (
+                    "yield_corridor_for_combat",
+                    "return_cargo_to_core_sidestep",
+                )
+            )
+            if not (is_wait_blocked or is_move_oscillating):
                 continue
             unit = context.current_objects.get(intent.actor_id)
             if (

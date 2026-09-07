@@ -370,7 +370,21 @@
   4. **告警闭环**：异常报警 HTML 邮件已成功发送至 709934831@qq.com；
   5. 重启 Docker 容器加载最新代码生效。
 
-### 2026-09-08 | Tick 240120 口袋地形高密度走廊群聚级联疏散 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY) 修复
+### 2026-09-08 | Tick 240347 口袋地形进攻模式下 MOVE 振荡态工兵级联疏散失效修复
+- **现象**：巡检时间窗 Tick 240217~240347，系统处于 `ATTACK (攻击模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 196/200。检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 10 名载货工兵连续多回合无法进入核心卸货；`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及守备先锋 `6ee037b7b2bc` 滞留在核心格 `[-898, 1573]`，执行 `patrol_route_blocked` -> WAIT。
+- **根因分析**：
+  1. 核心 `[-898, 1573]` 处于绝壁单通道口袋地形，东、北、南三面不可通行，西侧唯一通道是 `[-899, 1573]`；
+  2. 此前实现的 `_yield_cargo_doorstep_for_combat` 与 `_cascade_corridor_evacuation` 仅硬编码匹配 `intent.action is ActionKind.WAIT`；
+  3. 当战局进入 `ATTACK` 进攻模式时，工兵因走廊避让与回矿侧滑，生成的是 `ActionKind.MOVE`（reason 为 `yield_corridor_for_combat` 或 `return_cargo_to_core_sidestep`），导致原有的 WAIT 过滤器完全无法识别这些处于 MOVE 振荡态的工兵；
+  4. 级联疏导无法介入，门口与外围工兵在通道两端来回振荡拉扯，核心格内的先锋无法走出，形成死锁。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成 Markdown 全景战报并成功发送 HTML 报警邮件至 `709934831@qq.com`；
+  2. **策略修复**：
+     - 在 `arena_tactic/strategy/common.py` 的 `_yield_cargo_doorstep_for_combat` 中加入 `is_move_yield` 判定，匹配 reason 为 `yield_corridor_for_combat` 的 MOVE 态工兵；
+     - 在 `_cascade_corridor_evacuation` 中加入 `is_move_oscillating` 判定，匹配 reason 为 `yield_corridor_for_combat` 或 `return_cargo_to_core_sidestep` 的 MOVE 态工兵，使级联疏导机制能够覆盖动态振荡中的工兵群；
+  3. **测试验证**：在 `tests/test_high_density_corridor.py` 中新增 `test_cascade_evacuation_matches_move_oscillating_workers` 回归测试用例，全模块测试通过；
+  4. **代码提交与服务重载**：按 auto-commit 规范提交代码至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
 - **现象**：巡检时间窗 Tick 240110~240120，系统处于 `ATTACK (进攻模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 196/200。检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 10 名载货工人回矿停滞超 500 Ticks；`[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)` 涉及先锋 `6ee037b7b2bc` 滞留在核心格 `[-898, 1573]` 超 500 Ticks。
 - **根因分析**：
   1. 核心 `[-898, 1573]` 处于绝壁单通道口袋地形（北、东、南三面障碍物，西侧 `[-899, 1573]` 为唯一通道）；

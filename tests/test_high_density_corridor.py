@@ -366,3 +366,36 @@ def test_full_pocket_scenario_exact_tick_240110():
             assert i.reserved_cell != w.position, (
                 f"Worker {w.id} must actually vacate, got {i.reserved_cell}"
             )
+
+
+def test_cascade_evacuation_matches_move_oscillating_workers():
+    """回归测试：当工人处于 MOVE 振荡态（yield_corridor_for_combat / return_cargo_to_core_sidestep），
+    级联疏导机制依然能够识别并强制外向腾退，打破死锁循环。
+    """
+    core_pos = (-898, 1573)
+    c = core(position=core_pos)
+    vanguard = unit(1, UnitType.VANGUARD, core_pos)
+    w1 = unit(2, UnitType.WORKER, (-899, 1573), cargo=1)
+    w2 = unit(3, UnitType.WORKER, (-899, 1573), cargo=1)
+    w3 = unit(4, UnitType.WORKER, (-900, 1573), cargo=1)
+    w4 = unit(5, UnitType.WORKER, (-900, 1573), cargo=1)
+    w5 = unit(6, UnitType.WORKER, (-899, 1572), cargo=1)
+    w6 = unit(7, UnitType.WORKER, (-899, 1572), cargo=1)
+
+    mem = AgentMemory()
+    mem.unit_tasks[str(w3.id)] = {"task": "yield_corridor_for_combat", "prev_cell": (-900, 1573)}
+
+    result = choose_actions(turn(
+        owned_core=c,
+        units=(vanguard, w1, w2, w3, w4, w5, w6),
+        obstacle_cells=(
+            (core_pos[0] + 1, core_pos[1]),
+            (core_pos[0], core_pos[1] - 1),
+            (core_pos[0], core_pos[1] + 1),
+        ),
+    ), memory=mem)
+
+    intents = {i.actor_id: i for i in result.intents}
+    yields = [i for i in intents.values() if i.reason == "yield_corridor_for_combat" and i.action is ActionKind.MOVE]
+    assert len(yields) >= 1
+
