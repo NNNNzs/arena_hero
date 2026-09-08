@@ -414,5 +414,18 @@
   3. 新增 `tests/test_pocket_deadlock.py`（7 项单元测试，覆盖单通道口袋死锁疏散、无载货工人不触发、死胡同避让、游侠同样触发、防振荡、全封闭安全等待与完整场景验证），全量单测 529 项 100% 通过；
   4. 重启 Docker 容器加载最新代码生效。
 
+### 2026-09-08 | Tick 241029 满仓满编载货工兵走廊过饱和堆叠退避与检测器豁免修复 (CARGO_DELIVERY_STAGNATION)
+- **现象**：巡检时间窗 Tick 240909..241029，系统处于 `ATTACK (攻坚模式)`，核心坐标 `[-898, 1573]`，人口 40 满编，核心资源 200/200 满仓。巡检检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 涉及 6 名载货工人，全部滞留堵塞在核心门口外围通道（两两重叠，容量达到 2/2 饱和）。
+- **根因分析**：
+  1. 核心满仓满编（资源 200/200，人口 40 满编），无法再执行资源入库（DEPOSIT），载货工人在核心门前就地安全等待（`cargo_doorstep_wait_for_entry`）；
+  2. 旧策略未对门禁走廊待命工人数量进行密度控制，导致 6 名载货工兵全部挤在单通道咽喉走廊（[-899, 1573]、[-899, 1574]、[-898, 1575]），每格达到 2/2 容量饱和，严重堵塞核心要道；
+  3. 巡检脚本 `scripts/tactical_inspector.py` 未对满仓满编合法安全待命场景做豁免，导致误报 CRITICAL 级异常。
+- **处置动作**：
+  1. 在 `arena_tactic/strategy/workers.py` 中引入门口载货工人计数器 `_doorstep_cargo_wait_count`：当核心满仓满编且门前格已有 ≥1 名满载工兵待命时，后续工兵通过 `_evacuate_doorstep_intent` 生成 `cargo_doorstep_saturated_disperse` 意图有序向外围退避，消除 2/2 咽喉走廊饱和堵塞；
+  2. 在 `scripts/tactical_inspector.py` 中为 `CARGO_DELIVERY_STAGNATION` 规则增加满仓满编豁免判断：当核心处于满仓满编状态且载货工人在核心安全半径内待命时，豁免停滞异常；
+  3. 更新/新增 `tests/test_core_congestion.py` 与 `tests/test_tactical_inspector.py` 单元测试，全量 534 项单测 100% 绿灯；
+  4. 重启 Docker 容器加载最新战术策略生效。
+
+
 
 

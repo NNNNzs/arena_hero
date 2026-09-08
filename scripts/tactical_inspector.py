@@ -261,6 +261,9 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
     unit_combat_history: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     production_candidates: list[dict[str, Any]] = []
     beacon_isolation: list[dict[str, Any]] = []
+    # Track ticks where core is full (满仓满编) so cargo stagnation detection
+    # can exempt legitimate "waiting at doorstep" behavior.
+    core_full_ticks: set[int] = set()
 
     for row in replay:
         tick = row.get("tick")
@@ -314,6 +317,16 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             reasons[actor][str(intent.get("reason") or "unknown")] += 1
             intent_history[actor].append({"tick": tick, "mode": mode, **intent})
         resources, population = state.get("resources"), state.get("population")
+        # Track whether the core is at capacity (满仓满编) for this tick.
+        resource_capacity = state.get("resource_capacity")
+        if (
+            isinstance(resources, (int, float))
+            and isinstance(resource_capacity, (int, float))
+            and resources >= resource_capacity
+            and isinstance(population, int)
+            and population >= 40
+        ):
+            core_full_ticks.add(tick)
         core_action = str(intents_by_actor.get(str(core.get("id")) if core else "", {}).get("action") or "UNKNOWN").upper()
         peaceful = mode == "ECONOMY" or (not enemy_positions and mode not in {"ATTACK", "DEFEND", "BEACON"})
         spawned = core_action == "SPAWN" or any(_event_type(event) == "CORE_SPAWN_SUCCEEDED" for event in tick_events)
@@ -548,6 +561,13 @@ def inspect(runtime: Path, window: int, max_bytes: int, health_url: str, health_
             distances = [sample["core_distance"] for sample in run if sample["core_distance"] is not None]
             progress = distances[0] - distances[-1] if len(distances) >= 2 else None
             if distances and ((progress is not None and progress < 2) or distances[-1] <= 1):
+                # Exemption (豁免条件): when the core is at full capacity
+                # (满仓满编, resource_space <= 0 and population >= max_population)
+                # and the worker is safely waiting near the core (distance <= 3),
+                # this is a legitimate wait, not a delivery stagnation.
+                run_ticks = set(range(run[0]["tick"], run[-1]["tick"] + 1))
+                if run_ticks and run_ticks <= core_full_ticks and distances[-1] <= 3:
+                    continue
                 cargo_stagnation.append({"worker": worker, "tick_range": [run[0]["tick"], run[-1]["tick"]], "ticks": len(run), "cargo": run[-1]["cargo"], "distance_start": distances[0], "distance_end": distances[-1], "distance_progress": progress, "near_core": distances[-1] <= 1})
                 break
     if cargo_stagnation:

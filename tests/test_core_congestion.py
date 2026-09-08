@@ -429,7 +429,7 @@ def test_cargo_doorstep_worker_enters_core_when_space_available():
 
 
 def test_cargo_doorstep_multi_worker_no_oscillation_at_full_core():
-    """多名载货工人在门口且核心满编满仓时，全部就地等待，不产生振荡。"""
+    """多名载货工人在门口且核心满编满仓时，第一名等待，多余的向外退避。"""
     c = core(position=(0, 0))
     w1 = unit(1, UnitType.WORKER, (-1, 0), cargo=1)
     w2 = unit(2, UnitType.WORKER, (-1, 0), cargo=1)
@@ -443,12 +443,22 @@ def test_cargo_doorstep_multi_worker_no_oscillation_at_full_core():
     assert t.resource_space == 0
     assert len(t.units) == 40
     result = choose_actions(t, memory=AgentMemory())
-    worker_intents = [i for i in result.intents if i.actor_id in (w1.id, w2.id)]
-    for intent in worker_intents:
-        assert intent.action is ActionKind.WAIT, (
-            f"worker {intent.actor_id} must WAIT at full core doorstep, got {intent.action}"
-        )
-        assert intent.reason == "cargo_doorstep_wait_for_entry"
+    intents = {i.actor_id: i for i in result.intents}
+    w1_intent = intents[w1.id]
+    w2_intent = intents[w2.id]
+    # One worker holds the doorstep (WAIT), the other disperses outward (MOVE)
+    reasons = {w1_intent.reason, w2_intent.reason}
+    assert "cargo_doorstep_wait_for_entry" in reasons, (
+        f"One worker must WAIT at doorstep: {reasons}"
+    )
+    assert "cargo_doorstep_saturated_disperse" in reasons, (
+        f"Excess worker must disperse from saturated doorstep: {reasons}"
+    )
+    # The dispersing worker must actually move away from the doorstep
+    disperse_intent = w2_intent if w2_intent.reason == "cargo_doorstep_saturated_disperse" else w1_intent
+    assert disperse_intent.action is ActionKind.MOVE
+    assert disperse_intent.reserved_cell is not None
+    assert disperse_intent.reserved_cell != (-1, 0), "Dispersing worker must leave doorstep"
 
 
 

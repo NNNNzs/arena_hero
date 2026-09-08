@@ -510,6 +510,10 @@ def _plan_workers(
 
     core_pos = context.core.position
     preempted_doorstep_ids: set[UUID] = set()
+    # Track how many cargo workers are assigned to wait at each doorstep
+    # cell; excess workers should disperse outward to avoid blocking the
+    # corridor (2/2 saturation) in a full-core scenario.
+    _doorstep_cargo_wait_count: dict[Position, int] = {}
 
     def _relieve_delivery_corridor(
         cell: Position,
@@ -765,6 +769,23 @@ def _plan_workers(
             _record_unit_task(memory, context, worker, kind="return", target=return_target, intent=intent)
             if intent is None and distance(worker.position, return_target) <= 1:
                 wait_reason = "cargo_doorstep_wait_for_entry"
+                # Disperse excess cargo workers: when the core is full and
+                # the doorstep already has ≥1 cargo waiter, subsequent cargo
+                # workers should step outward to avoid saturating the corridor
+                # (2/2 per cell) and blocking all traffic through the chokepoint.
+                doorstep_cell = worker.position
+                existing_waiters = _doorstep_cargo_wait_count.get(doorstep_cell, 0)
+                if core_full and existing_waiters >= 1:
+                    disperse = _evacuate_doorstep_intent(
+                        worker, context, memory, reservations,
+                        "cargo_doorstep_saturated_disperse",
+                        max_radius=max(3, config.cargo_delivery_yield_radius),
+                    )
+                    if disperse is not None:
+                        _record_unit_task(memory, context, worker, kind="disperse_saturated_doorstep", target=doorstep_cell, intent=disperse)
+                        intents.append(disperse)
+                        continue
+                _doorstep_cargo_wait_count[doorstep_cell] = existing_waiters + 1
             else:
                 wait_reason = "no_safe_route_with_cargo"
             intents.append(intent or _wait(worker, wait_reason))

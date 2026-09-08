@@ -428,3 +428,47 @@ def test_guard_route_blocked_units_not_flagged_as_expedition_stall(tmp_path, mon
     report = _inspect_rows(tmp_path, monkeypatch, rows)
     stall_codes = [f["code"] for f in report["findings"] if f["code"] == "SQUAD_EXPEDITION_STALL"]
     assert stall_codes == [], f"Core guards should not trigger expedition stall: {report['findings']}"
+
+
+def test_cargo_stagnation_exempt_when_core_full_and_worker_at_doorstep(tmp_path, monkeypatch):
+    """当核心满仓满编且载货工人在门口安全等待时，不应触发 CARGO_DELIVERY_STAGNATION 误报。
+
+    场景：核心资源 200/200 满仓，人口 40 满编，载货工人在门口 distance=1
+    持续 WAIT（cargo_doorstep_wait_for_entry），这是合法的待命行为。
+    """
+    rows = []
+    for tick in range(1, 8):
+        row = _row(tick, [1, 0])  # distance=1 from core at [0,0]
+        row["state"]["units"][1]["cargo"] = 3
+        # Core is full: resources == resource_capacity and population >= 40
+        row["state"].update(resources=200, resource_capacity=200, population=40)
+        row["intents"][1] = {"actor": "worker", "action": "WAIT", "reason": "cargo_doorstep_wait_for_entry"}
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    cargo_findings = [f for f in report["findings"] if f["code"] == "CARGO_DELIVERY_STAGNATION"]
+    assert cargo_findings == [], (
+        f"Full-core doorstep wait should be exempt from CARGO_DELIVERY_STAGNATION, "
+        f"but found: {cargo_findings}"
+    )
+
+
+def test_cargo_stagnation_still_detected_when_core_has_space(tmp_path, monkeypatch):
+    """核心有余量时，载货工人在门口停滞仍应触发 CARGO_DELIVERY_STAGNATION（回归验证）。
+
+    场景：核心资源 50/200（有空间），载货工人在门口 distance=1 停滞。
+    """
+    rows = []
+    for tick in range(1, 8):
+        row = _row(tick, [1, 0])  # distance=1 from core at [0,0]
+        row["state"]["units"][1]["cargo"] = 3
+        # Core has space: resources < resource_capacity
+        row["state"].update(resources=50, resource_capacity=200, population=40)
+        rows.append(row)
+
+    report = _inspect_rows(tmp_path, monkeypatch, rows)
+    cargo_findings = [f for f in report["findings"] if f["code"] == "CARGO_DELIVERY_STAGNATION"]
+    assert len(cargo_findings) == 1, (
+        f"Stagnation with available core space should be detected, "
+        f"findings: {cargo_findings}"
+    )
