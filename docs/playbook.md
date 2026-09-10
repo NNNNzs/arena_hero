@@ -5,6 +5,19 @@
 
 ## 处置案例
 
+### 2026-09-10 Tick 252106~252110 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵复查记忆矿点局部避障往返振荡) Command API 干预脱困
+- **现象**：在 120 Tick 深度巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `1bc7ddcb39e8` 在 `[-929, 1505]` 与 `[-930, 1505]` 之间高频周期性往返振荡 118 次（120 Ticks 内换向率 >98%），净位移仅 1 格；全局可见资源格为 0 持续 1094 Ticks。
+- **根因分析**：
+  1. 工兵 `1bc7ddcb39e8` 执行 `reobserve_remembered_resource (复查记忆资源点)` 任务，目标设在 `[-936, 1481]`。
+  2. 在行进至狭窄地形 `[-930, 1505]` 隘口时，因前方及周围地形与局部避障机制产生寻路死循环，在 `[-929, 1505]` 与 `[-930, 1505]` 两格之间来回跳跃。
+- **处置动作**：
+  1. 组织战况异常分析并向山哥邮箱 (`709934831@qq.com`) 发送战况告警邮件。
+  2. 通过 Command API 鉴权，下发手动调度指令 `cmd_00000008_5cf28afe`（`ASSIGN_TASK`，`task_kind: RETREAT_TO_CORE`，优先级 900，TTL 60 Ticks）。
+- **效果验证**：
+  1. 指令于 Tick 252106 成功生效应用（`status: APPLIED`）。
+  2. 单位决策转为 `manual_task_move` 并于 Tick 252109 成功位移至 `[-930, 1506]`，彻底打破原本双格循环锁死态。
+
+
 ### 2026-09-10 Tick 251888~251893 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵单行道迎面顶牛与峡谷通道堵塞) Command API 干预脱困
 - **现象**：在 120 Tick 巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `1bc7ddcb39e8` 连续 56 次在 `[-929, 1505]` 与 `[-930, 1505]` 往返微调（反转率 93.3%），迷雾前沿探索停滞超过 870 Ticks。
 - **根因分析**：
