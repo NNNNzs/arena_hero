@@ -467,6 +467,20 @@
   3. 更新/新增 `tests/test_core_congestion.py` 与 `tests/test_tactical_inspector.py` 单元测试，全量 534 项单测 100% 绿灯；
   4. 重启 Docker 容器加载最新战术策略生效。
 
+### 2026-09-10 | Tick 252773 工兵记忆资源复查锁定与防振荡修复 (UNIT_OSCILLATION)
+- **现象**：巡检时间窗 Tick 252652..252771，系统处于 `BEACON (信标争夺模式)`，人口 40 满编，核心资源 42/200。巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 涉及工兵 `1bc7ddcb39e8` 在坐标 `[-929, 1505]` 与 `[-930, 1505]` 之间 120 Ticks 内往返 116 次（周期 2 Ticks，净位移 0）；`[WARNING] EXPLORATION_STALL (迷雾探索停滞)` 涉及工兵大幅移动净位移≈0，且全局无可见资源持续 1767 Ticks，其余 11 名工兵因缺乏前沿探索点处于 `idle (no_resource_or_frontier)` 等待。
+- **根因分析**：
+  1. 工兵 `1bc7ddcb39e8` 执行 `reobserve_remembered_resource`（复查记忆中的资源点），目标为 `[-936, 1481]`；
+  2. 旧策略在分配侦察目标（reconnaissance）时缺少类似资源开采的锁定保护机制（`_locked_resource_targets`），每 tick 重新执行匈牙利匹配与就近分配，当工兵在局部地形接近目标时，因相邻格代价抖动或局部动态避障，导致在两个格子之间陷入 2-Tick 周期性钟摆横跳（净位移为 0）；
+  3. 任务数据结构中缺少对 `recon_since` 的保留支持，导致无法追踪侦察任务持续时间与施加锁定超时。
+- **处置动作**：
+  1. 在 `arena_tactic/models.py` 中为 `AgentConfig` 增加 `recon_target_grace_ticks: int = 8` 配置项；
+  2. 在 `arena_tactic/memory.py` 的 `_safe_task` 允许字段列表中加入 `recon_since`，确保任务元数据在轮转反序列化与克隆时不丢失；
+  3. 在 `arena_tactic/strategy/common.py` 的 `_record_unit_task` 中新增 `recon_since` 继承与初始化逻辑；
+  4. 在 `arena_tactic/strategy/workers.py` 中实现 `_locked_recon_targets`，在侦察目标分配前优先对有效侦察窗口内的工兵保持目标锁定与 A* 路径可达性校验，从策略层消除 2 格周期往返振荡；
+  5. 新增 `tests/test_recon_lock_and_oscillation.py` 单元测试，并通过全部 530 项核心单元测试（0 失败）；
+  6. 提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
 
 
 

@@ -98,6 +98,11 @@ class AgentConfig:
     # observation remains the authority: depletion or an authoritative empty
     # recheck still removes the lock immediately.
     resource_target_grace_ticks: int = 4
+    # Grace period (in ticks) for a worker's locked recon target.
+    # While within this window, the worker will not be reassigned to a
+    # different recon destination even if it drifts out of visible range,
+    # preventing oscillation between two adjacent cells during approach.
+    recon_target_grace_ticks: int = 8
     core_guard_vanguards: int = 1
     core_guard_rangers: int = 1
     # A cargo Worker may need the defensive ring cleared before it reaches the

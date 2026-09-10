@@ -178,6 +178,47 @@ def _locked_resource_targets(
         locked[str(worker.id)] = target
         claimed.add(target)
     return locked
+def _locked_recon_targets(
+    workers: Iterable[UnitView],
+    memory: AgentMemory,
+    context: DecisionContext,
+    config: AgentConfig,
+) -> dict[str, Position]:
+    """Keep an in-progress recon route stable to prevent two-cell oscillation.
+
+    When a worker is re-observing a remembered resource point (``kind=recon``),
+    local dynamic avoidance or pathfinding jitter can cause it to oscillate
+    between two adjacent cells instead of making progress toward the target.
+    This lock keeps the same recon destination assigned for
+    ``config.recon_target_grace_ticks`` ticks after ``recon_since``, so that
+    the overall direction is preserved even if the immediate next step is
+    blocked or diverted.
+    """
+    locked: dict[str, Position] = {}
+    claimed: set[Position] = set()
+    for worker in sorted(workers, key=lambda unit: str(unit.id)):
+        task = memory.unit_tasks.get(str(worker.id), {})
+        raw_target = task.get("target")
+        if (
+            task.get("kind") != "recon"
+            or not isinstance(raw_target, list)
+            or len(raw_target) != 2
+            or not all(type(axis) is int for axis in raw_target)
+        ):
+            continue
+        recon_since = task.get("recon_since")
+        if not isinstance(recon_since, int):
+            continue
+        if context.tick - recon_since > config.recon_target_grace_ticks:
+            continue
+        target = raw_target[0], raw_target[1]
+        observed_tick = memory.resource_observations.get(target)
+        if observed_tick is None or target in claimed:
+            continue
+        locked[str(worker.id)] = target
+        claimed.add(target)
+    return locked
+
 
 
 def _frontier_assignments(
@@ -487,14 +528,31 @@ def _plan_workers(
     recheck_workers = tuple(sorted(unassigned, key=lambda unit: str(unit.id)))[
         : config.resource_recheck_worker_limit
     ]
+    locked_recon_assignments = _locked_recon_targets(
+        recheck_workers, memory, context, config
+    )
+    locked_recon_assignments = {
+        unit_id: target
+        for unit_id, target in locked_recon_assignments.items()
+        if target not in worker_blocks
+        and (worker := worker_by_id.get(unit_id)) is not None
+        and bounded_path_cost(
+            worker.position,
+            target,
+            blocked=worker_blocks,
+            deadline=deadline,
+            node_limit=config.astar_node_limit,
+        ) is not None
+    }
     recon_deadline = min(deadline, perf_counter() + 0.05)
     reconnaissance = _assign_unique_targets(
-        recheck_workers,
-        remembered_targets,
+        (worker for worker in recheck_workers if str(worker.id) not in locked_recon_assignments),
+        remembered_targets - set(locked_recon_assignments.values()),
         blocked=worker_blocks,
         deadline=recon_deadline,
         config=config,
     )
+    reconnaissance = locked_recon_assignments | reconnaissance
     still_unassigned = [
         worker for worker in unassigned if str(worker.id) not in reconnaissance
     ]
