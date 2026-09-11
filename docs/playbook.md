@@ -497,6 +497,22 @@
   5. 新增 `tests/test_recon_lock_and_oscillation.py` 单元测试，并通过全部 530 项核心单元测试（0 失败）；
   6. 提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
 
+### 2026-09-12 | Tick 261349 守备单位防守槽位与门前避让冲突修复 (UNIT_OSCILLATION)
+- **现象**：巡检时间窗 Tick 261230..261349，系统处于 `ECONOMY (经济模式)`，核心坐标 `[-834, -577]`，人口 3，资源储量 3/15。巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，先锋 `cb39bf380f0b` 在坐标 `[-835, -577]` 与 `[-835, -578]` 之间 120 Ticks 内往返反转 30 次（周期 2 Ticks，反转率 100%）。
+- **根因分析**：
+  1. 核心位于 `[-834, -577]`，左侧直接相邻格子 `[-835, -577]` 为核心的通行出入口（`passable_exits` / doorstep）；
+  2. `_guard_slots` 函数将直接相邻的 `[-835, -577]` 分配给先锋作为守备目标 `guard_target`；
+  3. 当先锋到达 `guard_target` 时，`_plan_vanguards`（及 `_plan_rangers`）的到达分支调用了 `_evacuate_doorstep_intent`，因其处于核心出入口将其强行驱避至相邻格 `[-835, -578]`；
+  4. 先锋离开后下一 Tick 不在 `guard_target`，`core_guard` 寻路逻辑又将其拉回 `[-835, -577]`，两套战术目标互斥交替触发，造成 2-Tick 乒乓往返振荡。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成 Markdown 战报并成功发送 HTML 报警邮件至 `709934831@qq.com`；
+  2. **工程根治**：
+     - 在 `arena_tactic/strategy/common.py` 的 `_guard_slots` 中明确排除所有核心直接相邻的通行出入口（`passable_exits`），从源头上杜绝防守槽位与核心大门重叠；
+     - 在 `arena_tactic/strategy/vanguards.py` 与 `rangers.py` 中增加守备就位判断：当单位已到达其指定的 `guard_target` 时，以该防守槽位为权威站位，执行 `WAIT ("holding_defense_ring")`，不再触发 `_evacuate_doorstep_intent` 造成反弹；
+  3. **单测验证**：在 `tests/test_strategy_regressions.py` 中新增 5 项单元测试（覆盖排除出入口、部分障碍排除、先锋就位防驱离、游侠就位防驱离、多 Tick 仿真防振荡），全量 558 项单测 100% 通过；
+  4. **代码提交与服务重载**：按 auto-commit 规范提交代码至 main 分支，重启 Docker 容器加载最新策略生效。
+
+
 
 
 

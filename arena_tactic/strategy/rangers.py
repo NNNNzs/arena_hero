@@ -392,8 +392,15 @@ def _plan_rangers(
         else:
             if guard_target is not None:
                 _record_unit_task(memory, context, ranger, kind="core_guard", target=guard_target, intent=None)
-            intent = _evacuate_doorstep_intent(
-                ranger, context, memory, reservations, "yield_doorstep_holding_defense"
-            )
-            intents.append(intent or _wait(ranger, "holding_defense_ring"))
+            # When the unit IS at its assigned guard target, do NOT evacuate
+            # the doorstep — the guard-slot allocation is the authoritative
+            # placement decision.  Evacuating would create a 2-Tick ping-pong
+            # oscillation with the guard-return logic above.  (GUARD_OSCILLATION fix)
+            if guard_target is not None and ranger.position == guard_target:
+                intents.append(_wait(ranger, "holding_defense_ring"))
+            else:
+                intent = _evacuate_doorstep_intent(
+                    ranger, context, memory, reservations, "yield_doorstep_holding_defense"
+                )
+                intents.append(intent or _wait(ranger, "holding_defense_ring"))
     return intents

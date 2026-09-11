@@ -120,6 +120,11 @@ def _guard_slots(context: DecisionContext, memory: AgentMemory) -> list[Position
         if (x + dx, y + dy) not in memory.obstacles
         and (x + dx, y + dy) not in context.enemy_occupancy
     ]
+    # Collect all core-adjacent passable exits (doorstep cells) so that guard
+    # slots never overlap them.  Units stationed on a doorstep conflict with
+    # ``_evacuate_doorstep_intent`` which drives them off — causing a 2-Tick
+    # ping-pong oscillation between guard-holding and doorstep evacuation.
+    passable_exits: set[Position] = set(passable_r1)
     # A Core with at most two exits is a chokepoint.  Reserve its first three
     # rings exclusively for Workers entering with cargo and leaving to mine;
     # guard posts begin on the outer defensive ring instead.
@@ -134,7 +139,9 @@ def _guard_slots(context: DecisionContext, memory: AgentMemory) -> list[Position
     return [
         cell
         for cell in candidates
-        if cell not in memory.obstacles and cell not in context.enemy_occupancy
+        if cell not in memory.obstacles
+        and cell not in passable_exits
+        and cell not in context.enemy_occupancy
     ]
 
 
