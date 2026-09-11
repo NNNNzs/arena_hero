@@ -11,7 +11,7 @@ from arena_hero import CoreState, CoreView, Direction, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells, plan_step
+from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells, plan_step, shot_range
 from .combat import _enemy_can_attack_core
 
 UNIT_MAX_HP = {
@@ -488,7 +488,7 @@ def _return_to_core_sidestep(
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 
-    scored_candidates = []
+    scored_candidates: list[tuple[int, Direction, Position]] = []
     for direction in DIRECTIONS:
         cand = destination(unit.position, direction)
         if cand in blocked:
@@ -500,6 +500,22 @@ def _return_to_core_sidestep(
         if prev_cell is not None and cand == prev_cell:
             score += 5000  # heavy penalty to prevent 2-cell ping-pong oscillation
         scored_candidates.append((score, direction, cand))
+
+    # Fallback: when all forward/lateral cells are blocked, allow stepping
+    # backward (distance +1) to break deadlock in concave/chokepoint terrain
+    # where idle workers block all cells closer to the target.
+    if not scored_candidates:
+        for direction in DIRECTIONS:
+            cand = destination(unit.position, direction)
+            if cand in blocked:
+                continue
+            dist = distance(cand, target)
+            if dist > current_distance + 1:
+                continue
+            score = dist * 10 + 10000  # heavy penalty for backward movement
+            if prev_cell is not None and cand == prev_cell:
+                score += 5000  # anti-oscillation: penalise returning to previous cell
+            scored_candidates.append((score, direction, cand))
 
     scored_candidates.sort(key=lambda x: (x[0], x[1].value))
     for _, direction, cell in scored_candidates:
@@ -654,6 +670,87 @@ def _deploy_sidestep(
                 target_cell=target,
                 direction=direction,
                 reserved_cell=cand,
+            )
+    return None
+
+
+def _firing_line_sidestep(
+    ranger: UnitView,
+    enemy: CoreView | UnitView,
+    staging: Position,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    reason: str,
+) -> ActionIntent | None:
+    """Try an adjacent cell when the primary staging route is blocked.
+
+    When ``_move(ranger, staging, ...)`` returns *None* the ranger is about to
+    stand still and wait indefinitely.  This helper inspects the four adjacent
+    cells and picks one that:
+
+    1. is not blocked by obstacles, enemies, or temporary blocks,
+    2. **preferably** has a clear firing line (``shot_range``) to *enemy*,
+    3. otherwise moves closer to *staging* so the ranger can try again next
+       tick.
+
+    Anti-oscillation: penalises returning to ``prev_cell``.
+    """
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.obstacle_cells)
+        | set(context.enemy_occupancy)
+    )
+    enemy_pos = enemy.position
+    existing_task = memory.unit_tasks.get(str(ranger.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = (
+        tuple(prev_cell_raw)
+        if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2
+        else None
+    )
+    current_dist_to_staging = distance(ranger.position, staging)
+
+    candidates: list[tuple[int, int, int, Direction, Position]] = []
+    for direction_idx, direction in enumerate(DIRECTIONS):
+        cand = destination(ranger.position, direction)
+        if cand in blocked:
+            continue
+        has_shot = shot_range(cand, enemy_pos, memory.obstacles) is not None
+        dist_to_staging = distance(cand, staging)
+        # Tier 0: has firing line AND closer/equal to staging
+        # Tier 1: has firing line but further from staging
+        # Tier 2: no firing line but closer/equal to staging
+        # Tier 3: no firing line and further from staging
+        if has_shot:
+            tier = 0 if dist_to_staging <= current_dist_to_staging else 1
+        else:
+            tier = 2 if dist_to_staging <= current_dist_to_staging else 3
+        is_backtrack = 1 if prev_cell is not None and cand == prev_cell else 0
+        score = tier * 10000 + dist_to_staging * 10 + is_backtrack * 5000
+        candidates.append((score, direction_idx, is_backtrack, direction, cand))
+
+    # If *every* non-blocked candidate would bounce back to prev_cell,
+    # refuse to oscillate — drop those and keep only non-backtrack cells.
+    if candidates and all(c[2] for c in candidates):
+        candidates = [c for c in candidates if not c[2]]
+
+    candidates.sort()
+    for _, _, _, direction, cand in candidates:
+        if reservations.reserve(cand, source=ranger.position):
+            _record_unit_task(
+                memory, context, ranger, kind="firing_sidestep",
+                target=enemy_pos, intent=ActionIntent(
+                    actor_id=ranger.id, is_core=False, action=ActionKind.MOVE,
+                    score=625, reason=reason, direction=direction,
+                    target_cell=staging, reserved_cell=cand,
+                ),
+            )
+            return ActionIntent(
+                actor_id=ranger.id, is_core=False, action=ActionKind.MOVE,
+                score=625, reason=reason, direction=direction,
+                target_cell=staging, reserved_cell=cand,
             )
     return None
 
@@ -1171,4 +1268,5 @@ def _evacuate_doorstep_intent(
                 reserved_cell=cand,
             )
     return None
+
 

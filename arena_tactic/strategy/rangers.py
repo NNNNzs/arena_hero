@@ -28,6 +28,7 @@ from .common import (
     _best_visible_enemy,
     _critical_retreat_sidestep,
     _evacuate_doorstep_intent,
+    _firing_line_sidestep,
     _guard_slots,
     _move,
     _record_unit_task,
@@ -229,6 +230,11 @@ def _plan_rangers(
                 context=context, memory=memory, reservations=reservations,
                 deadline=deadline, config=config,
             )
+            if intent is None:
+                intent = _firing_line_sidestep(
+                    ranger, intercept_enemy, staging, context, memory,
+                    reservations, "intercept_firing_sidestep",
+                )
             _record_unit_task(memory, context, ranger, kind="intercept", target=staging, intent=intent)
             intents.append(intent or _wait(ranger, "intercept_firing_route_blocked"))
             continue
@@ -275,6 +281,11 @@ def _plan_rangers(
                     context=context, memory=memory, reservations=reservations,
                     deadline=deadline, config=config,
                 )
+                if intent is None:
+                    intent = _firing_line_sidestep(
+                        ranger, target_enemy, staging, context, memory,
+                        reservations, "firing_line_sidestep",
+                    )
                 intents.append(intent or _wait(ranger, "firing_route_blocked"))
                 continue
 

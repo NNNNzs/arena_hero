@@ -5,6 +5,22 @@
 
 ## 处置案例
 
+### 2026-09-11 Tick 260442~260450 | DEFENSE_DISENGAGED (游侠射击路径受阻脱离交战与身位僵死) 策略修复
+- **现象**：在 120 Tick 深度态势巡检中检出 `[CRITICAL] DEFENSE_DISENGAGED (防守单位脱离交战)` 与 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。基地防守与拦截态势下，游侠战斗单位（如 `34662b0a2db9`, `be59608ef9dc`, `83cc4f1cc328` 等）在敌人逼近至 7~14 格时，由于开火路线被阻挡持续执行 `WAIT`（`firing_route_blocked` / `intercept_firing_route_blocked`），脱离了远程压制和防御交火。
+- **根因分析**：
+  1. 游侠在 `_plan_rangers` 的 `intercept` 拦截分支与 `target_enemy` 接敌分支中，调用 `_move(ranger, staging, ...)` 试图前往理想 staging 开火阵位。
+  2. 当基地防守环友军（先锋、守备兵）或障碍物将 staging cell 占满或阻断时，`_move` 返回 `None`，原本逻辑直接 fallback 到 `_wait(ranger, "firing_route_blocked")` 原地呆立。
+  3. 缺乏类似工兵解卡的备选侧滑寻路机制，导致游侠在开火路径受阻时无法向相邻无遮挡的射击身位微调，陷入无效静止。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件。
+  2. 在 `arena_tactic/strategy/common.py` 中实现 `_firing_line_sidestep` 机制：当主 staging 路线受阻时，评估相邻可用格子，优先选择具备清晰开火弹道视线（`shot_range`）的格子机动；次优选择向 staging 靠拢的格子；同时引入 `prev_cell` 回跳惩罚（+5000 score）彻底抑制 2 格往返振荡。
+  3. 在 `arena_tactic/strategy/rangers.py` 的拦截与基地防御分支中接入 `_firing_line_sidestep`。
+  4. 新增单测文件 `tests/test_ranger_firing_sidestep.py`，11 项单元与集成测试全绿通过，且策略全套单测无回归通过。
+  5. 热重载策略服务容器 `docker compose restart arena-hero`。
+- **效果验证**：
+  - 容器平稳重启，服务 200 OK 正常联机。
+  - 游侠在 primary route 受阻时主动向侧向开火窗口机动（`firing_line_sidestep` / `intercept_firing_sidestep`），避免在近距接敌时脱离交战。
+
 ### 2026-09-10 Tick 252106~252110 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵复查记忆矿点局部避障往返振荡) Command API 干预脱困
 - **现象**：在 120 Tick 深度巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `1bc7ddcb39e8` 在 `[-929, 1505]` 与 `[-930, 1505]` 之间高频周期性往返振荡 118 次（120 Ticks 内换向率 >98%），净位移仅 1 格；全局可见资源格为 0 持续 1094 Ticks。
 - **根因分析**：
