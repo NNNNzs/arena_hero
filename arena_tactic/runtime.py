@@ -569,7 +569,7 @@ class AgentRuntime:
         for actor in context.current_objects.values():
             alias = entity_alias(actor.id)
             task = memory.manual_assignments.get(alias or "")
-            if task is None or self._manual_safety_preempts(context, actor):
+            if task is None or self._manual_safety_preempts(context, actor, task):
                 continue
             intent = self._manual_intent(context, memory, actor, task, reservations, deadline)
             if intent is not None:
@@ -580,10 +580,16 @@ class AgentRuntime:
         return tuple(item for item in proposals if item.actor_id not in ids) + tuple(replacements)
 
     @staticmethod
-    def _manual_safety_preempts(context: DecisionContext, actor) -> bool:
+    def _manual_safety_preempts(context: DecisionContext, actor, task: dict | None = None) -> bool:
         if isinstance(actor, CoreView):
             return actor.state is CoreState.MOVING or actor.hp <= 1
-        return actor.hp <= 1 or any(distance(actor.position, enemy.position) <= 2 for enemy in context.enemies)
+        if actor.hp <= 1:
+            return True
+        # MOVE_TO_CELL is an explicit operator escape command — allow it through
+        # even when enemies are nearby, so the unit can reposition to safety.
+        if task is not None and task.get("kind") == "MOVE_TO_CELL":
+            return False
+        return any(distance(actor.position, enemy.position) <= 2 for enemy in context.enemies)
 
     def _manual_intent(self, context: DecisionContext, memory: AgentMemory, actor, task, reservations: ReservationTable, deadline: float) -> ActionIntent | None:
         kind = task.get("kind")

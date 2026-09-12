@@ -9,6 +9,7 @@ from uuid import UUID
 from arena_hero import CoreState, CoreView, Direction, UnitType, UnitView
 
 from ..context import DecisionContext
+from ..identity import entity_alias
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells, plan_step, shot_range
@@ -91,7 +92,7 @@ def _record_unit_task(
     existing = memory.unit_tasks.get(str(unit.id), {})
     task = dict(existing) if existing.get("kind") == kind else {
         key: existing[key]
-        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since")
+        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since")
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})
@@ -100,6 +101,11 @@ def _record_unit_task(
             task["recon_since"] = existing["recon_since"]
         else:
             task["recon_since"] = context.tick
+    if kind == "intercept":
+        if existing.get("kind") == "intercept" and "intercept_since" in existing:
+            task["intercept_since"] = existing["intercept_since"]
+        else:
+            task["intercept_since"] = context.tick
     task["prev_cell"] = list(unit.position)
     if intent is not None and intent.action is ActionKind.MOVE:
         task["step"] = list(intent.reserved_cell) if intent.reserved_cell else None
@@ -108,6 +114,9 @@ def _record_unit_task(
         task.pop("step", None)
         task.pop("attempt_tick", None)
     memory.unit_tasks[str(unit.id)] = task
+    alias = entity_alias(unit.id)
+    if alias:
+        memory.unit_tasks[alias] = task
 
 
 def _guard_slots(context: DecisionContext, memory: AgentMemory) -> list[Position]:

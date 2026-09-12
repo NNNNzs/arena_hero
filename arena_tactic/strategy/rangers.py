@@ -282,11 +282,25 @@ def _plan_rangers(
                     deadline=deadline, config=config,
                 )
                 if intent is None:
+                    defensive_contact = (
+                        context.core is not None
+                        and (
+                            _enemy_can_attack_core(target_enemy, context.core, memory.obstacles)
+                            or distance(target_enemy.position, context.core.position) <= config.intercept_distance
+                        )
+                    )
                     intent = _firing_line_sidestep(
                         ranger, target_enemy, staging, context, memory,
-                        reservations, "firing_line_sidestep",
+                        reservations,
+                        "defensive_firing_line_sidestep" if defensive_contact else "firing_line_sidestep",
                     )
-                intents.append(intent or _wait(ranger, "firing_route_blocked"))
+                intents.append(intent or _wait(
+                    ranger,
+                    "defensive_firing_route_blocked" if context.core is not None
+                    and (_enemy_can_attack_core(target_enemy, context.core, memory.obstacles)
+                         or distance(target_enemy.position, context.core.position) <= config.intercept_distance)
+                    else "firing_route_blocked",
+                ))
                 continue
 
         cargo_yield = _yield_cargo_delivery(

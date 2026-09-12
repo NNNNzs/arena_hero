@@ -8,6 +8,7 @@ from uuid import UUID
 from arena_hero import BeaconStatus, CoreView, UnitType, UnitView
 
 from ..context import DecisionContext
+from ..identity import entity_alias
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import DIRECTIONS, destination, distance, shot_range
@@ -147,6 +148,31 @@ def _plan_vanguards(
             adjacent_by_cell[best_cell], context, memory
         )
 
+        # Doorstep Last Stand (门禁阻滞坚守): a critical Vanguard already
+        # occupying the Core's adjacent choke is still a full movement blocker.
+        # Do not trade that blocker for a retreat when no healthy Vanguard can
+        # hold the same ring against an approaching Core threat.
+        doorstep_last_stand = (
+            vanguard.hp == 1
+            and context.core is not None
+            and distance(vanguard.position, context.core.position) == 1
+            and any(
+                _enemy_can_attack_core(enemy, context.core, memory.obstacles)
+                or distance(enemy.position, context.core.position) <= 2
+                for enemy in context.enemies
+            )
+            and not any(
+                other.id != vanguard.id
+                and other.hp >= 2
+                and distance(other.position, context.core.position) <= 1
+                for other in context.vanguards
+            )
+        )
+
+        if doorstep_last_stand and best_cell is None:
+            intents.append(_wait(vanguard, "doorstep_last_stand_hold"))
+            continue
+
         if vanguard.hp == 1 and not urgent:
             if _at_normal_core(vanguard, context) and heal_allowances.get(vanguard.id, 0) > 0:
                 intents.append(_unit_heal_intent(vanguard, heal_allowances[vanguard.id]))
@@ -242,6 +268,37 @@ def _plan_vanguards(
                 _record_unit_task(memory, context, vanguard, kind="intercept", target=target_enemy.position, intent=intent)
                 intents.append(intent or _wait(vanguard, "visible_threat_route_blocked"))
                 continue
+        elif vanguard.id in expedition_vanguards:
+            # INTERCEPT_PURSUIT_GRACE: when the enemy leaves vision, continue
+            # pursuing the last known enemy position for a short grace period.
+            # This prevents the 2-cell oscillation between "intercept enemy at
+            # vision edge" and "return to expedition regroup" that occurs when
+            # the enemy alternates between visible and invisible as the vanguard
+            # steps back and forth across the vision boundary.
+            _prev_task = memory.unit_tasks.get(str(vanguard.id), {})
+            if (
+                _prev_task.get("kind") == "intercept"
+                and "intercept_since" in _prev_task
+                and isinstance(_prev_task.get("target"), (list, tuple))
+                and len(_prev_task["target"]) == 2
+                and all(type(p) is int for p in _prev_task["target"])
+            ):
+                _grace_elapsed = context.tick - int(_prev_task["intercept_since"])
+                if _grace_elapsed <= config.intercept_pursuit_grace_ticks:
+                    _last_target: Position = (int(_prev_task["target"][0]), int(_prev_task["target"][1]))
+                    intent = _move(
+                        vanguard, _last_target, "intercept_pursuit_grace", 730,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config,
+                    )
+                    if intent is None and context.core is not None:
+                        intent = _deploy_sidestep(
+                            vanguard, _last_target, context, memory,
+                            reservations, "intercept_pursuit_grace", context.core.position,
+                        )
+                    _record_unit_task(memory, context, vanguard, kind="intercept", target=_last_target, intent=intent)
+                    intents.append(intent or _wait(vanguard, "intercept_pursuit_grace_blocked"))
+                    continue
 
         if (
             context.core is not None

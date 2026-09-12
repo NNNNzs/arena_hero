@@ -118,7 +118,7 @@ def test_defend_rallies_workers_when_combat_ready():
     )
     worker_intent = next(intent for intent in result.intents if intent.actor_id == uuid(1))
     core_intent = next(intent for intent in result.intents if intent.is_core)
-    assert worker_intent.reason == "emergency_worker_rally_to_core"
+    assert worker_intent.reason == "emergency_worker_defensive_clearance"
     assert core_intent.action is not ActionKind.SPAWN
 
 
@@ -1088,7 +1088,7 @@ def test_peacetime_resource_conservation_after_mature_roster_filled():
     )
     # 38 units, not mature yet (rangers=14 < 16) — should still produce
     game_turn = turn(owned_core=core(), units=roster, resources=200, resource_cells=((5, 0),))
-    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40))
+    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40, core_survival_resource_reserve=5))
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert core_intent.action is ActionKind.SPAWN  # roster not filled, produce freely
 
@@ -1101,13 +1101,13 @@ def test_peacetime_conserve_blocks_production_when_roster_filled_and_buffer_insu
     roster39 = roster[:39]  # 12W/12V/15R — one Ranger short of mature
     game_turn = turn(owned_core=core(), units=roster39, resources=80, resource_cells=((5, 0),))
     # With buffer=40 and price=34+reserve=5: need 79. 80 >= 79 → should produce
-    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40))
+    result = choose_actions(game_turn, config=AgentConfig(peacetime_resource_buffer=40, core_survival_resource_reserve=5))
     core_intent = next(intent for intent in result.intents if intent.is_core)
     assert core_intent.action is ActionKind.SPAWN  # 80 >= 34+5+40 = 79
 
     # Now with buffer=40 and resources=78 → 78 < 79 → should NOT produce
     game_turn2 = turn(owned_core=core(), units=roster39, resources=78, resource_cells=((5, 0),))
-    result2 = choose_actions(game_turn2, config=AgentConfig(peacetime_resource_buffer=40))
+    result2 = choose_actions(game_turn2, config=AgentConfig(peacetime_resource_buffer=40, core_survival_resource_reserve=5))
     core_intent2 = next(intent for intent in result2.intents if intent.is_core)
     assert core_intent2.action is not ActionKind.SPAWN
 

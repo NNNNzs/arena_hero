@@ -349,11 +349,22 @@ def _plan_core(
             )
 
     base_reserve = config.minimum_resource_reserve if combat_ready else 0
+    shield_cap = 10 if _beacon_owned(context) else 5
     reserve = max(
         base_reserve,
         CORE_MAX_HP - core.hp + planned_unit_heals,
     )
-    shield_cap = 10 if _beacon_owned(context) else 5
+    # ATTACK and DEFEND must not bypass the Core Survival Reserve (核心生存
+    # 底线储备).  At population 30+ a replacement Vanguard/Ranger is expensive;
+    # retain enough inventory to absorb the next breach and repair HP/shield.
+    # This floor deliberately applies before the optional peacetime buffer.
+    high_population_survival = context.population >= config.core_survival_reserve_population
+    if high_population_survival:
+        reserve = max(
+            reserve,
+            config.core_survival_resource_reserve,
+            (CORE_MAX_HP - core.hp) + (shield_cap - core.shield) + planned_unit_heals,
+        )
     spawn_type = _spawn_target(context, config, mode)
     # Keep exactly the two-scout opening team while the spawn is being
     # evaluated.  Further production would establish the roster and disable
@@ -368,6 +379,10 @@ def _plan_core(
         or not combat_ready
         or spawn_type in (UnitType.VANGUARD, UnitType.RANGER)
     )
+    # A current Core breach has priority over roster backfill.  This also
+    # avoids consuming the action slot that can repair the shield next Tick.
+    if immediate_threat and combat_ready:
+        allow_spawn_mode = False
     if (
         spawn_type is not None
         and allow_spawn_mode
@@ -414,6 +429,10 @@ def _plan_core(
             effective_reserve = max(
                 0, CORE_MAX_HP - core.hp + planned_unit_heals
             )
+        # Opening-roster exceptions above are intentionally unavailable once
+        # the population is high: the survival floor is mode-independent.
+        if high_population_survival:
+            effective_reserve = max(effective_reserve, reserve)
         if available_resources >= price + effective_reserve:
             return ActionIntent(
                 actor_id=core.id,

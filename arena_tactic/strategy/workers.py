@@ -13,7 +13,7 @@ from arena_hero import CoreState, Direction, UnitType, UnitView
 from ..context import DecisionContext
 from ..memory import AgentMemory
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
-from ..navigation import DIRECTIONS, adjacent_direction, bounded_path_cost, destination, distance, enemy_threat_cells
+from ..navigation import DIRECTIONS, adjacent_direction, bounded_path_cost, destination, distance, enemy_threat_cells, shot_range
 from ..squads import SquadPlan, SquadType
 from .common import (
     UNIT_MAX_HP,
@@ -101,6 +101,78 @@ def _workers_need_local_shelter(context: DecisionContext, memory: AgentMemory, c
             for enemy in context.enemies
         )
     )
+
+
+def _defensive_fire_lane_cells(
+    context: DecisionContext,
+    memory: AgentMemory,
+) -> set[Position]:
+    """Return currently usable short Ranger lanes that Workers must not occupy.
+
+    Units do not block server-side Ranger shots, but keeping the local lanes
+    clear prevents our movement/reservation logic from repeatedly turning the
+    same doorstep into a traffic jam during a Core breach.
+    """
+    lanes: set[Position] = set()
+    for ranger in context.rangers:
+        for enemy in context.enemies:
+            if shot_range(ranger.position, enemy.position, memory.obstacles) is None:
+                continue
+            dx = enemy.position[0] - ranger.position[0]
+            dy = enemy.position[1] - ranger.position[1]
+            step = (
+                0 if dx == 0 else (1 if dx > 0 else -1),
+                0 if dy == 0 else (1 if dy > 0 else -1),
+            )
+            for offset in range(1, max(abs(dx), abs(dy))):
+                lanes.add((ranger.position[0] + step[0] * offset, ranger.position[1] + step[1] * offset))
+    return lanes
+
+
+def _emergency_worker_shelter(
+    worker: UnitView,
+    context: DecisionContext,
+    memory: AgentMemory,
+    reservations: ReservationTable,
+    config: AgentConfig,
+) -> ActionIntent | None:
+    """Disperse an empty Worker away from the Core throat during a breach."""
+    if context.core is None:
+        return None
+    core_position = context.core.position
+    blocked = (
+        memory.obstacles
+        | memory.active_temporary_blocks(context.tick)
+        | set(context.enemy_occupancy)
+        | enemy_threat_cells(context)
+        | _defensive_fire_lane_cells(context, memory)
+    )
+    current_distance = distance(worker.position, core_position)
+    candidates: list[tuple[int, int, Direction, Position]] = []
+    for direction_index, direction in enumerate(DIRECTIONS):
+        candidate = destination(worker.position, direction)
+        if candidate in blocked or candidate == core_position:
+            continue
+        candidate_distance = distance(candidate, core_position)
+        # Never move a sheltering Worker into the Core's immediate doorway.
+        if candidate_distance <= 1:
+            continue
+        nearest_enemy = min(
+            (distance(candidate, enemy.position) for enemy in context.enemies),
+            default=0,
+        )
+        # Prefer outward motion, then lateral safety, with deterministic ties.
+        candidates.append((-(candidate_distance - current_distance), -nearest_enemy, direction_index, candidate))
+    candidates.sort()
+    for _, _, _, candidate in candidates:
+        if reservations.reserve(candidate, source=worker.position):
+            direction = adjacent_direction(worker.position, candidate)
+            return ActionIntent(
+                worker.id, False, ActionKind.MOVE, 975,
+                "emergency_worker_defensive_clearance",
+                target_cell=core_position, direction=direction, reserved_cell=candidate,
+            )
+    return None
 
 
 def _assign_unique_targets(
@@ -439,7 +511,16 @@ def _plan_workers(
             if _at_normal_core(worker, context) and worker.cargo and context.resource_space > 0:
                 intents.append(ActionIntent(worker.id, False, ActionKind.DEPOSIT, 980, "emergency_deposit_at_core"))
                 continue
-            if worker.cargo or combat_ready:
+            # Empty Workers are not defenders.  Do not rally every Worker into
+            # the Core's one-cell throat: reserve side/outward shelter cells so
+            # combat units retain a firing and counter-attack corridor.
+            if not worker.cargo and combat_ready:
+                intent = _emergency_worker_shelter(
+                    worker, context, memory, reservations, config
+                )
+                intents.append(intent or _wait(worker, "emergency_worker_sheltered_near_core"))
+                continue
+            if worker.cargo:
                 target = core.destination if core.state is CoreState.MOVING and core.destination else core.position
                 # Skip A* pathfinding when core is full and cargo worker is at
                 # the doorstep — same oscillation guard as the normal path.

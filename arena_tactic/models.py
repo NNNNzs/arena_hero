@@ -50,6 +50,11 @@ class AgentConfig:
     planning_budget_ms: float = 500.0
     max_population: int = 40
     minimum_resource_reserve: int = 5
+    # At high population, dynamic combat-unit prices become large enough to
+    # turn one replacement into a base-loss event.  This is a hard post-spawn
+    # floor, independent of strategic mode and the optional peacetime buffer.
+    core_survival_resource_reserve: int = 30
+    core_survival_reserve_population: int = 30
     # Units below this fraction of their maximum HP stop their ordinary task
     # and return to a stationary Core for healing.  Zero disables the rule.
     unit_retreat_heal_ratio: float = 0.5
@@ -133,6 +138,12 @@ class AgentConfig:
     intercept_rangers: int = 1
     intercept_distance: int = 8
     intercept_approach_streak: int = 1
+    # Grace period (in ticks) for an expedition vanguard's pursuit of a
+    # vision-edge enemy.  When the enemy leaves visible range the vanguard
+    # continues advancing toward the last known enemy position for this many
+    # ticks, preventing the 2-cell back-and-forth oscillation between
+    # intercept_visible_threat and expedition_regroup.
+    intercept_pursuit_grace_ticks: int = 4
     enemy_track_ttl_ticks: int = 3
     scheduler_shadow: bool = False
     scheduler_canary: bool = False

@@ -109,7 +109,7 @@ def _safe_task(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     result: dict[str, Any] = {}
-    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick", "recon_since", "patrol_arc", "patrol_role", "patrol_core", "recent_cells"):
+    for key in ("kind", "target", "step", "sector", "sector_since", "failures", "attempt_tick", "since_tick", "recon_since", "intercept_since", "patrol_arc", "patrol_role", "patrol_core", "recent_cells"):
         item = value.get(key)
         if any(word in key.lower() for word in _SENSITIVE):
             continue
