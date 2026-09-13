@@ -12,6 +12,7 @@ from uuid import UUID
 import re
 from datetime import datetime, timezone
 
+from arena_hero import CoreView
 from .context import DecisionContext
 from .identity import entity_alias
 from .models import AgentConfig, Position, StrategicMode
@@ -353,6 +354,10 @@ class AgentMemory:
     previous_migration_position: Position | None = None
     core_damage_streak: int = 0
     last_core_damage_tick: int = 0
+    # Tick when an enemy CoreView was last observed in context.enemies.
+    # Used by choose_mode to dampen ATTACK↔BEACON oscillation caused by
+    # the enemy core flickering at the patrol vision edge.
+    enemy_core_last_seen_tick: int = 0
     obstacles: set[Position] = field(default_factory=set)
     explored: set[Position] = field(default_factory=set)
     mined_cells: set[Position] = field(default_factory=set)
@@ -409,6 +414,7 @@ class AgentMemory:
         m.previous_migration_position = self.previous_migration_position
         m.core_damage_streak = self.core_damage_streak
         m.last_core_damage_tick = self.last_core_damage_tick
+        m.enemy_core_last_seen_tick = self.enemy_core_last_seen_tick
         m.submitted_ticks = self.submitted_ticks
         m.accepted_ticks = self.accepted_ticks
         # --- sets of immutable elements (tuples / strings) ---
@@ -520,6 +526,8 @@ class AgentMemory:
                 if context.tick - int(track.get("last_seen_tick", 0)) <= config.enemy_track_ttl_ticks
             }
             for enemy in context.enemies:
+                if isinstance(enemy, CoreView):
+                    next_memory.enemy_core_last_seen_tick = context.tick
                 alias = entity_alias(enemy.id)
                 if alias is None:
                     continue
@@ -668,6 +676,7 @@ class AgentMemory:
                 next_memory.no_resource_ticks = 0
                 next_memory.core_damage_streak = 0
                 next_memory.last_core_damage_tick = 0
+                next_memory.enemy_core_last_seen_tick = 0
                 next_memory.migration_cooldown_until_tick = 0
                 next_memory.previous_migration_position = None
                 next_memory.migration_recommendation = {}
@@ -732,6 +741,7 @@ class AgentMemory:
             "previous_migration_position": list(self.previous_migration_position) if self.previous_migration_position else None,
             "core_damage_streak": self.core_damage_streak,
             "last_core_damage_tick": self.last_core_damage_tick,
+            "enemy_core_last_seen_tick": self.enemy_core_last_seen_tick,
             "obstacles": [list(cell) for cell in sorted(self.obstacles)],
             "explored": [list(cell) for cell in sorted(self.explored)],
             "mined_cells": [list(cell) for cell in sorted(self.mined_cells)],
@@ -802,6 +812,7 @@ class AgentMemory:
             previous_migration_position=next(iter(_safe_cells([data.get("previous_migration_position")])), None),
             core_damage_streak=integer("core_damage_streak"),
             last_core_damage_tick=integer("last_core_damage_tick"),
+            enemy_core_last_seen_tick=integer("enemy_core_last_seen_tick"),
             obstacles=_safe_cells(data.get("obstacles", [])),
             explored=_safe_cells(data.get("explored", [])),
             mined_cells=_safe_cells(data.get("mined_cells", [])),

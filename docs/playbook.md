@@ -541,6 +541,21 @@
   3. **单测验证**：新增 `tests/test_critical_retreat_oscillation.py`（7 项专项回归单测），全量单测全部通过；
   4. **代码提交与热重载**：代码提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
 
+### 2026-09-13 | Tick 269912 迷雾探索超时工兵停滞与敌方核心边缘视野模式震荡修复 (EXPLORATION_STALL / Mode Oscillation)
+- **现象**：巡检时间窗 Tick 269779..269912，系统核心正常（坐标 `[-822, -574]`，HP/Shield 5/5），人口 20，核心资源 14/100。检出 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`（`no_resource_ticks` 达到 755+ Ticks，5 名工兵全部原地 WAIT `no_resource_or_frontier`），同时在 120 Ticks 窗口内发生 19 次模式横跳，呈现高频 `5 Ticks BEACON ↔ 5 Ticks ATTACK` 周期性模式震荡死锁。
+- **根因分析**：
+  1. **迷雾探索停滞**：大地图累计探索迷雾达到 34,799 格，障碍 60,405 格，frontier 边缘达 4,836 格。旧逻辑在 `_plan_workers` 中硬编码 `explore_deadline = min(deadline, perf_counter() + 0.05)`（仅 50ms 预算），单次 `memory.frontier()` 即消耗近 48ms，导致 `bounded_path_cost` 路径搜索立即判定超时全部中断，所有工人拿不到探索目标全部返回 `None` 并回退至 `no_resource_or_frontier` 永久原地死等；
+  2. **模式震荡死锁**：敌方核心探明位于 `[-967, -578]`，处于巡逻兵视野交界边缘。一旦进入视野即触发 `ATTACK` 模式并维持 5 Ticks（`attack_exit_grace_ticks`）；5 Ticks 结束后核心脱离视野瞬间回落 `BEACON`；单位在 BEACON 走位又立即看见核心再次触发 ATTACK，形成 5 周期高频震荡死锁。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成详细战况分析 Markdown 战报，成功向 `709934831@qq.com` 投递 HTML 告警邮件；
+  2. **工程根治**：
+     - 在 `arena_tactic/models.py` 中引入 `exploration_budget_ms: float = 200.0`（探索预算提升至 200ms）与 `attack_core_memory_ticks: int = 20`（敌方核心记忆缓冲 20 Ticks）；
+     - 在 `arena_tactic/strategy/workers.py` 中重构前沿探索超时降级机制：当 A* 超时耗尽时，安全降级至扇区最佳几何前沿点（`top_geometric[0]`），确保工兵始终有方向前进，根除 `no_resource_or_frontier` 永久卡死；
+     - 在 `arena_tactic/memory.py` 中增加 `enemy_core_last_seen_tick` 记忆追踪，并在 `arena_tactic/strategy/mode.py` 中引入 `enemy_core_recently_seen` 记忆阻尼，消除敌方核心边缘视野闪烁导致的 5-Tick 模式震荡；
+  3. **单测验证**：新增 `tests/test_exploration_budget_and_attack_memory.py` 专项回归测试，全量 586 项单测 100% 通过；
+  4. **代码提交与服务重载**：代码提交至 main 分支，重启 Docker 容器并验证服务健康就绪。
+
+
 
 
 

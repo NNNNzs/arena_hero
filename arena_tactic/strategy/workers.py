@@ -442,8 +442,11 @@ def _frontier_assignments(
 
                 candidates: list[tuple[int, int, int, Position]] = []
                 fallback_candidates: list[tuple[int, int, int, Position]] = []
-                for _, lateral, negative_projection, cell in heapq.nsmallest(6, geometric_candidates):
+                deadline_exhausted = False
+                top_geometric = heapq.nsmallest(6, geometric_candidates)
+                for _, lateral, negative_projection, cell in top_geometric:
                     if perf_counter() >= deadline:
+                        deadline_exhausted = True
                         break
                     path_cost = bounded_path_cost(
                         unit.position,
@@ -464,6 +467,14 @@ def _frontier_assignments(
                     break
                 if fallback_candidates and target is None:
                     target = min(fallback_candidates)[-1]
+                    selected_sector = candidate_sector
+                # When the deadline fired before any A* completed, fall
+                # back to the best geometric candidate (nearest along the
+                # sector vector) so that workers still receive an
+                # exploration target instead of stalling permanently.
+                if target is None and deadline_exhausted and top_geometric:
+                    best_geo = top_geometric[0]
+                    target = best_geo[-1]
                     selected_sector = candidate_sector
             if target is None:
                 continue
@@ -637,7 +648,8 @@ def _plan_workers(
     still_unassigned = [
         worker for worker in unassigned if str(worker.id) not in reconnaissance
     ]
-    explore_deadline = min(deadline, perf_counter() + 0.05)
+    explore_budget = config.exploration_budget_ms / 1000.0
+    explore_deadline = min(deadline, perf_counter() + explore_budget)
     exploration = _frontier_assignments(
         tuple(still_unassigned) + scout_workers,
         memory,

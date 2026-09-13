@@ -94,6 +94,15 @@ class AgentConfig:
     explored_history_limit: int = 100_000
     event_history_limit: int = 512
     exploration_sector_ticks: int = 60
+    # Budget (in milliseconds) reserved for frontier exploration assignment.
+    # The previous 50 ms hardcap starved _frontier_assignments on large maps
+    # where memory.frontier() alone consumed ~48 ms, leaving no time for A*
+    # and causing all workers to receive None → permanent stall.
+    exploration_budget_ms: float = 200.0
+    # How many ticks a recently-seen enemy core remains "remembered" for
+    # ATTACK mode stay logic, preventing vision-edge flicker oscillation
+    # between ATTACK and BEACON every attack_exit_grace_ticks.
+    attack_core_memory_ticks: int = 20
     movement_failure_cooldown_ticks: int = 4
     resource_recheck_failure_threshold: int = 2
     resource_recheck_cooldown_ticks: int = 8

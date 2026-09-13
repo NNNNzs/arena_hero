@@ -127,8 +127,20 @@ def choose_mode(
 
     combat_count = len(context.vanguards) + len(context.rangers)
     enemy_core_visible = any(isinstance(enemy, CoreView) for enemy in context.enemies)
-    attack_enter = (
+    # Damped enemy-core visibility: treat the core as "visible" for
+    # attack_core_memory_ticks after its last sighting, preventing the
+    # vision-edge flicker that caused ATTACK↔BEACON oscillation every
+    # attack_exit_grace_ticks (5-tick period in production).
+    enemy_core_recently_seen = (
         enemy_core_visible
+        or (
+            memory.enemy_core_last_seen_tick > 0
+            and context.tick - memory.enemy_core_last_seen_tick
+                <= config.attack_core_memory_ticks
+        )
+    )
+    attack_enter = (
+        enemy_core_recently_seen
         and combat_count >= 3
         and core.hp == CORE_MAX_HP
         and core.shield >= 3
@@ -139,7 +151,7 @@ def choose_mode(
         and core.hp == CORE_MAX_HP
         and core.shield >= 2
         and (
-            enemy_core_visible
+            enemy_core_recently_seen
             or context.tick - memory.mode_since_tick <= config.attack_exit_grace_ticks
         )
     )
