@@ -668,6 +668,7 @@ class AgentMemory:
                 next_memory.enemy_tracks.clear()
                 next_memory.manual_squad_assignments.clear()
                 next_memory.explored.clear()
+                next_memory.obstacles.clear()
                 next_memory.mined_cells.clear()
                 next_memory.resource_observations.clear()
                 next_memory.resource_recheck_failures.clear()
