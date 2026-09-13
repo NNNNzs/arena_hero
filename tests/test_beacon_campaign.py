@@ -1,10 +1,10 @@
-from arena_hero import BeaconStatus, UnitType
+from arena_hero import BeaconStatus, Direction, UnitType
 
 from arena_tactic import AgentRuntime
 from arena_tactic.context import DecisionContext
 from arena_tactic.identity import entity_alias
 from arena_tactic.memory import AgentMemory
-from arena_tactic.models import AgentConfig, StrategicMode
+from arena_tactic.models import ActionIntent, ActionKind, AgentConfig, StrategicMode
 from arena_tactic.objectives.beacon import BeaconCampaign, BeaconInput, BeaconStage
 
 from arena_tactic.squad_coordination import (
@@ -594,3 +594,93 @@ def test_campaign_cohesion_hold_timeout_breaks_deadlock_and_advances():
     front_intent = next(item for item in result.intents if item.actor_id == front.id)
     assert front_intent.action.value == "MOVE"
     assert front_intent.reason.startswith("expedition_")
+
+
+# ---------------------------------------------------------------------------
+# Contact hold proximity gating — rear members should not stall
+# ---------------------------------------------------------------------------
+
+def test_contact_hold_does_not_freeze_distant_rear_member():
+    """Members far (> CONTACT_HOLD_RADIUS) from the combat contact zone
+    should continue normal formation movement instead of being frozen in
+    ``expedition_contact_hold``.  Reproduces SQUAD_EXPEDITION_STALL where
+    rear members 100+ cells from the front were stuck WAITing."""
+    from arena_tactic.squad_coordination import CONTACT_HOLD_RADIUS
+
+    ranger = unit(10, UnitType.RANGER, (0, 0))
+    vanguard = unit(11, UnitType.VANGUARD, (CONTACT_HOLD_RADIUS + 50, 0))
+    enemy = unit(90, UnitType.RANGER, (3, 0), controlled=False)
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(-1, 0)),
+            units=(ranger, vanguard),
+            enemies=(enemy,),
+            beacon_position=(200, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    # Ranger engages the enemy
+    assert intents[ranger.id].action.value == "SHOOT"
+    # Distant vanguard should NOT be contact_hold'd — should continue moving
+    assert intents[vanguard.id].action.value == "MOVE"
+    assert "contact_hold" not in intents[vanguard.id].reason
+
+
+def test_contact_hold_still_freezes_near_member():
+    """Members within CONTACT_HOLD_RADIUS of the combat zone should still
+    receive contact_hold (regression guard for the existing behavior)."""
+    from arena_tactic.squad_coordination import CONTACT_HOLD_RADIUS
+
+    ranger = unit(10, UnitType.RANGER, (0, 0))
+    vanguard = unit(11, UnitType.VANGUARD, (5, 0))
+    enemy = unit(90, UnitType.RANGER, (3, 0), controlled=False)
+    result = campaign_runtime().decide(
+        turn(
+            owned_core=core(position=(-1, 0)),
+            units=(ranger, vanguard),
+            enemies=(enemy,),
+            beacon_position=(10, 0),
+        )
+    )
+
+    intents = {item.actor_id: item for item in result.intents}
+    assert intents[ranger.id].action.value == "SHOOT"
+    assert intents[vanguard.id].action.value == "WAIT"
+    assert intents[vanguard.id].reason == "expedition_contact_hold"
+
+
+def test_contact_hold_gating_in_direct_coordinate_call():
+    """Directly call ``coordinate_expedition_intents`` with a rear member far
+    from the contact zone and verify it is not frozen."""
+    from arena_tactic.squad_coordination import CONTACT_HOLD_RADIUS, coordinate_expedition_intents
+
+    near_ranger = unit(10, UnitType.RANGER, (0, 0))
+    far_vanguard = unit(11, UnitType.VANGUARD, (CONTACT_HOLD_RADIUS + 30, 0))
+    enemy = unit(90, UnitType.RANGER, (3, 0), controlled=False)
+    config = AgentConfig()
+    memory = AgentMemory()
+    context = DecisionContext.from_turn(turn(
+        owned_core=core(position=(-1, 0)),
+        units=(near_ranger, far_vanguard),
+        enemies=(enemy,),
+        beacon_position=(200, 0),
+    ))
+    squad = expedition(near_ranger, far_vanguard, target=(200, 0))
+
+    # Simulate: ranger has SHOOT intent, vanguard has a MOVE intent
+    shoot_intent = ActionIntent(near_ranger.id, False, ActionKind.SHOOT, 700, "ranger_fire")
+    move_intent = ActionIntent(far_vanguard.id, False, ActionKind.MOVE, 680,
+                               "expedition_formation_move", target_cell=(201, 0),
+                               direction=Direction.RIGHT, reserved_cell=(CONTACT_HOLD_RADIUS + 31, 0))
+    proposals = (shoot_intent, move_intent)
+
+    result = coordinate_expedition_intents(context, memory, config, squad, proposals)
+
+    result_by_actor = {item.actor_id: item for item in result}
+    # Ranger keeps its SHOOT (protected)
+    assert result_by_actor[near_ranger.id].action is ActionKind.SHOOT
+    # Far vanguard should NOT get contact_hold
+    far_intent = result_by_actor[far_vanguard.id]
+    assert "contact_hold" not in far_intent.reason
+    assert far_intent.action is ActionKind.MOVE

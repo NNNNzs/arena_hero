@@ -157,7 +157,55 @@ def squad_has_combat_contact(
     return False
 
 
+def _combat_contact_positions(
+    context: DecisionContext,
+    members: Iterable[UnitView],
+    intents: Iterable[ActionIntent],
+) -> tuple[Position, ...]:
+    """Return positions of the combat contact zone for distance-gated contact hold.
+
+    Includes positions of enemies engaged with squad members and positions of
+    squad members actively fighting.  Used to limit ``contact_hold`` to members
+    that are actually near the engagement instead of freezing the entire squad.
+    """
+    member_list = tuple(members)
+    member_ids = {unit.id for unit in member_list}
+    positions: list[Position] = []
+    combat_reason_tokens = (
+        "intercept_",
+        "visible_threat",
+        "enemy_approach",
+    )
+    # Positions of members actively engaged in combat
+    for intent in intents:
+        if intent.actor_id in member_ids and (
+            intent.action in {ActionKind.SHOOT, ActionKind.SWEEP}
+            or any(token in intent.reason for token in combat_reason_tokens)
+        ):
+            for member in member_list:
+                if member.id == intent.actor_id:
+                    positions.append(member.position)
+                    break
+    # Positions of enemies near squad members
+    for enemy in context.enemies:
+        if not isinstance(enemy, UnitView):
+            continue
+        for member in member_list:
+            if enemy.unit_type is UnitType.VANGUARD:
+                if distance(enemy.position, member.position) == 1:
+                    positions.append(enemy.position)
+                    break
+            elif (
+                enemy.unit_type is UnitType.RANGER
+                and shot_range(enemy.position, member.position, context.obstacle_cells) is not None
+            ):
+                positions.append(enemy.position)
+                break
+    return tuple(positions)
+
+
 _SLOT_STICKINESS_BONUS = 1  # cells — keep current slot if new best is ≤1 closer
+CONTACT_HOLD_RADIUS = 20  # cells — only hold members within this range of combat
 
 
 def _load_previous_formation_slots(memory: AgentMemory) -> dict[UUID, Position]:
@@ -407,6 +455,9 @@ def coordinate_expedition_intents(
         or _intent_is_detached_for_recovery(by_actor.get(unit.id))
     }
     contact = squad_has_combat_contact(context, members, proposals)
+    contact_zone: tuple[Position, ...] = ()
+    if contact:
+        contact_zone = _combat_contact_positions(context, members, proposals)
     cohesion = evaluate_squad_cohesion(
         squad, members, detached_unit_ids=detached,
     )
@@ -450,10 +501,15 @@ def coordinate_expedition_intents(
         if unit.id in protected or unit.id in detached:
             continue
         if contact and contact_holds:
-            replacements.append(ActionIntent(
-                unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_contact_hold",
-            ))
-            continue
+            in_contact_zone = any(
+                distance(unit.position, pos) <= CONTACT_HOLD_RADIUS
+                for pos in contact_zone
+            ) if contact_zone else True
+            if in_contact_zone:
+                replacements.append(ActionIntent(
+                    unit.id, False, ActionKind.WAIT, 690, f"{reason_prefix}_contact_hold",
+                ))
+                continue
         pickup_is_waiting = (
             existing is not None
             and "pickup_waits_for_escort" in existing.reason

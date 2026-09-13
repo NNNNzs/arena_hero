@@ -5,6 +5,21 @@
 
 ## 处置案例
 
+### 2026-09-13 Tick 268106~268111 | SQUAD_EXPEDITION_STALL (远征编队 contact_hold 脱节停滞) 策略修复
+- **现象**：在 Tick 268106~268111，战术巡检器检测到 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)`。远征打击群 (`EXPEDITION_BEACON`) 中，前锋成员 `entity_e52fd67a0abb` 深入至 `[-1064, -644]` 与敌人交火 (`SHOOT`)，触发 `squad_has_combat_contact()` 返回 `True`。然而 `squad_coordination.py:452` 中的 `contact_hold` 逻辑对 **全队所有非 protected/detached 成员** 无条件施加原地 `WAIT`，导致距交火点超过 100 格的后方远征队员（如 `entity_96b8e73a5f66` 坐标 `[-948, -586]`、`entity_cf68f1120abd` 坐标 `[-968, -575]`）连续 100+ Ticks 持续执行 `expedition_contact_hold` 原地 WAIT，无法跟进支援或收拢阵型。
+- **根因分析**：
+  1. `coordinate_expedition_intents()` 中 `squad_has_combat_contact()` 返回布尔值仅表示"队伍中是否有人交火"，无法区分交火区域与远端成员。
+  2. 当 `contact and contact_holds` 为 `True` 时，所有非 `protected`/`detached` 成员一律收到 `_contact_hold` WAIT，未做距离门控。
+  3. 后方成员距交火区 100+ 格，被无差别冻结后无法执行 `formation_move` 前推支援，产生严重的远征编队脱节停滞。
+- **处置动作**：
+  1. 在 `arena_tactic/squad_coordination.py` 中新增 `_combat_contact_positions()` 辅助函数，返回交火区域内所有相关位置（交火成员位置 + 近距敌方单位位置）。
+  2. 新增 `CONTACT_HOLD_RADIUS = 20` 常量（格），将 `contact_hold` 从无差别全队冻结改为距离门控：仅对距交火区域 ≤ 20 格的成员施加 `contact_hold`；超出此距离的后方成员跳过冻结，继续执行 `formation_move` 编队推进。
+  3. 新增 3 项单元测试（`test_contact_hold_does_not_freeze_distant_rear_member`、`test_contact_hold_still_freezes_near_member`、`test_contact_hold_gating_in_direct_coordinate_call`），覆盖远端成员不冻结、近端成员仍冻结、直接函数调用验证三个场景。
+- **效果验证**：
+  - 全量 577 项单元测试 100% 通过（`pytest tests/ -q`），无回归。
+  - `test_campaign_contact_holds_non_engaged_members_without_replacing_fire` 原有测试继续通过（近端成员仍正确冻结）。
+  - 修改提交至 main 分支。
+
 ### 2026-09-11 Tick 260442~260450 | DEFENSE_DISENGAGED (游侠射击路径受阻脱离交战与身位僵死) 策略修复
 - **现象**：在 120 Tick 深度态势巡检中检出 `[CRITICAL] DEFENSE_DISENGAGED (防守单位脱离交战)` 与 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。基地防守与拦截态势下，游侠战斗单位（如 `34662b0a2db9`, `be59608ef9dc`, `83cc4f1cc328` 等）在敌人逼近至 7~14 格时，由于开火路线被阻挡持续执行 `WAIT`（`firing_route_blocked` / `intercept_firing_route_blocked`），脱离了远程压制和防御交火。
 - **根因分析**：
