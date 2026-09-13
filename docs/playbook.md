@@ -5,6 +5,23 @@
 
 ## 处置案例
 
+### 2026-09-14 Tick 272378~272384 | UNIT_OSCILLATION (游侠交战射击线与巡逻任务切换迟滞缺失) 策略修复
+- **现象**：在 120 Tick 深度态势巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `e52fd67a0abb` 在 `[-1126, -596]` 与 `[-1126, -595]`、游侠 `ad28d81ea5d8` 在 `[-1130, -585]` 与 `[-1130, -584]` 间高频周期性往返振荡 118 次（120 Ticks 内换向率 >98%），交替执行 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)` 与 `hunter_forward_recon (猎手前沿侦察)`。
+- **根因分析**：
+  1. 游侠处于 `scout_rangers` 编制中，在偶数 Tick 侦测到前沿敌军满足 `mobile_engage`，触发 `ranger_seek_legal_firing_line` 向上机动 1 格寻求射击阵位。
+  2. 移动 1 格后，目标超出即时射程或未能直接成线，未命中交战分支，直接掉落到 368 行的 `hunter_forward_recon` 巡逻逻辑，朝向核心巡逻点位向下折返 1 格。
+  3. 缺少对交战姿态的迟滞缓冲（Hysteresis），导致单位在交战寻位和前沿巡逻之间高频 2 格往返拉扯。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件。
+  2. 在 `arena_tactic/models.py` 中增加 `scout_engage_grace_ticks = 4` 配置项。
+  3. 在 `arena_tactic/strategy/common.py` 中为 `_record_unit_task` 扩展 `engage_firing_line` 状态记录与 `engage_since` 时间戳跟踪。
+  4. 在 `arena_tactic/strategy/rangers.py` 中增加 `SCOUT_ENGAGE_HYSTERESIS` 机制：当侦察游侠进入交战姿态后，提供 4 Ticks 宽限期；在宽限期内若脱离即时射击窗口，优先维持交战前压或保持阵位，禁止立即回弹掉落至 `hunter_forward_recon`。
+  5. 在 `tests/test_ranger_firing_sidestep.py` 中新增 `test_scout_ranger_engage_grace_prevents_oscillation` 单元测试，12 项测试全部通过。
+  6. 执行 `docker compose restart arena-hero` 热重载运行容器。
+- **效果验证**：
+  - 容器平稳重启，服务 200 OK 正常联机。
+  - 单元测试验证游侠在脱离即时开火点后保持交战宽限期机动，彻底消除与巡逻点之间的 2 格震荡。
+
 ### 2026-09-13 Tick 268106~268111 | SQUAD_EXPEDITION_STALL (远征编队 contact_hold 脱节停滞) 策略修复
 - **现象**：在 Tick 268106~268111，战术巡检器检测到 `[CRITICAL] SQUAD_EXPEDITION_STALL (信标打击群协同停滞)`。远征打击群 (`EXPEDITION_BEACON`) 中，前锋成员 `entity_e52fd67a0abb` 深入至 `[-1064, -644]` 与敌人交火 (`SHOOT`)，触发 `squad_has_combat_contact()` 返回 `True`。然而 `squad_coordination.py:452` 中的 `contact_hold` 逻辑对 **全队所有非 protected/detached 成员** 无条件施加原地 `WAIT`，导致距交火点超过 100 格的后方远征队员（如 `entity_96b8e73a5f66` 坐标 `[-948, -586]`、`entity_cf68f1120abd` 坐标 `[-968, -575]`）连续 100+ Ticks 持续执行 `expedition_contact_hold` 原地 WAIT，无法跟进支援或收拢阵型。
 - **根因分析**：

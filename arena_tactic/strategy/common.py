@@ -92,7 +92,7 @@ def _record_unit_task(
     existing = memory.unit_tasks.get(str(unit.id), {})
     task = dict(existing) if existing.get("kind") == kind else {
         key: existing[key]
-        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since")
+        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since")
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})
@@ -106,6 +106,11 @@ def _record_unit_task(
             task["intercept_since"] = existing["intercept_since"]
         else:
             task["intercept_since"] = context.tick
+    if kind == "engage_firing_line":
+        if existing.get("kind") == "engage_firing_line" and "engage_since" in existing:
+            task["engage_since"] = existing["engage_since"]
+        else:
+            task["engage_since"] = context.tick
     task["prev_cell"] = list(unit.position)
     if intent is not None and intent.action is ActionKind.MOVE:
         task["step"] = list(intent.reserved_cell) if intent.reserved_cell else None

@@ -63,6 +63,8 @@ _WAIT_REASONS = {
     "squad_base_defense_worker_hold": ("COHESION_HOLD", "SQUAD_ADVANCES", 1),
     "squad_base_defense_worker_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
     "squad_expedition_worker_blocked": ("BLOCKED", "ROUTE_AVAILABLE", None),
+    "engage_grace_firing_blocked": ("COMBAT", "ENGAGE_GRACE_EXPIRES", 1),
+    "engage_grace_hold": ("COMBAT", "ENGAGE_GRACE_EXPIRES", 1),
 }
 
 

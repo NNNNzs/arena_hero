@@ -153,6 +153,12 @@ class AgentConfig:
     # ticks, preventing the 2-cell back-and-forth oscillation between
     # intercept_visible_threat and expedition_regroup.
     intercept_pursuit_grace_ticks: int = 4
+    # Grace period (in ticks) for a scout ranger's firing-line engagement.
+    # When the ranger was engaging an enemy via ranger_seek_legal_firing_line,
+    # it maintains engagement posture for this many ticks before falling back
+    # to hunter_forward_recon patrol, preventing the 2-cell back-and-forth
+    # oscillation between seeking-firing-line and hunter-recon.
+    scout_engage_grace_ticks: int = 4
     enemy_track_ttl_ticks: int = 3
     scheduler_shadow: bool = False
     scheduler_canary: bool = False

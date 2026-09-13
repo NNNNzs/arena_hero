@@ -286,3 +286,32 @@ class TestRangerFiringSidestepIntegration:
         # Should be a sidestep MOVE, not SHOOT (out of range) or WAIT
         assert intent.action is ActionKind.MOVE
         assert "sidestep" in intent.reason
+
+    def test_scout_ranger_engage_grace_prevents_oscillation(self):
+        """When a scout ranger was engaging an enemy, dropping out of direct
+        tactical range should maintain engage posture during grace ticks rather
+        than immediately flipping to hunter_forward_recon toward core."""
+        rangers = [unit(i, UnitType.RANGER, (20 + i, 20)) for i in range(1, 5)]
+        target_ranger = rangers[-1]
+        _core = core(position=(0, 0))
+        memory = AgentMemory()
+        # Pre-seed memory as having engaged firing line on tick 10
+        memory.unit_tasks[str(target_ranger.id)] = {
+            "kind": "engage_firing_line",
+            "target": [25, 20],
+            "engage_since": 10,
+        }
+
+        # On tick 12 (within 4 ticks grace period), even with no enemies visible,
+        # ranger should maintain engage grace posture instead of hunter_forward_recon
+        t = turn(
+            tick=12,
+            owned_core=_core,
+            units=tuple(rangers),
+            enemies=(),
+        )
+        result = choose_actions(t, memory=memory)
+        intent = next(item for item in result.intents if item.actor_id == target_ranger.id)
+        assert "engage_grace" in intent.reason
+        assert intent.reason != "hunter_forward_recon"
+

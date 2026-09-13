@@ -300,6 +300,13 @@ def _plan_rangers(
                         reservations,
                         "defensive_firing_line_sidestep" if defensive_contact else "firing_line_sidestep",
                     )
+                if mobile_engage:
+                    _record_unit_task(
+                        memory, context, ranger,
+                        kind="engage_firing_line",
+                        target=target_enemy.position,
+                        intent=intent,
+                    )
                 intents.append(intent or _wait(
                     ranger,
                     "defensive_firing_route_blocked" if context.core is not None
@@ -361,6 +368,58 @@ def _plan_rangers(
                             continue
 
         if ranger.id in scout_rangers:
+            # SCOUT_ENGAGE_HYSTERESIS: when the ranger was recently engaging an
+            # enemy via ranger_seek_legal_firing_line, maintain engagement
+            # posture for a grace period before falling back to hunter_forward_recon.
+            # This prevents the 2-tick back-and-forth oscillation where the
+            # ranger alternates between seeking a firing line (toward the enemy)
+            # and hunter recon patrol (toward the core).
+            _engage_task = memory.unit_tasks.get(str(ranger.id), {})
+            _engage_since = _engage_task.get("engage_since")
+            _recently_engaged = (
+                _engage_task.get("kind") == "engage_firing_line"
+                and _engage_since is not None
+                and context.tick - _engage_since < config.scout_engage_grace_ticks
+            )
+            if _recently_engaged:
+                # During grace period: if enemy still visible, continue engaging
+                # with extended tactical range; otherwise wait in place.
+                _grace_enemy = _best_visible_enemy(ranger, context, memory)
+                if _grace_enemy is not None and context.core is not None:
+                    _staging = _ranger_staging_cell(ranger, _grace_enemy, context, memory)
+                    intent = _move(
+                        ranger, _staging, "ranger_seek_legal_firing_line", 580,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config,
+                    )
+                    if intent is None:
+                        intent = _firing_line_sidestep(
+                            ranger, _grace_enemy, _staging, context, memory,
+                            reservations, "engage_grace_firing_sidestep",
+                        )
+                    _record_unit_task(
+                        memory, context, ranger,
+                        kind="engage_firing_line",
+                        target=_grace_enemy.position,
+                        intent=intent,
+                    )
+                    intents.append(intent or _wait(ranger, "engage_grace_firing_blocked"))
+                else:
+                    _engage_target = tuple(_engage_task["target"]) if isinstance(_engage_task.get("target"), list) and len(_engage_task["target"]) == 2 else ranger.position
+                    intent = _move(
+                        ranger, _engage_target, "engage_grace_pursue", 580,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config,
+                    )
+                    _record_unit_task(
+                        memory, context, ranger,
+                        kind="engage_firing_line",
+                        target=_engage_target,
+                        intent=intent,
+                    )
+                    intents.append(intent or _wait(ranger, "engage_grace_hold"))
+                continue
+
             hunter_target = _combat_target(
                 context.core, ranger, hunter_roster.index(ranger), len(hunter_roster),
                 memory, config, role="hunter",
