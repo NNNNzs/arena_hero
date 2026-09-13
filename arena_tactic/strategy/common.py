@@ -444,22 +444,55 @@ def _return_to_core(
         if context.core.state is CoreState.MOVING and context.core.destination
         else context.core.position
     )
+    # Anti-oscillation: read previous cell from task history.  When the unit
+    # has been bouncing between two cells (prev_cell == current position's
+    # neighbour that was just visited), the safe path with avoid_threats=True
+    # creates a local-minimum loop at threat boundaries.  Detect the 2-cell
+    # cycle and skip directly to the unsafe fallback path.
+    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    prev_cell_raw = existing_task.get("prev_cell")
+    prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
+    oscillation_count = existing_task.get("oscillation_count", 0)
+
     # B: 优先走安全路径；若被威胁格封死则降级为普通路径强行回核心
-    intent = _move(
-        unit,
-        target,
-        reason,
-        700,
-        context=context,
-        memory=memory,
-        reservations=reservations,
-        deadline=deadline,
-        config=config,
-        avoid_threats=True,
-    )
-    if intent is not None:
-        return intent
-    # 安全路径不通，降级为忽略威胁的普通路径
+    # Skip safe path when oscillation is detected (count >= 2 means we've
+    # been bouncing for at least 2 consecutive ticks).
+    if oscillation_count < 2:
+        intent = _move(
+            unit,
+            target,
+            reason,
+            700,
+            context=context,
+            memory=memory,
+            reservations=reservations,
+            deadline=deadline,
+            config=config,
+            avoid_threats=True,
+        )
+        if intent is not None:
+            # Check if this step would return to the previous cell (2-cell cycle).
+            if prev_cell is not None and intent.reserved_cell == prev_cell:
+                # Record oscillation detection but still try the safe path
+                # once more — only break out after 2 consecutive detections.
+                new_task = dict(existing_task)
+                new_task["oscillation_count"] = oscillation_count + 1
+                new_task["kind"] = reason
+                memory.unit_tasks[str(unit.id)] = new_task
+                alias = entity_alias(unit.id)
+                if alias:
+                    memory.unit_tasks[alias] = new_task
+            else:
+                # Normal movement — reset oscillation counter.
+                if oscillation_count > 0:
+                    new_task = dict(existing_task)
+                    new_task["oscillation_count"] = 0
+                    memory.unit_tasks[str(unit.id)] = new_task
+                    alias = entity_alias(unit.id)
+                    if alias:
+                        memory.unit_tasks[alias] = new_task
+            return intent
+    # 安全路径不通或振荡检测触发，降级为忽略威胁的普通路径
     intent = _move(
         unit,
         target,
@@ -473,6 +506,15 @@ def _return_to_core(
         avoid_threats=False,
     )
     if intent is not None:
+        # Reset oscillation counter on successful unsafe fallback.
+        if oscillation_count > 0:
+            new_task = dict(existing_task)
+            new_task["oscillation_count"] = 0
+            new_task["kind"] = reason
+            memory.unit_tasks[str(unit.id)] = new_task
+            alias = entity_alias(unit.id)
+            if alias:
+                memory.unit_tasks[alias] = new_task
         return intent
     if distance(unit.position, target) >= config.long_distance_retreat_threshold:
         return _distant_retreat_fallback_intent(

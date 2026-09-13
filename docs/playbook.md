@@ -527,6 +527,21 @@
   3. **单测验证**：在 `tests/test_strategy_regressions.py` 中新增 5 项单元测试（覆盖排除出入口、部分障碍排除、先锋就位防驱离、游侠就位防驱离、多 Tick 仿真防振荡），全量 558 项单测 100% 通过；
   4. **代码提交与服务重载**：按 auto-commit 规范提交代码至 main 分支，重启 Docker 容器加载最新策略生效。
 
+### 2026-09-13 | Tick 268560 残血游侠避险撤退往返振荡与任务记录修复 (UNIT_OSCILLATION)
+- **现象**：巡检时间窗 Tick 268429..268560，系统处于 `ATTACK (进攻攻坚模式)`，核心坐标 `[-822, -574]`，人口 21，资源储量 6/105。巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，残血游侠 `e52fd67a0abb` (HP=1) 在坐标 `[-1064, -645]` 与 `[-1064, -644]` 之间连续 120 Ticks 内往返反转 118 次（周期 2 Ticks，反转率 98.3%）。
+- **根因分析**：
+  1. 游侠 `e52fd67a0abb` 生命值为 1 点，触发 `critical_ranger_retreat (残血游侠回撤核心)`；
+  2. 在 `arena_tactic/strategy/rangers.py` 中，`plan_ranger_intents` 处理 `ranger.hp == 1` 及 `_unit_needs_retreat_heal` 时直接 `continue` 跳出循环，漏掉了 `_record_unit_task`，导致该单位的任务状态与前序位置 `prev_cell` 从未被记忆持久化；
+  3. `_return_to_core` 默认优先使用 `avoid_threats=True` 规划安全避险路径。当游侠向东北方向撤退行至威胁边缘时被判定不可进，转向南侧退避一格；后退脱离威胁边缘后下一 Tick 重新生成回撤路径再次北上，由于缺少 `prev_cell` 与振荡计数感知，陷入两格无限死循环钟摆振荡。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成详细 Markdown 态势战报，成功向 `709934831@qq.com` 投递 HTML 报警邮件；
+  2. **工程根治**：
+     - 在 `arena_tactic/strategy/rangers.py` 中为 `critical_ranger_retreat` 和 `retreat_heal` 补齐 `_record_unit_task`，确保任务元数据与 `prev_cell` 正确写入 `memory.unit_tasks`；
+     - 在 `arena_tactic/strategy/common.py` 的 `_return_to_core` 中加入防往返振荡感知机制：检测到单位连续向 `prev_cell` 往复移动（`oscillation_count >= 2`）时，直接跳过陷入局部极小的 safe 路径，主动降级为 `unsafe_fallback` 强行突破威胁边界破局；
+  3. **单测验证**：新增 `tests/test_critical_retreat_oscillation.py`（7 项专项回归单测），全量单测全部通过；
+  4. **代码提交与热重载**：代码提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
+
 
 
 

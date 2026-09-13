@@ -173,7 +173,10 @@ def _plan_rangers(
                         ranger, context, memory, reservations,
                         "critical_retreat_sidestep",
                     )
-                intents.append(intent or _wait(ranger, "critical_retreat_blocked"))
+                chosen_intent = intent or _wait(ranger, "critical_retreat_blocked")
+                intents.append(chosen_intent)
+                core_pos = context.core.position if context.core else ranger.position
+                _record_unit_task(memory, context, ranger, kind="critical_ranger_retreat", target=core_pos, intent=chosen_intent)
             continue
         if _unit_needs_retreat_heal(ranger, memory, config) and not urgent:
             if _at_normal_core(ranger, context):
@@ -197,7 +200,10 @@ def _plan_rangers(
                         ranger, context, memory, reservations,
                         "retreat_heal_sidestep",
                     )
-                intents.append(intent or _wait(ranger, "unit_retreat_to_core_heal_blocked"))
+                chosen_intent = intent or _wait(ranger, "unit_retreat_to_core_heal_blocked")
+                intents.append(chosen_intent)
+                core_pos = context.core.position if context.core else ranger.position
+                _record_unit_task(memory, context, ranger, kind="retreat_heal", target=core_pos, intent=chosen_intent)
             continue
         if target is not None:
             targeted_damage[target.id] = targeted_damage.get(target.id, 0) + 1
