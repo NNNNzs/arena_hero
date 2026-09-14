@@ -8,6 +8,7 @@ from arena_hero import CoreView, UnitType, UnitView
 
 from ..context import DecisionContext
 from ..memory import AgentMemory
+from ..memory import _resolve_unit_task
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import distance, shot_range
 from ..squads import SquadPlan, SquadType
@@ -374,7 +375,8 @@ def _plan_rangers(
             # This prevents the 2-tick back-and-forth oscillation where the
             # ranger alternates between seeking a firing line (toward the enemy)
             # and hunter recon patrol (toward the core).
-            _engage_task = memory.unit_tasks.get(str(ranger.id), {})
+            _engage_key, _engage_task_raw = _resolve_unit_task(memory.unit_tasks, str(ranger.id))
+            _engage_task = _engage_task_raw or {}
             _engage_since = _engage_task.get("engage_since")
             _recently_engaged = (
                 _engage_task.get("kind") == "engage_firing_line"
@@ -405,7 +407,8 @@ def _plan_rangers(
                     )
                     intents.append(intent or _wait(ranger, "engage_grace_firing_blocked"))
                 else:
-                    _engage_target = tuple(_engage_task["target"]) if isinstance(_engage_task.get("target"), list) and len(_engage_task["target"]) == 2 else ranger.position
+                    _raw_target = _engage_task.get("target")
+                    _engage_target = tuple(_raw_target) if isinstance(_raw_target, list) and len(_raw_target) == 2 else ranger.position
                     intent = _move(
                         ranger, _engage_target, "engage_grace_pursue", 580,
                         context=context, memory=memory, reservations=reservations,

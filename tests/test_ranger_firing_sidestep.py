@@ -315,3 +315,38 @@ class TestRangerFiringSidestepIntegration:
         assert "engage_grace" in intent.reason
         assert intent.reason != "hunter_forward_recon"
 
+    def test_scout_ranger_engage_grace_with_alias_task_key(self):
+        """Task stored under entity_ alias must still resolve engage grace."""
+        from arena_tactic.identity import entity_alias
+        from arena_tactic.memory import _safe_task
+
+        # Verify _safe_task keeps engage_since and prev_cell
+        cleaned = _safe_task({"kind": "engage_firing_line", "engage_since": 10, "prev_cell": [24, 20]})
+        assert cleaned.get("engage_since") == 10
+        assert cleaned.get("prev_cell") == [24, 20]
+
+        rangers = [unit(i, UnitType.RANGER, (20 + i, 20)) for i in range(1, 5)]
+        target_ranger = rangers[-1]
+        _core = core(position=(0, 0))
+        memory = AgentMemory()
+        # Pre-seed memory under alias key only
+        alias = entity_alias(target_ranger.id)
+        assert alias is not None
+        memory.unit_tasks[alias] = {
+            "kind": "engage_firing_line",
+            "target": [25, 20],
+            "engage_since": 10,
+        }
+
+        t = turn(
+            tick=12,
+            owned_core=_core,
+            units=tuple(rangers),
+            enemies=(),
+        )
+        result = choose_actions(t, memory=memory)
+        intent = next(item for item in result.intents if item.actor_id == target_ranger.id)
+        assert "engage_grace" in intent.reason
+        assert intent.reason != "hunter_forward_recon"
+
+

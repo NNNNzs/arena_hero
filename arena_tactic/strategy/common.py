@@ -11,6 +11,7 @@ from arena_hero import CoreState, CoreView, Direction, UnitType, UnitView
 from ..context import DecisionContext
 from ..identity import entity_alias
 from ..memory import AgentMemory
+from ..memory import _resolve_unit_task
 from ..models import ActionIntent, ActionKind, AgentConfig, Position, ReservationTable
 from ..navigation import DIRECTIONS, bounded_path_cost, destination, distance, enemy_threat_cells, plan_step, shot_range
 from .combat import _enemy_can_attack_core
@@ -89,7 +90,8 @@ def _record_unit_task(
     target: Position,
     intent: ActionIntent | None,
 ) -> None:
-    existing = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing_task = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing = _existing_task or {}
     task = dict(existing) if existing.get("kind") == kind else {
         key: existing[key]
         for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since")

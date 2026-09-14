@@ -5,6 +5,22 @@
 
 ## 处置案例
 
+### 2026-09-14 Tick 274398~274400 | UNIT_OSCILLATION (游侠交战任务 Alias 键解析与序列化字段遗漏) 策略修复
+- **现象**：在 120 Tick 深度态势巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `ad28d81ea5d8` 在 `[-1238, -691]` 与 `[-1239, -691]` 之间 2 格高频往返，120 Ticks 内反转转向 118 次（换向率 >98%）；游侠 `e52fd67a0abb` 在 `[-1213, -635]` 与 `[-1213, -636]`、`[-1212, -635]` 之间往返转向 78 次。两名游侠交替执行 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)` 与 `hunter_forward_recon (猎手前沿侦察)`。
+- **根因分析**：
+  1. `arena_tactic/strategy/rangers.py` 中 `_plan_rangers` 原先通过 `memory.unit_tasks.get(str(ranger.id), {})` 查询前序任务，当任务字典以 `entity_alias`（如 `entity_ad28d81ea5d8`）为主键时查询失败，导致 `_engage_since` 为 `None`，无法触发 `SCOUT_ENGAGE_HYSTERESIS` 交战宽限机制。
+  2. `arena_tactic/memory.py` 中 `_safe_task` 的白名单未收录 `"engage_since"` 与 `"prev_cell"`（且未将 `prev_cell` 加入坐标 tuple 白名单），导致跨 tick 状态清洗与序列化时时间戳被剔除。
+  3. 游侠偶数回合侦测到前沿敌军向前机动后脱离即时射击窗口，因交战宽限判定失效直接掉落至 `hunter_forward_recon` 向核心折返，下一回合再次发现敌军又前压，形成 2 格死循环往返振荡。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件。
+  2. 在 `arena_tactic/strategy/rangers.py` 与 `arena_tactic/strategy/common.py` 中使用 `_resolve_unit_task(memory.unit_tasks, str(unit.id))` 获取前序任务字典，全面兼容 alias 别名与 raw UUID 键。
+  3. 在 `arena_tactic/memory.py` 的 `_safe_task` 中将 `"engage_since"` 与 `"prev_cell"` 纳入持久化与清洗白名单。
+  4. 在 `tests/test_ranger_firing_sidestep.py` 中新增 `test_scout_ranger_engage_grace_with_alias_task_key` 回归测试，13 项单测全部通过。
+  5. 重启 Docker 容器加载最新战术策略生效。
+- **效果验证**：
+  - 容器重启后服务健康就绪 (`/livez` 状态 ok)。
+  - 单测验证游侠无论以 alias 还是 raw UUID 存储均能正确继承交战宽限期，彻底消除 2 格振荡。
+
 ### 2026-09-14 Tick 272378~272384 | UNIT_OSCILLATION (游侠交战射击线与巡逻任务切换迟滞缺失) 策略修复
 - **现象**：在 120 Tick 深度态势巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `e52fd67a0abb` 在 `[-1126, -596]` 与 `[-1126, -595]`、游侠 `ad28d81ea5d8` 在 `[-1130, -585]` 与 `[-1130, -584]` 间高频周期性往返振荡 118 次（120 Ticks 内换向率 >98%），交替执行 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)` 与 `hunter_forward_recon (猎手前沿侦察)`。
 - **根因分析**：
