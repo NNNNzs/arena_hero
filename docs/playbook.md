@@ -5,6 +5,22 @@
 
 ## 处置案例
 
+### 2026-09-15 Tick 278434~278448 | UNIT_OSCILLATION (远距猎手游侠开火搜寻与前沿回退振荡) Command API 应急疏导脱困
+- **现象**：巡检时间窗 Tick 278315..278434，系统处于 `ATTACK (进攻模式)`，核心坐标 `[-822, -574]`，人口 30，核心资源 35/150。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `ad28d81ea5d8` 处于猎手编制（`LEGACY_HUNTER` / `LEGACY_ENGAGE_FIRING_LINE`），在 `[-1261, -927]`、`[-1260, -927]`、`[-1261, -926]` 之间 2~4 格往返 89 次（120 Ticks 内反转率约 74%），交替执行 `hunter_forward_recon_distant_fallback (远距猎手前沿后退)` 与 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)`。
+- **根因分析**：
+  1. 游侠 `ad28d81ea5d8` 深入前线（距核心曼哈顿距离约 790 格），因处于 `hunter` 编制而非 `scout_rangers`，未能享受此前引入的 `SCOUT_ENGAGE_HYSTERESIS` 交战宽限期。
+  2. 当在远端偶发探测到边缘开火机会时切入 `ranger_seek_legal_firing_line` 前压，脱离射程后又立即触发 `_distant_retreat_fallback`（`hunter_forward_recon_distant_fallback`）后退，形成往返微幅振荡。
+- **处置动作**：
+  1. 当前处于夜间勿扰时段（23:00~08:00），战局核心满血（HP 5/5, Shield 5/5）、零受击、采矿入库平稳，免发打扰邮件。
+  2. 使用 Command API 登录获取操作 session 与 CSRF Token，下发优先级 900 的临时脱困任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_ad28d81ea5d8`
+     - 动作类型：`RETREAT_TO_CORE`
+  3. 指令在 Tick 278445 准时被指挥中心接纳并排队生效，决策轨迹转换为 `manual_task_move`，目标锁定核心 `[-822, -574]`。
+- **效果验证**：
+  - Tick 278448 验证实体位置从 `[-1261, -926]` 移动至 `[-1261, -925]`，打破 3 格封闭循环。
+  - 最新态势切片（Tick 278439..278448）复检显示 `[异常发现：0 项]`，往返振荡警告完全消除。
+
 ### 2026-09-14 Tick 274398~274400 | UNIT_OSCILLATION (游侠交战任务 Alias 键解析与序列化字段遗漏) 策略修复
 - **现象**：在 120 Tick 深度态势巡检中检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `ad28d81ea5d8` 在 `[-1238, -691]` 与 `[-1239, -691]` 之间 2 格高频往返，120 Ticks 内反转转向 118 次（换向率 >98%）；游侠 `e52fd67a0abb` 在 `[-1213, -635]` 与 `[-1213, -636]`、`[-1212, -635]` 之间往返转向 78 次。两名游侠交替执行 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)` 与 `hunter_forward_recon (猎手前沿侦察)`。
 - **根因分析**：
