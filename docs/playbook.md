@@ -588,6 +588,21 @@
   3. **单测验证**：新增 `tests/test_exploration_budget_and_attack_memory.py` 专项回归测试，全量 586 项单测 100% 通过；
   4. **代码提交与服务重载**：代码提交至 main 分支，重启 Docker 容器并验证服务健康就绪。
 
+### 2026-09-14 | Tick 275759 前线侦察游侠视野边缘往返振荡与远距猎手寻路振荡修复 (UNIT_OSCILLATION)
+- **现象**：巡检时间窗 Tick 275629..275748，系统处于 `ATTACK (进攻模式)`，核心坐标 `[-822, -574]`，HP/Shield 5/5 满值，人口 30，核心资源 51/150。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，前线游侠 `ad28d81ea5d8` 在 120 Ticks 内发生 118 次 2 格往返振荡（坐标在 `[-1239, -691]` 与 `[-1238, -691]` 之间每 Tick 翻转调头），游侠 `e52fd67a0abb` 发生 78 次往返振荡。
+- **根因分析**：
+  1. **开火阵位跳变振荡**：在 `_ranger_staging_cell` 中，当游侠向目标移动 1 格后，新位置计算出的 staging cell 候选点因微小的曼哈顿距离变化，导致排序首位候选点在相邻两格之间反复跳变，缺少目标粘滞性（Staging Stickiness）；
+  2. **超远距离巡逻寻路失败回退振荡**：游侠前突至敌方核心前线（距基地 400+ 格），当猎手目标处于数百格外时，A* 跨大范围迷雾寻路超时/失败，旧逻辑直接回退至 `_deploy_sidestep`，导致在相邻两格之间往复横跳。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成 Markdown 全景战报并成功发送 HTML 报警邮件至 `709934831@qq.com`；
+  2. **策略修复**：
+     - 在 `arena_tactic/strategy/rangers.py` 的 `_ranger_staging_cell` 中引入 `prev_staging` 粘滞性评分加成（STAGING_STICKINESS），当上回合开火阵位仍为有效候选且火力优势与最佳候选相当（`prev_adv + 1 >= best_adv`）时优先锁定，平抑单步位移引发的 tiebreaker 翻转；
+     - 引入 `_prev_staging_cell` 从单位任务记录中提取上回合阵位；
+     - 在猎手前沿侦察中引入 `LONG_DISTANCE_HUNTER_FALLBACK`：当目标距离超出长途门槛（`long_distance_retreat_threshold`）时，采用带多层禁忌表（anti-oscillation taboo）的远距贪心推进 fallback，平稳推进行进，根除 `_deploy_sidestep` 导致的 2 格往返横跳；
+  3. **单测验证**：新增 `tests/test_hunter_distant_fallback.py`（8 项专项回归单测），针对远距贪心推进、禁忌表防振荡、多方向避障等场景全面覆盖，全绿通过；
+  4. **代码提交与服务重载**：代码已提交至 main 分支，热重载 Docker 容器加载最新战术策略生效。
+
+
 
 
 

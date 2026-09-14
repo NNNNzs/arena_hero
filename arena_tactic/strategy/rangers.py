@@ -62,6 +62,7 @@ def _ranger_staging_cell(
     target: CoreView | UnitView,
     context: DecisionContext,
     memory: AgentMemory,
+    prev_staging: Position | None = None,
 ) -> Position:
     tx, ty = target.position
     offsets = (
@@ -76,7 +77,11 @@ def _ranger_staging_cell(
         if (tx + dx, ty + dy) not in memory.obstacles
         and (tx + dx, ty + dy) not in context.enemy_occupancy
     ]
-    return min(
+    # STAGING_STICKINESS: apply a small score bonus when the previous staging
+    # cell is still a valid candidate.  This prevents the 2-cell oscillation
+    # where the distance tiebreaker flips the best candidate every tick as the
+    # ranger moves 1 cell (UNIT_OSCILLATION 前线游侠视野边缘往返振荡修复).
+    best = min(
         candidates,
         key=lambda cell: (
             -shadow_fire_advantage(cell, target, memory.obstacles),
@@ -85,6 +90,28 @@ def _ranger_staging_cell(
         ),
         default=target.position,
     )
+    if prev_staging is not None and prev_staging in candidates and prev_staging != best:
+        best_adv = shadow_fire_advantage(best, target, memory.obstacles)
+        prev_adv = shadow_fire_advantage(prev_staging, target, memory.obstacles)
+        # Stickiness bonus: if the previous staging cell's fire advantage is
+        # within 1 point of the best, keep the previous cell.  The +1 bonus
+        # offsets the single-step distance flip without masking a genuinely
+        # superior position.
+        if prev_adv + 1 >= best_adv:
+            return prev_staging
+    return best
+
+
+def _prev_staging_cell(
+    memory: AgentMemory,
+    ranger_id_str: str,
+) -> Position | None:
+    """Read the previous staging cell from the unit's task 'step' field."""
+    _key, _task = _resolve_unit_task(memory.unit_tasks, ranger_id_str)
+    raw = (_task or {}).get("step")
+    if isinstance(raw, list) and len(raw) == 2:
+        return (raw[0], raw[1])
+    return None
 
 
 def _plan_rangers(
@@ -231,7 +258,8 @@ def _plan_rangers(
             continue
 
         if ranger.id in intercept_rangers and intercept_enemy is not None:
-            staging = _ranger_staging_cell(ranger, intercept_enemy, context, memory)
+            _ps = _prev_staging_cell(memory, str(ranger.id))
+            staging = _ranger_staging_cell(ranger, intercept_enemy, context, memory, prev_staging=_ps)
             intent = _move(
                 ranger, staging, "intercept_ranger_firing_line", 620,
                 context=context, memory=memory, reservations=reservations,
@@ -282,7 +310,8 @@ def _plan_rangers(
             )
 
             if expedition_engage or local_base_reposition or near_core_defender or mobile_engage:
-                staging = _ranger_staging_cell(ranger, target_enemy, context, memory)
+                _ps = _prev_staging_cell(memory, str(ranger.id))
+                staging = _ranger_staging_cell(ranger, target_enemy, context, memory, prev_staging=_ps)
                 intent = _move(
                     ranger, staging, "ranger_seek_legal_firing_line", 580,
                     context=context, memory=memory, reservations=reservations,
@@ -388,7 +417,9 @@ def _plan_rangers(
                 # with extended tactical range; otherwise wait in place.
                 _grace_enemy = _best_visible_enemy(ranger, context, memory)
                 if _grace_enemy is not None and context.core is not None:
-                    _staging = _ranger_staging_cell(ranger, _grace_enemy, context, memory)
+                    _ps_raw = _engage_task.get("step")
+                    _ps = tuple(_ps_raw) if isinstance(_ps_raw, list) and len(_ps_raw) == 2 else None
+                    _staging = _ranger_staging_cell(ranger, _grace_enemy, context, memory, prev_staging=_ps)
                     intent = _move(
                         ranger, _staging, "ranger_seek_legal_firing_line", 580,
                         context=context, memory=memory, reservations=reservations,
@@ -428,16 +459,28 @@ def _plan_rangers(
                 memory, config, role="hunter",
             ) if context.core is not None and ranger in hunter_roster else None
             if hunter_target is not None:
-                intent = _move(
-                    ranger, hunter_target, "hunter_forward_recon", 420,
-                    context=context, memory=memory, reservations=reservations,
-                    deadline=deadline, config=config,
-                )
-                if intent is None and context.core is not None:
-                    intent = _deploy_sidestep(
-                        ranger, hunter_target, context, memory,
-                        reservations, "hunter_forward_recon", context.core.position,
+                # LONG_DISTANCE_HUNTER_FALLBACK: when the hunter target is
+                # beyond the long-distance threshold, A* pathfinding across
+                # hundreds of fogged cells fails and the fallback to
+                # _deploy_sidestep causes 2-cell local oscillation.  Use the
+                # lightweight greedy fallback (with multi-tier anti-oscillation
+                # taboo) to make steady incremental progress instead.
+                if distance(ranger.position, hunter_target) > config.long_distance_retreat_threshold:
+                    intent = _distant_retreat_fallback_intent(
+                        ranger, hunter_target, context, memory, reservations,
+                        "hunter_forward_recon",
                     )
+                else:
+                    intent = _move(
+                        ranger, hunter_target, "hunter_forward_recon", 420,
+                        context=context, memory=memory, reservations=reservations,
+                        deadline=deadline, config=config,
+                    )
+                    if intent is None and context.core is not None:
+                        intent = _deploy_sidestep(
+                            ranger, hunter_target, context, memory,
+                            reservations, "hunter_forward_recon", context.core.position,
+                        )
                 _record_unit_task(memory, context, ranger, kind="hunter", target=hunter_target, intent=intent)
                 intents.append(intent or _wait(ranger, "hunter_route_blocked"))
                 continue
