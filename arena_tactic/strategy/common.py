@@ -119,7 +119,12 @@ def _record_unit_task(
         task["attempt_tick"] = context.tick
     else:
         task.pop("step", None)
-        task.pop("attempt_tick", None)
+        # Preserve attempt_tick so _stuck_sidestep can activate after
+        # _STUCK_THRESHOLD consecutive blocked ticks.  When a move fails
+        # (intent is None), keep the earliest blocked tick; if this is the
+        # first failure, initialise to the current tick.
+        if "attempt_tick" not in task:
+            task["attempt_tick"] = context.tick
     memory.unit_tasks[str(unit.id)] = task
     alias = entity_alias(unit.id)
     if alias:

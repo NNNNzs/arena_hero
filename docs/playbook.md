@@ -5,6 +5,19 @@
 
 ## 处置案例
 
+### 2026-09-15 Tick 280007~280025 | INEFFECTIVE_STATIONARY (工兵探索受阻卡死) _stuck_sidestep 时间戳未初始化修复
+- **现象**：巡检在 Tick 280007~280025 检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。工兵 `entity_85b226a3681f` (WORKER, 载货 0) 坐标 `[-761, -489]`，目标 `[-758, -485]`，连续 120 Ticks 原地 WAIT，阻塞原因 `exploration_route_blocked`。
+- **根因分析**：
+  1. `arena_tactic/strategy/common.py` 中 `_record_unit_task`：当单位初次向新探索目标寻路被地形或障碍物完全阻挡时，`_move` 返回 `None`，`intent` 为 `None`，导致 `task["attempt_tick"]` 被 `task.pop("attempt_tick", None)` 删除。
+  2. `arena_tactic/strategy/workers.py` 中 `_stuck_sidestep`：`attempt_tick = task.get("attempt_tick")` 为 `None` 时直接返回 `None`，形成本质死锁——`attempt_tick` 永远无法初始化，`_stuck_sidestep` 永远无法触发，工兵永久卡死。
+- **处置动作**：
+  1. 当前战局即时应急：主会话已使用 Command API 下发 `ASSIGN_TASK` (`RETREAT_TO_CORE`, priority 800) 完成即时脱困并验证成功移动。
+  2. 工程根治：修改 `arena_tactic/strategy/common.py` 中 `_record_unit_task` 的 `else` 分支——将 `task.pop("attempt_tick", None)` 改为保留已有 `attempt_tick` 或在首次失败时初始化为 `context.tick`，确保连续受阻超过 `_STUCK_THRESHOLD` (3 Ticks) 后 `_stuck_sidestep` 可正常触发侧滑脱困。
+  3. 新增 `tests/test_stuck_sidestep_unblock.py`（6 项单元测试），覆盖：首次卡顿 `attempt_tick` 初始化、连续失败保持最早 tick、成功移动重置 tick、超阈值触发侧滑、未达阈值不触发、集成测试端到端验证。
+- **效果验证**：
+  - 全量 602 项单元测试 100% 通过（`pytest tests/ -q`），无回归。
+  - 重启 Docker 容器加载修复策略生效。
+
 ### 2026-09-15 Tick 278434~278448 | UNIT_OSCILLATION (远距猎手游侠开火搜寻与前沿回退振荡) Command API 应急疏导脱困
 - **现象**：巡检时间窗 Tick 278315..278434，系统处于 `ATTACK (进攻模式)`，核心坐标 `[-822, -574]`，人口 30，核心资源 35/150。检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。游侠 `ad28d81ea5d8` 处于猎手编制（`LEGACY_HUNTER` / `LEGACY_ENGAGE_FIRING_LINE`），在 `[-1261, -927]`、`[-1260, -927]`、`[-1261, -926]` 之间 2~4 格往返 89 次（120 Ticks 内反转率约 74%），交替执行 `hunter_forward_recon_distant_fallback (远距猎手前沿后退)` 与 `ranger_seek_legal_firing_line (游侠搜寻合法射击线)`。
 - **根因分析**：
