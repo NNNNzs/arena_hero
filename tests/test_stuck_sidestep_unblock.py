@@ -6,6 +6,7 @@ _record_unit_task 应保留 attempt_tick 而非删除，
 使得连续受阻超过 _STUCK_THRESHOLD 后能触发侧滑脱困。
 """
 from arena_tactic.context import DecisionContext
+from arena_tactic.identity import entity_alias
 from arena_tactic.memory import AgentMemory
 from arena_tactic.models import ActionKind, ReservationTable
 from arena_tactic.strategy.common import _record_unit_task
@@ -193,3 +194,73 @@ def test_exploration_route_blocked_triggers_sidestep_integration():
     assert final_intent.reason in ("explore_sector_frontier", "exploration_route_unblock"), (
         f"Unexpected reason: {final_intent.reason}"
     )
+
+
+def test_stuck_sidestep_triggers_with_entity_alias_key():
+    """当 unit_tasks 仅以 entity_ 别名存储时，_stuck_sidestep 仍应正确读取 attempt_tick 并触发侧滑。
+
+    回归测试：_stuck_sidestep 原先使用 memory.unit_tasks.get(str(worker.id), {}),
+    当持久化后的 unit_tasks key 为 entity_<hex> 格式（如 entity_85b226a3681f）时，
+    直接用 str(worker.id) 查询返回空字典，attempt_tick 永远为 None，
+    导致 _stuck_sidestep 永远无法触发，工兵永久卡死。
+    """
+    c = core(position=(0, 0))
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    t = turn(
+        owned_core=c, units=(w,),
+        obstacle_cells=((0, -1), (1, 0), (0, 1), (-2, 0)),
+    )
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+
+    alias = entity_alias(w.id)
+    assert alias is not None, "Worker should have an entity alias"
+
+    # 存储任务时仅使用 entity_ 别名键（模拟从持久化 JSON 加载后的状态）
+    memory.unit_tasks[alias] = {
+        "kind": "explore",
+        "target": [10, 10],
+        "attempt_tick": context.tick - (_STUCK_THRESHOLD + 1),
+        "prev_cell": [-1, -1],
+    }
+    # 确认 str(worker.id) 键不存在（纯别名场景）
+    assert str(w.id) not in memory.unit_tasks
+
+    reservations = ReservationTable(
+        {cell: len(ids) for cell, ids in context.friendly_occupancy.items()}
+    )
+    intent = _stuck_sidestep(
+        w, (10, 10), context, memory, reservations, "exploration_route_unblock",
+    )
+    # 核心格 (0, 0) 是唯一可用的相邻格，应触发侧滑
+    assert intent is not None, (
+        "Stuck sidestep should trigger when task is stored under entity_ alias key"
+    )
+    assert intent.action is ActionKind.MOVE
+    assert intent.reserved_cell != (-1, 0), "Must actually move, not stay in place"
+
+
+def test_stuck_sidestep_respects_threshold_with_entity_alias_key():
+    """entity_ 别名键存储场景下，未达阈值前仍不应触发。"""
+    c = core(position=(0, 0))
+    w = unit(1, UnitType.WORKER, (-1, 0), cargo=0)
+    t = turn(owned_core=c, units=(w,), obstacle_cells=((0, -1), (1, 0), (0, 1)))
+    context = DecisionContext.from_turn(t)
+    memory = AgentMemory()
+
+    alias = entity_alias(w.id)
+    # 卡了 1 tick（未达到阈值 3），仅以 entity_ 别名存储
+    memory.unit_tasks[alias] = {
+        "kind": "explore",
+        "target": [10, 10],
+        "attempt_tick": context.tick - 1,
+    }
+    assert str(w.id) not in memory.unit_tasks
+
+    reservations = ReservationTable(
+        {cell: len(ids) for cell, ids in context.friendly_occupancy.items()}
+    )
+    intent = _stuck_sidestep(
+        w, (10, 10), context, memory, reservations, "exploration_route_unblock",
+    )
+    assert intent is None, "Should not activate before threshold with alias key"

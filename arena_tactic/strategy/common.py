@@ -302,7 +302,8 @@ def _distant_retreat_fallback_intent(
     threats = enemy_threat_cells(context)
 
     # Load recent-cell history for multi-tier anti-oscillation.
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     recent_raw = existing_task.get("recent_cells")
     recent_cells: list[Position] = []
     if isinstance(recent_raw, list):
@@ -461,7 +462,8 @@ def _return_to_core(
     # neighbour that was just visited), the safe path with avoid_threats=True
     # creates a local-minimum loop at threat boundaries.  Detect the 2-cell
     # cycle and skip directly to the unsafe fallback path.
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
     oscillation_count = existing_task.get("oscillation_count", 0)
@@ -554,7 +556,8 @@ def _return_to_core_sidestep(
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
     )
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 
@@ -630,7 +633,8 @@ def _critical_retreat_sidestep(
         | set(context.enemy_occupancy)
         | enemy_threat_cells(context)
     )
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 
@@ -694,7 +698,8 @@ def _deploy_sidestep(
     current_dist_to_target = distance(unit.position, target)
     current_dist_to_core = distance(unit.position, core_position) if core_position is not None else 0
 
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 
@@ -773,7 +778,8 @@ def _firing_line_sidestep(
         | set(context.enemy_occupancy)
     )
     enemy_pos = enemy.position
-    existing_task = memory.unit_tasks.get(str(ranger.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(ranger.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = (
         tuple(prev_cell_raw)
@@ -1145,7 +1151,8 @@ def _force_doorstep_yield(
     core), avoiding dead-end pockets, and penalising the previous cell to
     prevent oscillation.
     """
-    existing_task = memory.unit_tasks.get(str(worker.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(worker.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 
@@ -1287,7 +1294,8 @@ def _evacuate_doorstep_intent(
 
     # Anti-oscillation: read previous cell from memory to penalise returning
     # to it, preventing 2-cell ping-pong on the core doorstep.
-    existing_task = memory.unit_tasks.get(str(unit.id), {})
+    _existing_key, _existing = _resolve_unit_task(memory.unit_tasks, str(unit.id))
+    existing_task = _existing or {}
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
 

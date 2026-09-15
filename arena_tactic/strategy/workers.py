@@ -33,6 +33,7 @@ from .common import (
 )
 from .combat import _enemy_can_attack_core
 from .mode import _core_emergency_defense
+from ..memory import _resolve_unit_task
 
 
 _STUCK_THRESHOLD = 3  # consecutive blocked ticks before sidestep activates
@@ -53,7 +54,8 @@ def _stuck_sidestep(
     outward movement and avoiding the previous cell — to free up the current
     position for other units in a congested corridor.
     """
-    task = memory.unit_tasks.get(str(worker.id), {})
+    _key, _task = _resolve_unit_task(memory.unit_tasks, str(worker.id))
+    task = _task or {}
     prev_cell_raw = task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
     # Only activate after the worker has been stuck for a few ticks.
@@ -230,7 +232,8 @@ def _locked_resource_targets(
     locked: dict[str, Position] = {}
     claimed: set[Position] = set()
     for worker in sorted(workers, key=lambda unit: str(unit.id)):
-        task = memory.unit_tasks.get(str(worker.id), {})
+        _key, _task = _resolve_unit_task(memory.unit_tasks, str(worker.id))
+        task = _task or {}
         raw_target = task.get("target")
         if (
             task.get("kind") != "resource"
@@ -269,7 +272,8 @@ def _locked_recon_targets(
     locked: dict[str, Position] = {}
     claimed: set[Position] = set()
     for worker in sorted(workers, key=lambda unit: str(unit.id)):
-        task = memory.unit_tasks.get(str(worker.id), {})
+        _key, _task = _resolve_unit_task(memory.unit_tasks, str(worker.id))
+        task = _task or {}
         raw_target = task.get("target")
         if (
             task.get("kind") != "recon"
@@ -363,7 +367,8 @@ def _frontier_assignments(
 
     for index, unit in enumerate(units):
         unit_id = str(unit.id)
-        previous = memory.unit_tasks.get(unit_id, {})
+        _prev_key, _prev_task = _resolve_unit_task(memory.unit_tasks, unit_id)
+        previous = _prev_task or {}
         if previous.get("kind") == task_kind and "sector" in previous:
             sector = int(previous["sector"]) % len(_EXPLORATION_SECTORS)
             sector_since = int(previous.get("sector_since", context.tick))
@@ -515,7 +520,7 @@ def _plan_workers(
             if (
                 worker.cargo
                 and core.state is CoreState.MOVING
-                and memory.unit_tasks.get(str(worker.id), {}).get("kind") == "await_core_stationary"
+                and (_resolve_unit_task(memory.unit_tasks, str(worker.id))[1] or {}).get("kind") == "await_core_stationary"
             ):
                 intents.append(_wait(worker, "deposit_waits_for_core_migration"))
                 continue
@@ -815,7 +820,7 @@ def _plan_workers(
         if (
             cargo
             and core.state is CoreState.MOVING
-            and memory.unit_tasks.get(str(worker.id), {}).get("kind") == "await_core_stationary"
+            and (_resolve_unit_task(memory.unit_tasks, str(worker.id))[1] or {}).get("kind") == "await_core_stationary"
         ):
             intents.append(_wait(worker, "deposit_waits_for_core_migration"))
             continue

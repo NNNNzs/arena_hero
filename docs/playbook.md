@@ -5,6 +5,38 @@
 
 ## 处置案例
 
+### 2026-09-16 Tick 283819~283825 | INEFFECTIVE_STATIONARY (工兵探索受阻卡死) _stuck_sidestep entity_ 别名键兼容修复
+- **现象**：巡检在 Tick 283700..283819 检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。工兵 `entity_85b226a3681f` (WORKER, 载货 0) 坐标 `[-779, -587]`，目标 `[-767, -605]`，连续 120 Ticks 原地 WAIT，阻塞原因 `exploration_route_blocked`。
+- **根因分析**：
+  1. `arena_tactic/strategy/workers.py` 中 `_stuck_sidestep` 获取单位任务字典时，直接调用 `memory.unit_tasks.get(str(worker.id), {})`。
+  2. 持久化与内存中的键往往以别名格式 `entity_<hex>`（如 `entity_85b226a3681f`）记录，导致直接 `get(str(worker.id))` 查不到任务字典，返回 `{}`。
+  3. 从而 `attempt_tick` 始终为 `None`，无法累积达到 `_STUCK_THRESHOLD`（3 回合），脱困侧滑 `_stuck_sidestep` 永远无法触发，工兵卡在不可达地形前持续原地等待。
+  4. 同类隐患存在于 `common.py` 和 `workers.py` 中多处未通过 `_resolve_unit_task` 统一查键的代码位置。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报停滞态势。
+  2. 统一重构 `arena_tactic/strategy/workers.py` 和 `arena_tactic/strategy/common.py` 中所有直接访问 `memory.unit_tasks.get(...)` 的逻辑，全量改用 `_resolve_unit_task` 统一解析 raw ID 与 entity 别名。
+  3. 在 `tests/test_stuck_sidestep_unblock.py` 中新增 `test_stuck_sidestep_triggers_with_entity_alias_key` 和 `test_stuck_sidestep_respects_threshold_with_entity_alias_key` 单元测试，全面验证在仅有 `entity_` 别名键时依然能正确读取 `attempt_tick` 并触发侧滑。
+- **效果验证**：
+  - 针对性单测与全量策略回归测试 100% 通过（91/91 passed）。
+  - 重载或重启容器即可实时生效，彻底杜绝因键名别名差异导致的单位卡死无法脱困。
+
+
+### 2026-09-16 Tick 283370~283389 | CARGO_DELIVERY_STAGNATION / UNIT_OSCILLATION (载货工人狭缝死胡同回矿往返振荡) Command API 应急疏导脱困
+- **现象**：巡检在 Tick 283251..283370 检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)`、`[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。载货工人 `entity_e867f166ac32` (WORKER, 载货 1) 坐标 `[-749, -619]` 与 `[-748, -619]` 间往返横跳 58 次（60 Ticks 内净位移仅 1 格，距核心 118 格），执行 `return_cargo_to_core` 但无法推进。
+- **根因分析**：
+  1. 工人当前位置正北方向 `[-749, -618]` 与东北向存在永久障碍物（`obstacles`），直接阻断了向核心 `[-822, -574]` 的偏北直线投影路径。
+  2. 工人回矿策略在狭窄障碍区向核心测距寻路时，在向西与向东微调之间发生连续策略评价摆动，形成 2 格封闭循环。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报停滞与振荡态势。
+  2. 使用 Command API 进行安全认证与 CSRF 校验，下发优先级 900 的脱困导航任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_e867f166ac32`
+     - 动作类型：`MOVE_TO_CELL`
+     - 航路目标：`[-750, -623]`（引导其向南绕开北部障碍区开阔地带）
+  3. 指令于 Tick 283388 排队接纳生效 (`cmd_00000001_5152f8df`)，覆盖原往返振荡循环。
+- **效果验证**：
+  - Tick 283389 确认单位成功脱困，坐标由 `[-749, -619]` 成功转向机动至 `[-750, -619]`，下一步计划为 `[-750, -620]` 向南绕行，往返振荡彻底打破，回矿路径恢复通畅。
+
 ### 2026-09-15 Tick 280007~280025 | INEFFECTIVE_STATIONARY (工兵探索受阻卡死) _stuck_sidestep 时间戳未初始化修复
 - **现象**：巡检在 Tick 280007~280025 检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。工兵 `entity_85b226a3681f` (WORKER, 载货 0) 坐标 `[-761, -489]`，目标 `[-758, -485]`，连续 120 Ticks 原地 WAIT，阻塞原因 `exploration_route_blocked`。
 - **根因分析**：
