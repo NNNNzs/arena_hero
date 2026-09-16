@@ -5,6 +5,23 @@
 
 ## 处置案例
 
+### 2026-09-16 Tick 284275~284285 | INEFFECTIVE_STATIONARY (工兵探索遇敌狭窄通道卡死) Command API 应急回撤脱困
+- **现象**：巡检在 Tick 284216..284275 检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。工兵 `entity_85b226a3681f` (WORKER, 载货 0) 坐标 `[-750, -611]`，目标 `[-744, -610]`，连续 30+ Ticks 原地 WAIT，阻塞原因 `exploration_route_blocked`，状态为 `stuck`。
+- **根因分析**：
+  1. 工兵向探索目标推进途中，遭遇在 `[-748, -610]` 活动的敌方单位（相距仅 3 格）。
+  2. 避障与威胁判定逻辑将周围可能移动的路径格全部标记为威胁区，加之地形狭窄，工兵无法向前推进也未能主动撤退，导致原地死锁。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报停滞与战况态势。
+  2. 使用 Command API 进行安全认证与 CSRF 校验，下发优先级 900 的回撤任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_85b226a3681f`
+     - 动作类型：`RETREAT_TO_CORE` (撤退回核心)
+     - 优先级：900，TTL: 30 Ticks
+  3. 指令于 Tick 284284 排队接纳生效 (`cmd_00000001_8d17bd37`)，接管该工兵任务队列。
+- **效果验证**：
+  - Tick 284285 验证通过：工兵状态已从 `stuck` 脱困转为 `idle`，战术巡检告警全部清除（`findings: []`），同时基地守军转入 `ATTACK` 模式前压清理敌军威胁。
+
+
 ### 2026-09-16 Tick 283819~283825 | INEFFECTIVE_STATIONARY (工兵探索受阻卡死) _stuck_sidestep entity_ 别名键兼容修复
 - **现象**：巡检在 Tick 283700..283819 检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`。工兵 `entity_85b226a3681f` (WORKER, 载货 0) 坐标 `[-779, -587]`，目标 `[-767, -605]`，连续 120 Ticks 原地 WAIT，阻塞原因 `exploration_route_blocked`。
 - **根因分析**：
