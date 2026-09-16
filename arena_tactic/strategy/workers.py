@@ -350,13 +350,18 @@ def _frontier_assignments(
                 continue
             assigned.add(target)
             result[str(unit.id)] = target
-            memory.unit_tasks[str(unit.id)] = {
+            uid = str(unit.id)
+            _prev_key, _prev_task = _resolve_unit_task(memory.unit_tasks, uid)
+            previous = _prev_task or {}
+            task = dict(previous)
+            task.update({
                 "kind": task_kind,
                 "target": list(target),
                 "sector": sector,
                 "sector_since": context.tick,
-                "failures": 0,
-            }
+                "failures": int(previous.get("failures", 0)),
+            })
+            memory.unit_tasks[uid] = task
         return result
 
     # 空间网格索引：加速大规模迷雾地图下的候选点筛选（64x64 空间分桶）
@@ -489,13 +494,15 @@ def _frontier_assignments(
 
         assigned.add(target)
         result[unit_id] = target
-        memory.unit_tasks[unit_id] = {
+        task = dict(previous)
+        task.update({
             "kind": task_kind,
             "target": list(target),
             "sector": sector,
             "sector_since": sector_since,
             "failures": int(previous.get("failures", 0)),
-        }
+        })
+        memory.unit_tasks[unit_id] = task
     return result
 
 

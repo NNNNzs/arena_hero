@@ -680,6 +680,21 @@
   3. **单测验证**：新增 `tests/test_hunter_distant_fallback.py`（8 项专项回归单测），针对远距贪心推进、禁忌表防振荡、多方向避障等场景全面覆盖，全绿通过；
   4. **代码提交与服务重载**：代码已提交至 main 分支，热重载 Docker 容器加载最新战术策略生效。
 
+### 2026-09-16 | Tick 284718 工兵探索前沿任务覆盖导致 attempt_tick 丢失与防死锁失效修复 (INEFFECTIVE_STATIONARY)
+- **现象**：巡检时间窗 Tick 284598..284717，系统核心处于 `NORMAL`，HP/Shield 5/5 满值，坐标 `[-822, -574]`，人口 33，核心资源 42/165。检出 `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`，工兵 `85b226a3681f` 在坐标 `[-750, -611]` 连续 120 Ticks 保持 `WAIT`（理由 `exploration_route_blocked`），移动失败 0 次，陷入完全静止死锁；伴随 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。
+- **根因分析**：
+  1. 在 `arena_tactic/strategy/workers.py` 的 `_frontier_assignments` 中，构造分配结果时直接用新字典覆写 `memory.unit_tasks[unit_id]`，抹去了前序任务字典 `previous` 中的 `attempt_tick`、`prev_cell`、`failures` 等历史追踪字段；
+  2. 当工兵探索移动受阻（`intent is None`）进入 `_record_unit_task` 时，因 `task` 中缺失 `attempt_tick`，每回合都被重新初始化为当前 `context.tick`；
+  3. 导致 `_stuck_sidestep` 防死锁脱困机制中的门限检查 `context.tick - attempt_tick < _STUCK_THRESHOLD` 恒为真提前退出，原本应在连续 3 Ticks 卡顿时触发的侧滑脱困逻辑永久失效，工兵在障碍物边缘无限静止死锁。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成详细 Markdown 报警战报，成功向 `709934831@qq.com` 发送 HTML 告警邮件；
+  2. **即时应急干预**：通过 Command API 下发 `ASSIGN_TASK` 指令（`MOVE_TO_CELL` 疏导至相邻空闲格 `[-751, -610]`），Command Version: 2 成功被采纳为 `APPLIED`，工兵从 `[-750, -611]` 成功位移至 `[-751, -611]`，死锁即刻解除；
+  3. **策略根治**：
+     - 在 `arena_tactic/strategy/workers.py` 中的两处 `_frontier_assignments` 中改用 `task = dict(previous); task.update(...)`，完整保留 `attempt_tick`、`prev_cell` 等历史任务上下文；
+  4. **单测验证**：新增 `tests/test_frontier_attempt_tick_preservation.py`（5 项针对 `attempt_tick` 继承、失败计数延续、死锁侧滑激活及未达阈值不误触发的回归测试），测试 100% 通过；
+  5. **代码提交与服务重载**：按规范提交代码至 main 分支，重启 Docker 容器加载最新策略生效。
+
+
 
 
 
