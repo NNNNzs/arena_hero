@@ -113,9 +113,18 @@ def _record_unit_task(
 ) -> None:
     _existing_key, _existing_task = _resolve_unit_task(memory.unit_tasks, str(unit.id))
     existing = _existing_task or {}
-    task = dict(existing) if existing.get("kind") == kind else {
+    # "return" and "return_cargo_to_core" refer to the same task family;
+    # _return_to_core writes kind=reason ("return_cargo_to_core") while
+    # callers may record kind="return".  Treat them as compatible so that
+    # fields like oscillation_count survive across ticks.
+    _RETURN_KINDS = frozenset({"return", "return_cargo_to_core"})
+    kind_compatible = (
+        existing.get("kind") == kind
+        or (existing.get("kind") in _RETURN_KINDS and kind in _RETURN_KINDS)
+    )
+    task = dict(existing) if kind_compatible else {
         key: existing[key]
-        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since")
+        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since", "oscillation_count")
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})

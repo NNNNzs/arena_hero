@@ -808,6 +808,21 @@
   4. **单测验证**：新增 `tests/test_frontier_attempt_tick_preservation.py`（5 项针对 `attempt_tick` 继承、失败计数延续、死锁侧滑激活及未达阈值不误触发的回归测试），测试 100% 通过；
   5. **代码提交与服务重载**：按规范提交代码至 main 分支，重启 Docker 容器加载最新策略生效。
 
+### 2026-09-17 | Tick 289221 载货工兵回矿振荡与 oscillation_count 继承失效修复 (CARGO_DELIVERY_STAGNATION / UNIT_OSCILLATION)
+- **现象**：巡检时间窗 Tick 289092..289211，核心处于 `NORMAL`，坐标 `[-822, -574]`，HP/Shield 5/5 满值，人口 40，核心资源 42/200。检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 与 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，工兵 `f73fd96585d7` 携带 1 单位资源执行 `return_cargo_to_core` 时，在坐标 `[-746, -600]` 与 `[-747, -600]` 之间高频往返达 18+ 次，20+ Ticks 内净位移仅 1 格，无法回矿入库。
+- **根因分析**：
+  1. `_return_to_core` 中具备检测单位返回上一格（`intent.reserved_cell == prev_cell`）并累加 `oscillation_count` 的破局机制，但其写入的任务类型为 `new_task["kind"] = "return_cargo_to_core"`；
+  2. 紧随其后调用的 `_record_unit_task` 传入的任务类型为 `kind = "return"`，导致 `existing.get("kind") == kind` 判定不匹配进入 `else` 分支；
+  3. `_record_unit_task` 的 `else` 分支白名单未包含 `oscillation_count`，导致振荡计数每 Tick 都被重置为 0，永远无法达到 `>= 2` 的破局门限触发 `avoid_threats=False` 的非安全路径强行推进。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成 Markdown 告警战报并成功发送 HTML 邮件至 `709934831@qq.com`；
+  2. **策略修复**：
+     - 在 `arena_tactic/strategy/common.py` 的 `_record_unit_task` 中建立 `_RETURN_KINDS = frozenset({"return", "return_cargo_to_core"})` 族兼容判定，避免子类型差异引发字典重建；
+     - 在 `_record_unit_task` 继承字段列表中补齐 `oscillation_count`，确保振荡状态跨 Tick 安全继承；
+  3. **单测验证**：新增 `tests/test_cargo_return_oscillation.py`（5 项针对回矿振荡计数继承、跨类型兼容及破局降级的回归测试），全绿通过；
+  4. **代码提交与服务重载**：代码已提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
+
 
 
 
