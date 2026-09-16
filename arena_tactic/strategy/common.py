@@ -81,6 +81,27 @@ def _move(
 
 
 
+_OSCILLATION_WINDOW = 6  # recent_cells entries to inspect (检测最近 N 步)
+_OSCILLATION_UNIQUE_THRESHOLD = 2  # ≤2 unique cells = bouncing (≤2 个不同位置 = 振荡)
+
+
+def _detect_target_oscillation(memory: AgentMemory, unit_id: str) -> bool:
+    """Return True if the unit's recent_cells show a ≤2-cell bounce pattern.
+
+    当单位的最近移动轨迹仅包含 ≤2 个不同位置时判定为振荡，
+    用于触发 recon/explore 目标的冷却抑制。
+    """
+    _key, _task = _resolve_unit_task(memory.unit_tasks, unit_id)
+    task = _task or {}
+    recent_raw = task.get("recent_cells", [])
+    if len(recent_raw) < _OSCILLATION_WINDOW:
+        return False
+    tail = recent_raw[-_OSCILLATION_WINDOW:]
+    unique = {(int(c[0]), int(c[1])) for c in tail
+              if isinstance(c, (list, tuple)) and len(c) == 2}
+    return len(unique) <= _OSCILLATION_UNIQUE_THRESHOLD
+
+
 def _record_unit_task(
     memory: AgentMemory,
     context: DecisionContext,
@@ -117,6 +138,14 @@ def _record_unit_task(
     if intent is not None and intent.action is ActionKind.MOVE:
         task["step"] = list(intent.reserved_cell) if intent.reserved_cell else None
         task["attempt_tick"] = context.tick
+        # Track recent_cells for multi-tick anti-oscillation detection.
+        # Used by recon/explore oscillation cooldown and _distant_retreat_fallback_intent.
+        prev_recent_raw = existing.get("recent_cells", [])
+        prev_recent: list[Position] = [
+            (int(c[0]), int(c[1])) for c in prev_recent_raw
+            if isinstance(c, (list, tuple)) and len(c) == 2 and all(type(p) is int for p in c)
+        ]
+        task["recent_cells"] = [list(c) for c in [*prev_recent, unit.position][-max(10, _OSCILLATION_WINDOW):]]
     else:
         task.pop("step", None)
         # Preserve attempt_tick so _stuck_sidestep can activate after
@@ -341,8 +370,8 @@ def _distant_retreat_fallback_intent(
     ))
     for cell, direction in candidates:
         if reservations.reserve(cell, source=unit.position):
-            # Append current position and cap at 5 recent entries.
-            new_recent = [*recent_cells, unit.position][-5:]
+            # Append current position and cap at max(10, _OSCILLATION_WINDOW) recent entries.
+            new_recent = [*recent_cells, unit.position][-max(10, _OSCILLATION_WINDOW):]
             memory.unit_tasks[str(unit.id)] = {
                 "kind": "distant_retreat_fallback",
                 "target": list(target),

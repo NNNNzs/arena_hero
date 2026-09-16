@@ -18,9 +18,11 @@ from ..squads import SquadPlan, SquadType
 from .common import (
     UNIT_MAX_HP,
     _EXPLORATION_SECTORS,
+    _OSCILLATION_WINDOW,
     _at_normal_core,
     _critical_retreat_sidestep,
     _deploy_sidestep,
+    _detect_target_oscillation,
     _evacuate_doorstep_intent,
     _move,
     _record_unit_task,
@@ -1109,6 +1111,23 @@ def _plan_workers(
             if intent is None:
                 intent = _stuck_sidestep(worker, target, context, memory, reservations, "exploration_route_unblock")
             _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
+            # Oscillation detection + cooldown (振荡检测与冷却抑制):
+            # When the worker bounces between ≤2 cells for _OSCILLATION_WINDOW
+            # consecutive ticks on a recon or explore route, cool down the
+            # target to prevent re-selection after intervention TTL expires.
+            uid = str(worker.id)
+            if _detect_target_oscillation(memory, uid):
+                if task_kind == "recon" and target in memory.resource_observations:
+                    memory.resource_recheck_cooldowns[target] = (
+                        context.tick + config.resource_recheck_cooldown_ticks
+                    )
+                elif task_kind == "explore":
+                    # Rotate sector and clear target for explore tasks.
+                    _key, _task = _resolve_unit_task(memory.unit_tasks, uid)
+                    if _task is not None:
+                        _task["sector"] = (int(_task.get("sector", 0)) + 1) % len(_EXPLORATION_SECTORS)
+                        _task["sector_since"] = context.tick
+                        _task.pop("target", None)
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue
 

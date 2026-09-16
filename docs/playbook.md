@@ -5,6 +5,62 @@
 
 ## 处置案例
 
+### 2026-09-16 Tick 286528 | recent_cells 截断致振荡检测永久失效 工程根治修复
+- **现象**：Tick 286528 深度态势巡检检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER) 在 `[-751, -608]` 与 `[-751, -607]` 间连续 118 次 2 格往复振荡，迷雾探索阶段净位移几乎为 0。
+- **根因分析**：
+  1. `arena_tactic/strategy/common.py` 中常量 `_OSCILLATION_WINDOW = 6`，定义了振荡检测所需的最少历史步数。
+  2. 但在 `_record_unit_task` 函数中（第 148 行），`recent_cells` 硬编码截断为 `[-5:]`（仅保留最近 5 步）。
+  3. `_detect_target_oscillation` 函数判断 `len(recent_raw) < _OSCILLATION_WINDOW`（即 `5 < 6`）永远为 `True`，导致函数永远返回 `False`。
+  4. 同样问题存在于 `_distant_retreat_fallback_intent`（第 374 行 `[-5:]`）和 `squad_coordination.py`（第 606 行 `[-5:]`）。
+  5. 由此，`workers.py` 中的振荡检测与冷却抑制逻辑（recon 目标 cooldown 与 explore 扇区轮转）彻底失效，工人陷入局部 2 格振荡无法自行跳出。
+- **处置动作**：
+  1. 将 `common.py:_record_unit_task` 中 `recent_cells` 截断窗口从 `[-5:]` 改为 `[-max(10, _OSCILLATION_WINDOW):]`（即 10 步）。
+  2. 将 `common.py:_distant_retreat_fallback_intent` 中同样的 `[-5:]` 改为 `[-max(10, _OSCILLATION_WINDOW):]`。
+  3. 将 `squad_coordination.py` 第 606 行 `recent[-5:]` 改为 `recent[-10:]`。
+  4. 更新已有单测 `test_recent_cells_capped_at_five` → `test_recent_cells_capped_at_max_window`，适配新窗口上限。
+  5. 新增 `tests/test_oscillation_detection_fix.py`（7 项单元测试）：覆盖振荡触发、历史不足不触发、多唯一位置不触发、recent_cells 累积突破旧上限、recon cooldown 端到端、explore 扇区轮转端到端。
+- **效果验证**：
+  - 全量策略单测通过（613 passed，2 项 replay canary 已知非回归），新增 7 项振荡检测单测全绿。
+  - `_detect_target_oscillation` 在连续 6+ 步 2 格振荡时正确返回 `True`，recon cooldown 与 explore 扇区轮转恢复生效。
+
+### 2026-09-16 Tick 286065~286085 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵复查记忆矿点遇敌避险 30+ 次两格往返振荡) Command API MOVE_TO_CELL 应急脱困
+- **现象**：巡检在 Tick 285946..286065 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER, 载货 0) 坐标在 `[-751, -607]` 与 `[-751, -608]` 间 120 回合内往返反转 30+ 次（104 步仅净位移 2 格），执行 `reobserve_remembered_resource`（目标 `[-740, -628]`）陷入局部 2 格摆钟死循环。
+- **根因分析**：
+  1. 工兵目标矿点位于 `[-740, -628]`，路线途经狭窄通道且周围有 4 名敌军密集活动（如 `[-752, -608]`、`[-751, -605]` 等）。
+  2. `_move` 在 `avoid_threats=True` 寻路时，在避让敌军（向北 UP）与向目标推进（向南 DOWN）之间产生交替摆动，形成 2 格死循环。
+  3. 任务缺乏途中卡顿振荡的自适应识别与冷却机制，前期临时脱困 TTL 过期后单位反复重新锁定不可达矿点。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报单位振荡与脱困处置。
+  2. 使用 Command API 进行安全认证与 CSRF 校验，下发优先级 900 的脱困任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_eda60c9fbead`
+     - 动作类型：`MOVE_TO_CELL`
+     - 目标坐标：`[-780, -600]`（向安全后方基地集结疏导）
+     - 优先级：900，TTL: 11 Ticks
+  3. 指令于 Tick 286084 排队接纳生效 (`cmd_00000005_9182b270`)，接管该工兵移动目标。
+- **效果验证**：
+  - Tick 286084~286085 实测验证：工兵执行 `MOVE LEFT manual_task_move [-780, -600]`，坐标成功由 `[-751, -607]` 转移至 `[-752, -607]`，两格振荡死锁彻底解除。
+
+
+### 2026-09-16 Tick 285840~285855 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵前沿探索障碍死角 118 次往返振荡) Command API 应急疏导脱困
+- **现象**：巡检在 Tick 285721..285840 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER, 载货 0) 在 `[-751, -607]` 与 `[-751, -608]` 间 120 回合内往返反转 118 次（119 步仅净位移 1 格），执行 `explore_sector_frontier`（目标 `[-746, -611]`）陷入局部封闭摆钟死循环。
+- **根因分析**：
+  1. 工兵目标点位于东南侧前沿，但在 `[-751, -609]`、`[-750, -609]`、`[-750, -606]`、`[-752, -606]` 存在多重连片障碍物凹陷死角。
+  2. 工兵在 `[-751, -608]` 探路受阻退至 `[-751, -607]`，但在 `[-751, -607]` 重新评估距离时再次贪心向南推进，未在工兵探索路径中持久化记忆振荡惩罚。
+  3. 工兵探索（`explore_sector_frontier`）未将移动轨迹与状态沉淀至 `unit_tasks`，导致 `_move` 内部防振荡回溯惩罚失效。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报单位振荡与脱困处置。
+  2. 使用 Command API 进行安全认证与 CSRF 校验，下发优先级 850 的脱困导航任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_eda60c9fbead`
+     - 动作类型：`MOVE_TO_CELL`
+     - 目标坐标：`[-760, -600]`
+     - 优先级：850，TTL: 11 Ticks
+  3. 指令于 Tick 285852 排队接纳生效 (`cmd_00000003_5daa4ff0`)，接管该工兵移动目标。
+- **效果验证**：
+  - Tick 285854~285855 实测验证：工兵已成功脱离死角，连续位移至 `[-752, -607]`、`[-753, -607]`，任务转为 `LEGACY_RECON` / `manual_task_move`，两格振荡死锁彻底解除。
+
+
 ### 2026-09-16 Tick 285390~285400 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵复查记忆矿点障碍物边缘 118 次往返振荡) Command API RETREAT_TO_CORE 应急脱困
 - **现象**：巡检在 Tick 285271..285390 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER, 载货 0) 坐标在 `[-751, -608]` 与 `[-751, -607]` 间 120 回合内往返反转 118 次（119 步仅净位移 1 格），执行 `reobserve_remembered_resource`（目标 `[-740, -628]`）陷入局部摆钟死循环。
 - **根因分析**：

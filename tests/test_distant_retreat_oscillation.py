@@ -233,21 +233,24 @@ def test_distant_retreat_prefers_threat_avoidance_over_taboo():
 
 
 # ---------------------------------------------------------------------------
-# 6. recent_cells is correctly accumulated and capped at 5.
+# 6. recent_cells is correctly accumulated and capped at max(10, _OSCILLATION_WINDOW).
 # ---------------------------------------------------------------------------
 
-def test_recent_cells_capped_at_five():
+def test_recent_cells_capped_at_max_window():
     ranger = unit(1, UnitType.RANGER, (-2598, 1176))
-    # Start with 5 recent cells (the max)
+    # Start with 10 recent cells (the new max)
     recent = [
         [-2598, 1176], [-2597, 1176], [-2598, 1177],
         [-2599, 1176], [-2598, 1175],
+        [-2599, 1175], [-2597, 1175],
+        [-2599, 1177], [-2597, 1177],
+        [-2598, 1178],
     ]
     task_entry = {
         "kind": "distant_retreat_fallback",
         "target": [0, 0],
         "recent_cells": recent,
-        "prev_cell": [-2598, 1175],
+        "prev_cell": [-2598, 1178],
     }
     context, memory, reservations = _make_context_and_memory(
         ranger, unit_tasks=[task_entry], tick=100,
@@ -260,8 +263,8 @@ def test_recent_cells_capped_at_five():
     assert intent is not None
     task = memory.unit_tasks[str(ranger.id)]
     stored = task["recent_cells"]
-    # Should be capped at 5: old entries dropped
-    assert len(stored) <= 5, f"recent_cells has {len(stored)} entries, expected <= 5"
+    # Should be capped at max(10, _OSCILLATION_WINDOW)=10: old entries dropped
+    assert len(stored) <= 10, f"recent_cells has {len(stored)} entries, expected <= 10"
     # The last entry should be the unit's current position before the move
     assert stored[-1] == list(ranger.position)
 

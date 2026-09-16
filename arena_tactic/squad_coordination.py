@@ -603,7 +603,7 @@ def coordinate_expedition_intents(
                 if not isinstance(recent, list):
                     recent = []
                 recent.append(list(unit.position))
-                task["recent_cells"] = [list(c) for c in recent[-5:]]
+                task["recent_cells"] = [list(c) for c in recent[-10:]]
                 task["kind"] = "squad_evasion"
         if direction is None:
             replacements.append(ActionIntent(
