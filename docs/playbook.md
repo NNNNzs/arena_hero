@@ -5,6 +5,24 @@
 
 ## 处置案例
 
+### 2026-09-16 Tick 285390~285400 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵复查记忆矿点障碍物边缘 118 次往返振荡) Command API RETREAT_TO_CORE 应急脱困
+- **现象**：巡检在 Tick 285271..285390 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER, 载货 0) 坐标在 `[-751, -608]` 与 `[-751, -607]` 间 120 回合内往返反转 118 次（119 步仅净位移 1 格），执行 `reobserve_remembered_resource`（目标 `[-740, -628]`）陷入局部摆钟死循环。
+- **根因分析**：
+  1. 工兵正南方 `[-751, -609]`、`[-750, -609]` 等存在横向障碍物连片阻挡。
+  2. 工兵在 `[-751, -608]` 受阻退至 `[-751, -607]`，但在 `[-751, -607]` 评估曼哈顿/欧氏距离时，又贪心选择向南 `[-751, -608]` 推进，形成 2 格封闭死循环。
+  3. 记忆资源复查缺乏往返振荡自适应抑制机制（未及时计入 `resource_recheck_cooldowns`），导致前期临时脱困 TTL 过期后单位反复死锁。
+- **处置动作**：
+  1. 向山哥邮箱 (`709934831@qq.com`) 发送战况异常告警 HTML 邮件，通报单位振荡与脱困处置。
+  2. 使用 Command API 进行安全认证与 CSRF 校验，下发优先级 950 的回撤脱困任务：
+     - 指令类型：`ASSIGN_TASK`
+     - 目标实体：`entity_eda60c9fbead`
+     - 动作类型：`RETREAT_TO_CORE` (撤退回核心)
+     - 优先级：950，TTL: 60 Ticks
+  3. 指令于 Tick 285400 排队接纳生效 (`cmd_00000002_fcc94c54`)，接管该工兵移动目标。
+- **效果验证**：
+  - Tick 285400+ 实测验证：工兵已成功位移至 `[-752, -607]`，目标安全重定向至 `[-737, -520]`，彻底跳出两格死锁振荡区间；最近 10 Ticks 巡检告警全部清零（`findings: 0`）。
+
+
 ### 2026-09-16 Tick 285166~285182 | UNIT_OSCILLATION / EXPLORATION_STALL (工兵远距离重探矿点遇敌边界往返振荡) Command API 应急疏导脱困
 - **现象**：巡检在 Tick 285047..285166 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)` 与 `[WARNING] EXPLORATION_STALL (迷雾探索停滞)`。工兵 `entity_eda60c9fbead` (WORKER, 载货 0) 坐标在 `[-751, -607]` 与 `[-751, -608]` 间往返横跳 30 次（119 步仅净位移 3 格），执行 `reobserve_remembered_resource`（目标 `[-740, -628]`）但无法推进。
 - **根因分析**：
