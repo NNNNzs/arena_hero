@@ -124,7 +124,7 @@ def _record_unit_task(
     )
     task = dict(existing) if kind_compatible else {
         key: existing[key]
-        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since", "oscillation_count")
+        for key in ("patrol_arc", "patrol_role", "patrol_core", "recent_cells", "prev_cell", "recon_since", "intercept_since", "engage_since", "oscillation_count", "unsafe_steps_remaining")
         if key in existing
     }
     task.update({"kind": kind, "target": list(target)})
@@ -479,6 +479,10 @@ def _anticipated_resources(context: DecisionContext) -> int:
     return context.resources + min(depositable, context.resource_space)
 
 
+_UNSAFE_COOLDOWN_STEPS = 3  # ticks to stay in unsafe mode after oscillation is detected
+# (振荡检测后保持 unsafe 模式的冷却步数，防止 safe/unsafe 乒乓)
+
+
 def _return_to_core(
     unit: UnitView,
     context: DecisionContext,
@@ -505,11 +509,16 @@ def _return_to_core(
     prev_cell_raw = existing_task.get("prev_cell")
     prev_cell = tuple(prev_cell_raw) if isinstance(prev_cell_raw, (list, tuple)) and len(prev_cell_raw) == 2 else None
     oscillation_count = existing_task.get("oscillation_count", 0)
+    # Read the cooldown counter: after oscillation is confirmed, stay in
+    # unsafe mode for ``_UNSAFE_COOLDOWN_STEPS`` consecutive ticks to
+    # break the safe ↔ unsafe ping-pong cycle.
+    unsafe_steps_remaining = existing_task.get("unsafe_steps_remaining", 0)
 
     # B: 优先走安全路径；若被威胁格封死则降级为普通路径强行回核心
     # Skip safe path when oscillation is detected (count >= 2 means we've
-    # been bouncing for at least 2 consecutive ticks).
-    if oscillation_count < 2:
+    # been bouncing for at least 2 consecutive ticks) OR when the unsafe
+    # cooldown is still active (prevents immediate revert to safe path).
+    if oscillation_count < 2 and unsafe_steps_remaining <= 0:
         intent = _move(
             unit,
             target,
@@ -558,15 +567,22 @@ def _return_to_core(
         avoid_threats=False,
     )
     if intent is not None:
-        # Reset oscillation counter on successful unsafe fallback.
-        if oscillation_count > 0:
-            new_task = dict(existing_task)
+        # Start or continue the unsafe cooldown.  After oscillation is
+        # confirmed (count >= 2), keep the unit in unsafe mode for
+        # ``_UNSAFE_COOLDOWN_STEPS`` ticks to break the ping-pong cycle.
+        new_task = dict(existing_task)
+        if oscillation_count >= 2:
+            new_task["unsafe_steps_remaining"] = _UNSAFE_COOLDOWN_STEPS
             new_task["oscillation_count"] = 0
-            new_task["kind"] = reason
-            memory.unit_tasks[str(unit.id)] = new_task
-            alias = entity_alias(unit.id)
-            if alias:
-                memory.unit_tasks[alias] = new_task
+        elif unsafe_steps_remaining > 0:
+            new_task["unsafe_steps_remaining"] = unsafe_steps_remaining - 1
+        else:
+            new_task["oscillation_count"] = 0
+        new_task["kind"] = reason
+        memory.unit_tasks[str(unit.id)] = new_task
+        alias = entity_alias(unit.id)
+        if alias:
+            memory.unit_tasks[alias] = new_task
         return intent
     if distance(unit.position, target) >= config.long_distance_retreat_threshold:
         return _distant_retreat_fallback_intent(

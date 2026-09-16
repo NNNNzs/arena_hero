@@ -1110,6 +1110,21 @@ def _plan_workers(
             # sidestep to any adjacent free cell to break deadlock.
             if intent is None:
                 intent = _stuck_sidestep(worker, target, context, memory, reservations, "exploration_route_unblock")
+            # If still blocked after stuck-sidestep activation, force sector
+            # rotation to prevent long-term stalling (exploration_route_blocked
+            # for 6+ consecutive ticks).  This handles workers like 4d8c2bf83b23
+            # and 05388341e6dd that get stuck in dead-end terrain.
+            uid = str(worker.id)
+            if intent is None and task_kind == "explore":
+                _key, _task = _resolve_unit_task(memory.unit_tasks, uid)
+                _task_data = _task or {}
+                attempt_tick = _task_data.get("attempt_tick")
+                if attempt_tick is not None and context.tick - attempt_tick >= _STUCK_THRESHOLD * 2:
+                    if _task_data is not None:
+                        _task_data["sector"] = (int(_task_data.get("sector", 0)) + 1) % len(_EXPLORATION_SECTORS)
+                        _task_data["sector_since"] = context.tick
+                        _task_data.pop("target", None)
+                        _task_data["attempt_tick"] = context.tick  # reset stuck timer
             _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
             # Oscillation detection + cooldown (振荡检测与冷却抑制):
             # When the worker bounces between ≤2 cells for _OSCILLATION_WINDOW

@@ -822,6 +822,19 @@
   3. **单测验证**：新增 `tests/test_cargo_return_oscillation.py`（5 项针对回矿振荡计数继承、跨类型兼容及破局降级的回归测试），全绿通过；
   4. **代码提交与服务重载**：代码已提交至 main 分支，重启 Docker 容器加载最新战术策略生效。
 
+### 2026-09-17 | Tick 289436 回矿 Safe/Unsafe 乒乓振荡与死角地形扇区轮转脱困修复 (CARGO_DELIVERY_STAGNATION / INEFFECTIVE_STATIONARY)
+- **现象**：巡检时间窗 Tick 289316..289435，核心处于 `NORMAL`，坐标 `[-822, -574]`，HP/Shield 5/5 满值，人口 40，核心资源 54/200。检出 `[CRITICAL] CARGO_DELIVERY_STAGNATION (载货工人回矿停滞)` 与 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`，工兵 `f73fd96585d7` 携带 1 单位资源在坐标 `[-746, -600]` 与 `[-747, -600]` 之间进行周期性往返（60 Ticks 内反转 44 次），净位移仅 1 格；同时工兵 `4d8c2bf83b23` 在 `[-749, -612]` 连续 60 Ticks 处于 `WAIT`（`exploration_route_blocked`）。
+- **根因分析**：
+  1. **回矿 Safe/Unsafe 乒乓振荡**：在 Tick 289221 修复 `oscillation_count` 继承后，当 `oscillation_count >= 2` 时成功降级至 `unsafe_fallback`，但在降级执行一步后立即将 `oscillation_count` 重置为 0。下一 Tick 单位又重新采用 `avoid_threats=True` 的安全路径，再次退回原位，形成每 2 Ticks `Safe ↔ Unsafe` 的乒乓往返死锁；
+  2. **死角探索卡死**：工兵进入狭窄障碍死角时，常规 `_stuck_sidestep` 无法找到有效相邻自由格，缺少扇区换向逃逸机制，导致工兵长时间停滞。
+- **处置动作**：
+  1. **告警闭环**：第一时间生成详细战况 Markdown 战报，成功向 `709934831@qq.com` 投递 HTML 报警邮件；
+  2. **策略根治**：
+     - 在 `arena_tactic/strategy/common.py` 中引入 `unsafe_steps_remaining` 冷却机制（`_UNSAFE_COOLDOWN_STEPS = 3`）并在 `_record_unit_task` 中保留该字段：当振荡破局降级至 `unsafe_fallback` 后，强制维持 3 步非安全推进，杜绝单步后立刻切回安全路径导致的原路折返；
+     - 在 `arena_tactic/strategy/workers.py` 中增加工兵长时间阻塞强行扇区轮转机制：当工兵在探索任务中连续阻塞超过阈值且侧滑无法脱困时，强制切换至下一探索扇区并重置目标，彻底破除死角死锁；
+  3. **单测验证**：新增 `tests/test_safe_unsafe_cooldown.py` 与 `tests/test_exploration_stall_recovery.py`，全量相关策略与回归单测（118 项）100% 快速通过；
+  4. **代码提交与服务重载**：按 auto-commit 规范提交代码至 main 分支，重启 Docker 容器加载最新战术策略生效。
+
 
 
 
