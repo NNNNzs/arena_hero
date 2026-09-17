@@ -99,6 +99,10 @@ class AgentConfig:
     # where memory.frontier() alone consumed ~48 ms, leaving no time for A*
     # and causing all workers to receive None → permanent stall.
     exploration_budget_ms: float = 200.0
+    # Cooldown ticks for unreachable frontier targets.  When a worker is
+    # stuck on an exploration target for too long, the target is placed in
+    # cooldown so no worker will re-select it during the cooldown window.
+    unreachable_frontier_cooldown_ticks: int = 200
     # How many ticks a recently-seen enemy core remains "remembered" for
     # ATTACK mode stay logic, preventing vision-edge flicker oscillation
     # between ATTACK and BEACON every attack_exit_grace_ticks.

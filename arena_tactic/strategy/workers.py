@@ -65,7 +65,8 @@ def _stuck_sidestep(
     if attempt_tick is None or context.tick - attempt_tick < _STUCK_THRESHOLD:
         return None
     blocked = (
-        memory.obstacles
+        set(context.obstacle_cells)
+        | memory.obstacles
         | memory.active_temporary_blocks(context.tick)
         | set(context.enemy_occupancy)
         | enemy_threat_cells(context)
@@ -317,6 +318,9 @@ def _frontier_assignments(
         | enemy_threat_cells(context)
     )
     frontier = memory.frontier() - blocked
+    # Exclude frontier targets currently under unreachable cooldown
+    # (不可达前沿冷却排除)，防止工兵反复绑定同一个不可达死锁点。
+    frontier -= memory.active_unreachable_frontier_cooldowns(context.tick)
     assigned: set[Position] = set()
     result: dict[str, Position] = {}
     if not units:
@@ -1121,11 +1125,24 @@ def _plan_workers(
                 attempt_tick = _task_data.get("attempt_tick")
                 if attempt_tick is not None and context.tick - attempt_tick >= _STUCK_THRESHOLD * 2:
                     if _task_data is not None:
+                        # Record unreachable frontier cooldown (记录不可达前沿冷却)
+                        # so that no worker re-selects this dead-end target.
+                        if isinstance(target, (list, tuple)) and len(target) == 2:
+                            stale_target: Position = (int(target[0]), int(target[1]))
+                            memory.unreachable_frontier_targets[stale_target] = (
+                                context.tick + config.unreachable_frontier_cooldown_ticks
+                            )
                         _task_data["sector"] = (int(_task_data.get("sector", 0)) + 1) % len(_EXPLORATION_SECTORS)
                         _task_data["sector_since"] = context.tick
                         _task_data.pop("target", None)
                         _task_data["attempt_tick"] = context.tick  # reset stuck timer
-            _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
+                        # Clear the local target variable so _record_unit_task
+                        # does NOT re-write the stale unreachable target back
+                        # into memory (根治死锁：清空局部变量避免回写不可达目标).
+                        target = None
+                        intent = _wait(worker, "exploration_route_blocked")
+            if target is not None:
+                _record_unit_task(memory, context, worker, kind=task_kind, target=target, intent=intent)
             # Oscillation detection + cooldown (振荡检测与冷却抑制):
             # When the worker bounces between ≤2 cells for _OSCILLATION_WINDOW
             # consecutive ticks on a recon or explore route, cool down the
@@ -1143,6 +1160,13 @@ def _plan_workers(
                         _task["sector"] = (int(_task.get("sector", 0)) + 1) % len(_EXPLORATION_SECTORS)
                         _task["sector_since"] = context.tick
                         _task.pop("target", None)
+                    # Record unreachable frontier cooldown for oscillating
+                    # explore targets (振荡探索目标冷却).
+                    if isinstance(target, (list, tuple)) and len(target) == 2:
+                        osc_target: Position = (int(target[0]), int(target[1]))
+                        memory.unreachable_frontier_targets[osc_target] = (
+                            context.tick + config.unreachable_frontier_cooldown_ticks
+                        )
             intents.append(intent or _wait(worker, "exploration_route_blocked"))
             continue
 

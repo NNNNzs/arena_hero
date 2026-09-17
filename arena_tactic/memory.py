@@ -384,6 +384,10 @@ class AgentMemory:
     analysis_tasks: list[dict[str, Any]] = field(default_factory=list)
     migration_recommendation: dict[str, Any] = field(default_factory=dict)
     _frontier_cache: set[Position] | None = field(default=None, repr=False, compare=False)
+    # Cooldown for unreachable frontier targets (探索不可达前沿冷却).
+    # Maps Position → tick when cooldown expires; frontier assignment
+    # skips targets whose cooldown has not yet expired.
+    unreachable_frontier_targets: dict[Position, int] = field(default_factory=dict)
 
     def clone(self) -> "AgentMemory":
         """Return a semantically equivalent independent copy of this memory.
@@ -428,6 +432,7 @@ class AgentMemory:
         m.resource_recheck_cooldowns = self.resource_recheck_cooldowns.copy()
         m.temporary_blocks = self.temporary_blocks.copy()
         m.last_move_attempt = self.last_move_attempt.copy()
+        m.unreachable_frontier_targets = self.unreachable_frontier_targets.copy()
         m.event_counts = self.event_counts.copy()
         m.manual_squad_assignments = self.manual_squad_assignments.copy()
         # --- dicts of dicts (values are flat dicts of primitives / lists-of-primitives) ---
@@ -467,6 +472,10 @@ class AgentMemory:
     def active_resource_recheck_cooldowns(self, tick: int) -> set[Position]:
         return {cell for cell, blocked_until in self.resource_recheck_cooldowns.items() if blocked_until >= tick}
 
+    def active_unreachable_frontier_cooldowns(self, tick: int) -> set[Position]:
+        """Return frontier targets currently under unreachable cooldown (不可达前沿冷却中)."""
+        return {cell for cell, blocked_until in self.unreachable_frontier_targets.items() if blocked_until >= tick}
+
     def advance(self, context: DecisionContext, config: AgentConfig) -> "AgentMemory":
         next_memory = self.clone()
         next_memory.version = MEMORY_VERSION
@@ -485,6 +494,10 @@ class AgentMemory:
         }
         next_memory.resource_recheck_cooldowns = {
             cell: blocked_until for cell, blocked_until in next_memory.resource_recheck_cooldowns.items()
+            if blocked_until >= context.tick
+        }
+        next_memory.unreachable_frontier_targets = {
+            cell: blocked_until for cell, blocked_until in next_memory.unreachable_frontier_targets.items()
             if blocked_until >= context.tick
         }
         if context.core is None:
@@ -674,6 +687,7 @@ class AgentMemory:
                 next_memory.resource_recheck_failures.clear()
                 next_memory.resource_recheck_cooldowns.clear()
                 next_memory.temporary_blocks.clear()
+                next_memory.unreachable_frontier_targets.clear()
                 next_memory.no_resource_ticks = 0
                 next_memory.core_damage_streak = 0
                 next_memory.last_core_damage_tick = 0
@@ -751,6 +765,7 @@ class AgentMemory:
             "resource_recheck_cooldowns": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.resource_recheck_cooldowns.items())},
             "enemy_tracks": _safe_enemy_tracks(self.enemy_tracks),
             "temporary_blocks": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.temporary_blocks.items())},
+            "unreachable_frontier_targets": {_cell_key(cell): blocked_until for cell, blocked_until in sorted(self.unreachable_frontier_targets.items())},
             "last_move_attempt": {
                 alias: list(cell)
                 for unit_id, cell in sorted(self.last_move_attempt.items())
@@ -822,6 +837,7 @@ class AgentMemory:
             resource_recheck_cooldowns=_safe_cell_map(data.get("resource_recheck_cooldowns", {})),
             enemy_tracks=_safe_enemy_tracks(data.get("enemy_tracks", {})),
             temporary_blocks=_safe_cell_map(data.get("temporary_blocks", {})),
+            unreachable_frontier_targets=_safe_cell_map(data.get("unreachable_frontier_targets", {})),
             last_move_attempt=_safe_last_move_attempt(data.get("last_move_attempt", {})),
             retreating_unit_ids=retreating_ids,
             unit_tasks={

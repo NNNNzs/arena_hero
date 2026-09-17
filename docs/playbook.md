@@ -5,6 +5,20 @@
 
 ## 处置案例
 
+### 2026-09-17 Tick 291904 | INEFFECTIVE_STATIONARY (工兵探索死锁) & UNIT_OSCILLATION (复查资源振荡) 策略层修复
+- **现象**：巡检在 Tick 291783..291904 检出：
+  1. `[WARNING] INEFFECTIVE_STATIONARY (对象长期无效静止)`：工兵 `entity_4d8c2bf83b23` 在 `[-749, -612]` 连续 120 Ticks 执行 `WAIT`，reason: `exploration_route_blocked`。
+  2. `[WARNING] UNIT_OSCILLATION (单位往返振荡)` / `EXPLORATION_STALL (迷雾探索停滞)`：工兵 `entity_acffc0a8778e` 在 `[-754, -606]` 与 `[-753, -605]` 间 120 Ticks 内因 `reobserve_remembered_resource` 往返振荡 59 次，净位移仅 1 格。
+- **根因分析**：
+  1. **探索死胡同死锁**：工兵在探索前沿遇阻时，局部脱困 `_stuck_sidestep` 遗漏了 `context.obstacle_cells`，且未将不可达死锁目标加入冷却，导致反复重新分配同一个不可达前沿。
+  2. **复查记忆资源死循环**：工兵在接近记忆点却未见矿时，反复在重新复查与探索间来回折返。
+- **修复方案**：
+  1. 在 `workers.py` 引入不可达前沿目标冷却 (`unreachable_frontier_targets`)，当寻路受阻达阈值或振荡时，清空当前局部目标并加入冷却，强制轮换探索扇区。
+  2. `_stuck_sidestep` 补齐 `set(context.obstacle_cells)` 障碍检测，杜绝向当前可见障碍物寻路。
+  3. 为记忆资源点复查加入振荡检测与冷却抑制。
+  4. 补齐回归测试 `tests/test_exploration_stall_recovery.py` 并全量验证通过。
+
+
 ### 2026-09-16 Tick 286740~286761 | UNIT_OSCILLATION (工兵前沿探索遇阻与敌军夹峙 24次两格往返振荡) Command API MOVE_TO_CELL 应急脱困
 - **现象**：巡检在 Tick 286621..286740 检出 `[WARNING] UNIT_OSCILLATION (单位往返振荡)`。工兵 `entity_4d8c2bf83b23` (WORKER, 载货 0) 坐标在 `[-751, -608]` 与 `[-751, -607]` 间 120 回合内往返反转 24 次（采样 32 次），执行 `explore_sector_frontier`（目标 `[-748, -613]`）陷入 2 格摆钟往复死循环。
 - **根因分析**：

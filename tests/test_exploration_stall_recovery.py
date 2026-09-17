@@ -131,3 +131,59 @@ def test_short_stall_no_rotation():
     assert task.get("sector", 0) == 0, (
         "Short stall should not trigger sector rotation"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3. Prolonged stall records unreachable frontier cooldown and clears target
+# ---------------------------------------------------------------------------
+
+def test_exploration_stall_records_unreachable_frontier_cooldown():
+    """When a worker's exploration route is blocked for >= _STUCK_THRESHOLD*2,
+    the target must be placed into unreachable frontier cooldown and cleared
+    from memory to break the frontier lock deadlock."""
+    from arena_tactic.strategy.workers import _plan_workers, _frontier_assignments
+    from arena_tactic.models import ReservationTable
+
+    worker = unit(702, UnitType.WORKER, (5, 5), cargo=0)
+    memory = AgentMemory()
+    uid = str(worker.id)
+    target_pos = (5, 10)
+
+    # Put target_pos in frontier by exploring (5, 9)
+    memory.explored = {(5, 9)}
+    old_tick = 100
+    current_tick = old_tick + _STUCK_THRESHOLD * 2 + 1
+    memory.unit_tasks[uid] = {
+        "kind": "explore",
+        "target": list(target_pos),
+        "sector": 0,
+        "sector_since": old_tick,
+        "attempt_tick": old_tick,
+    }
+
+    # Surround worker so all moves fail
+    obstacle_positions = [(5, 6), (5, 4), (6, 5), (4, 5)]
+    t = turn(
+        tick=current_tick,
+        owned_core=core(position=(0, 0)),
+        units=(worker,),
+        obstacle_cells=obstacle_positions,
+    )
+    context = DecisionContext.from_turn(t)
+    config = AgentConfig()
+    reservations = ReservationTable(occupancy={})
+
+    intents = _plan_workers(context, memory, reservations, perf_counter() + 5.0, config, heal_allowances={})
+
+    # 1. Target must be recorded in unreachable_frontier_targets with valid cooldown
+    assert target_pos in memory.unreachable_frontier_targets, (
+        f"Target {target_pos} should be in unreachable_frontier_targets"
+    )
+    assert memory.unreachable_frontier_targets[target_pos] > current_tick
+
+    # 2. active_unreachable_frontier_cooldowns must report this target
+    assert target_pos in memory.active_unreachable_frontier_cooldowns(current_tick)
+
+    # 3. Subsequent _frontier_assignments must NOT assign this unreachable target
+    new_assignments = _frontier_assignments([worker], memory, context, perf_counter() + 5.0, config, task_kind="explore")
+    assert new_assignments.get(uid) != target_pos
